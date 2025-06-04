@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: morningstar_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n
+    container_name: morningstar_n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - NODE_ENV=production
+      - WEBHOOK_URL=http://n8n:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/.n8n/workflows
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  userbot:
+    build: ./userbot
+    container_name: morningstar_userbot
+    restart: unless-stopped
+    environment:
+      - API_ID=${TELEGRAM_API_ID}
+      - API_HASH=${TELEGRAM_API_HASH}
+      - PHONE=${TELEGRAM_PHONE}
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/telegram-posts
+      - N8N_WEBHOOK_TOKEN=${N8N_WEBHOOK_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL}
+    volumes:
+      - ./userbot/session:/app/session
+      - ./userbot/logs:/app/logs
+    depends_on:
+      - n8n
+      - postgres
+
+  telegram-bot:
+    build: ./bot
+    container_name: morningstar_bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - ADMIN_ID=${ADMIN_TELEGRAM_ID}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - TIMEZONE=${TIMEZONE}
+    volumes:
+      - ./bot/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  n8n_data:
+
+networks:
+  default:
+    name: morningstar_network
