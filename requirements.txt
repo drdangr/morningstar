@@ -1,4 +1,5 @@
 # Зависимости для telegram bot Docker контейнера
+# Минимальный набор для продакшена
 
 # Telegram Bot API
 python-telegram-bot==20.7

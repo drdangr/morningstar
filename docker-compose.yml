@@ -4,82 +4,109 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: morningstar_db
-    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB: ${DB_NAME:-digest_bot}
+      POSTGRES_USER: ${DB_USER:-digest_bot}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-digest_bot} -d ${DB_NAME:-digest_bot}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    networks:
+      - morningstar_network
 
   n8n:
-    image: n8nio/n8n
+    image: n8nio/n8n:latest
     container_name: morningstar_n8n
-    restart: unless-stopped
     ports:
-      - "5678:5678"
+      - "${N8N_PORT:-5678}:5678"
     environment:
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
       - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-      - N8N_HOST=0.0.0.0
+      - N8N_HOST=${N8N_HOST:-0.0.0.0}
       - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - NODE_ENV=production
-      - WEBHOOK_URL=http://n8n:5678/
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${DB_NAME:-digest_bot}
+      - DB_POSTGRESDB_USER=${DB_USER:-digest_bot}
+      - DB_POSTGRESDB_PASSWORD=${DB_PASSWORD}
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
     volumes:
       - n8n_data:/home/node/.n8n
-      - ./n8n/workflows:/home/node/.n8n/workflows
+      - ./n8n/custom-nodes:/home/node/.n8n/custom:ro
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - morningstar_network
 
   userbot:
-    build: ./userbot
+    build: 
+      context: ./userbot
+      dockerfile: Dockerfile
     container_name: morningstar_userbot
-    restart: unless-stopped
     environment:
-      - API_ID=${TELEGRAM_API_ID}
-      - API_HASH=${TELEGRAM_API_HASH}
-      - PHONE=${TELEGRAM_PHONE}
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - PHONE=${PHONE}
       - N8N_WEBHOOK_URL=http://n8n:5678/webhook/telegram-posts
       - N8N_WEBHOOK_TOKEN=${N8N_WEBHOOK_TOKEN}
-      - LOG_LEVEL=${LOG_LEVEL}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CHANNELS=${CHANNELS}
+      - USERBOT_MODE=${USERBOT_MODE:-once}
+      - POLLING_INTERVAL=${POLLING_INTERVAL:-1800}
+      - TZ=${TIMEZONE:-Europe/Moscow}
     volumes:
       - ./userbot/session:/app/session
       - ./userbot/logs:/app/logs
+    restart: unless-stopped
     depends_on:
       - n8n
-      - postgres
+    networks:
+      - morningstar_network
 
   telegram-bot:
-    build: ./bot
+    build: 
+      context: ./bot
+      dockerfile: Dockerfile
     container_name: morningstar_bot
-    restart: unless-stopped
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-      - ADMIN_ID=${ADMIN_TELEGRAM_ID}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - TIMEZONE=${TIMEZONE}
+      - DATABASE_URL=postgresql://${DB_USER:-digest_bot}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-digest_bot}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
+      - TZ=${TIMEZONE:-Europe/Moscow}
     volumes:
       - ./bot/logs:/app/logs
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - morningstar_network
 
 volumes:
   postgres_data:
+    driver: local
   n8n_data:
+    driver: local
 
 networks:
-  default:
+  morningstar_network:
+    driver: bridge
     name: morningstar_network
