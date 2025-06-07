@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Grid,
   Paper,
@@ -6,6 +6,8 @@ import {
   Box,
   Card,
   CardContent,
+  CircularProgress,
+  Alert,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -13,6 +15,7 @@ import {
   Tv as ChannelsIcon,
   People as UsersIcon,
 } from '@mui/icons-material';
+import apiService from '../services/api';
 
 const StatCard = ({ title, value, icon, color }) => (
   <Card sx={{ height: '100%' }}>
@@ -35,6 +38,48 @@ const StatCard = ({ title, value, icon, color }) => (
 );
 
 export default function DashboardPage() {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    loadStats();
+  }, []);
+
+  const loadStats = async () => {
+    try {
+      setLoading(true);
+      const data = await apiService.getStats();
+      setStats(data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load statistics: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box>
+        <Typography variant="h4" gutterBottom>
+          Dashboard
+        </Typography>
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      </Box>
+    );
+  }
+
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
@@ -48,33 +93,33 @@ export default function DashboardPage() {
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
             title="Active Topics"
-            value="8"
+            value={stats?.categories?.active || 0}
             icon={<TopicIcon sx={{ fontSize: 40 }} />}
             color="primary.main"
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
-            title="Monitored Channels"
-            value="24"
+            title="Total Topics"
+            value={stats?.categories?.total || 0}
+            icon={<TopicIcon sx={{ fontSize: 40 }} />}
+            color="primary.light"
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard
+            title="Active Channels"
+            value={stats?.channels?.active || 0}
             icon={<ChannelsIcon sx={{ fontSize: 40 }} />}
             color="secondary.main"
           />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
-            title="Active Users"
-            value="156"
-            icon={<UsersIcon sx={{ fontSize: 40 }} />}
-            color="success.main"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Daily Digests"
-            value="12"
-            icon={<DashboardIcon sx={{ fontSize: 40 }} />}
-            color="warning.main"
+            title="Total Channels"
+            value={stats?.channels?.total || 0}
+            icon={<ChannelsIcon sx={{ fontSize: 40 }} />}
+            color="secondary.light"
           />
         </Grid>
       </Grid>

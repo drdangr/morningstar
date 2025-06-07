@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -28,6 +28,7 @@ import {
   InputAdornment,
   Grid,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -37,76 +38,63 @@ import {
   Warning as WarningIcon,
   Search as SearchIcon,
   FilterList as FilterIcon,
+  Category as CategoryIcon,
 } from '@mui/icons-material';
+import apiService from '../services/api';
+import ChannelCategoriesDialog from '../components/ChannelCategoriesDialog';
 
-const mockChannels = [
-  { 
-    id: 1, 
-    name: 'TechCrunch', 
-    username: '@techcrunch', 
-    description: 'Technology news and startup updates',
-    topics: ['Technology'],
-    active: true,
-    subscribers: '2.1M'
-  },
-  { 
-    id: 2, 
-    name: 'CoinDesk', 
-    username: '@coindesk', 
-    description: 'Cryptocurrency and blockchain news',
-    topics: ['Crypto'],
-    active: true,
-    subscribers: '890K'
-  },
-  { 
-    id: 3, 
-    name: 'Breaking News', 
-    username: '@breakingnews', 
-    description: 'General news updates',
-    topics: ['Politics', 'World'],
-    active: false,
-    subscribers: '1.5M'
-  },
-];
 
-// Get unique topics for filter dropdown
-const getAllTopics = (channels) => {
-  const topicsSet = new Set();
-  channels.forEach(channel => {
-    channel.topics.forEach(topic => topicsSet.add(topic));
-  });
-  return Array.from(topicsSet).sort();
-};
 
 export default function ChannelsPage() {
-  const [channels, setChannels] = useState(mockChannels);
+  const [channels, setChannels] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
   const [open, setOpen] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+  const [categoriesDialogOpen, setCategoriesDialogOpen] = useState(false);
+  const [channelForCategories, setChannelForCategories] = useState(null);
 
   // Search and filter states
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // 'all', 'active', 'inactive'
-  const [topicFilter, setTopicFilter] = useState('all'); // 'all' or specific topic
 
   // Form validation states
   const [formData, setFormData] = useState({
-    name: '',
+    title: '',
     username: '',
     description: '',
-    topics: '',
-    active: true
+    telegram_id: '',
+    is_active: true
   });
   const [formErrors, setFormErrors] = useState({});
   const [touched, setTouched] = useState({});
 
-  const allTopics = getAllTopics(channels);
+  useEffect(() => {
+    loadChannels();
+  }, []);
+
+  const loadChannels = async () => {
+    try {
+      setLoading(true);
+      const data = await apiService.getChannels();
+      setChannels(data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load channels: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
 
   // Validation rules
   const validateField = (name, value) => {
     switch (name) {
-      case 'name':
+      case 'title':
         if (!value || value.trim().length < 2) {
           return 'Channel name must be at least 2 characters long';
         }
@@ -115,7 +103,7 @@ export default function ChannelsPage() {
         }
         // Check for duplicate names (excluding current editing channel)
         const isDuplicateName = channels.some(channel => 
-          channel.name.toLowerCase() === value.trim().toLowerCase() && 
+          channel.title.toLowerCase() === value.trim().toLowerCase() && 
           channel.id !== editingChannel?.id
         );
         if (isDuplicateName) {
@@ -152,29 +140,26 @@ export default function ChannelsPage() {
         return '';
       
       case 'description':
-        if (!value || value.trim().length < 10) {
-          return 'Description must be at least 10 characters long';
-        }
-        if (value.trim().length > 300) {
-          return 'Description must be less than 300 characters';
+        if (value && value.trim().length > 500) {
+          return 'Description must be less than 500 characters';
         }
         return '';
       
-      case 'topics':
-        if (!value || value.trim().length === 0) {
-          return 'At least one topic is required';
+      case 'telegram_id':
+        if (!value) {
+          return 'Telegram ID is required';
         }
-        const topicsArray = value.split(',').map(t => t.trim()).filter(t => t);
-        if (topicsArray.length === 0) {
-          return 'At least one topic is required';
+        const telegramId = parseInt(value);
+        if (isNaN(telegramId)) {
+          return 'Telegram ID must be a number';
         }
-        if (topicsArray.length > 5) {
-          return 'Maximum 5 topics allowed';
-        }
-        // Check for topic length
-        const hasLongTopics = topicsArray.some(t => t.length > 30);
-        if (hasLongTopics) {
-          return 'Each topic must be less than 30 characters';
+        // Check for duplicate telegram_id (excluding current editing channel)
+        const isDuplicateTelegramId = channels.some(channel => 
+          channel.telegram_id === telegramId && 
+          channel.id !== editingChannel?.id
+        );
+        if (isDuplicateTelegramId) {
+          return 'A channel with this Telegram ID already exists';
         }
         return '';
       
@@ -186,7 +171,7 @@ export default function ChannelsPage() {
   const validateForm = () => {
     const errors = {};
     Object.keys(formData).forEach(field => {
-      if (field !== 'active') { // Skip validation for switch
+      if (field !== 'is_active') { // Skip validation for switch
         const error = validateField(field, formData[field]);
         if (error) {
           errors[field] = error;
@@ -218,32 +203,27 @@ export default function ChannelsPage() {
     return channels.filter(channel => {
       // Search filter
       const matchesSearch = searchQuery === '' || 
-        channel.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        channel.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        channel.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        channel.topics.some(topic => topic.toLowerCase().includes(searchQuery.toLowerCase()));
+        channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (channel.username && channel.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        (channel.description && channel.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
       // Status filter
       const matchesStatus = statusFilter === 'all' || 
-        (statusFilter === 'active' && channel.active) ||
-        (statusFilter === 'inactive' && !channel.active);
+        (statusFilter === 'active' && channel.is_active) ||
+        (statusFilter === 'inactive' && !channel.is_active);
       
-      // Topic filter
-      const matchesTopic = topicFilter === 'all' || 
-        channel.topics.includes(topicFilter);
-      
-      return matchesSearch && matchesStatus && matchesTopic;
+      return matchesSearch && matchesStatus;
     });
-  }, [channels, searchQuery, statusFilter, topicFilter]);
+  }, [channels, searchQuery, statusFilter]);
 
   const handleClickOpen = () => {
     setEditingChannel(null);
     setFormData({
-      name: '',
+      title: '',
       username: '',
       description: '',
-      topics: '',
-      active: true
+      telegram_id: '',
+      is_active: true
     });
     setFormErrors({});
     setTouched({});
@@ -253,11 +233,11 @@ export default function ChannelsPage() {
   const handleEdit = (channel) => {
     setEditingChannel(channel);
     setFormData({
-      name: channel.name,
-      username: channel.username,
-      description: channel.description,
-      topics: channel.topics.join(', '),
-      active: channel.active
+      title: channel.title,
+      username: channel.username || '',
+      description: channel.description || '',
+      telegram_id: channel.telegram_id.toString(),
+      is_active: channel.is_active
     });
     setFormErrors({});
     setTouched({});
@@ -268,60 +248,57 @@ export default function ChannelsPage() {
     setOpen(false);
     setEditingChannel(null);
     setFormData({
-      name: '',
+      title: '',
       username: '',
       description: '',
-      topics: '',
-      active: true
+      telegram_id: '',
+      is_active: true
     });
     setFormErrors({});
     setTouched({});
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // Mark all fields as touched for validation display
     setTouched({
-      name: true,
+      title: true,
       username: true,
       description: true,
-      topics: true
+      telegram_id: true
     });
 
-    if (!validateForm()) {
+    if (!isFormValid) {
       return; // Don't save if validation fails
     }
 
-    const topicsArray = formData.topics.split(',').map(t => t.trim()).filter(t => t);
-    
-    if (editingChannel) {
-      // Update existing channel
-      setChannels(prev => prev.map(channel => 
-        channel.id === editingChannel.id 
-          ? {
-              ...channel,
-              name: formData.name.trim(),
-              username: formData.username.trim(),
-              description: formData.description.trim(),
-              topics: topicsArray,
-              active: formData.active
-            }
-          : channel
-      ));
-    } else {
-      // Add new channel
-      const newChannel = {
-        id: Math.max(...channels.map(c => c.id)) + 1,
-        name: formData.name.trim(),
-        username: formData.username.trim(),
-        description: formData.description.trim(),
-        topics: topicsArray,
-        active: formData.active,
-        subscribers: '0' // Default for new channels
+    setSaving(true);
+    setError('');
+
+    try {
+      const channelData = {
+        title: formData.title.trim(),
+        username: formData.username.trim() || null,
+        description: formData.description.trim() || null,
+        telegram_id: parseInt(formData.telegram_id),
+        is_active: formData.is_active
       };
-      setChannels(prev => [...prev, newChannel]);
+
+      if (editingChannel) {
+        // Update existing channel
+        await apiService.updateChannel(editingChannel.id, channelData);
+      } else {
+        // Create new channel
+        await apiService.createChannel(channelData);
+      }
+
+      await loadChannels();
+      handleClose();
+    } catch (err) {
+      console.error('Error saving channel:', err);
+      setError(err.message || 'Error saving channel');
+    } finally {
+      setSaving(false);
     }
-    
-    handleClose();
   };
 
   const handleDeleteClick = (channel) => {
@@ -329,11 +306,19 @@ export default function ChannelsPage() {
     setDeleteDialogOpen(true);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (channelToDelete) {
-      setChannels(channels.filter(channel => channel.id !== channelToDelete.id));
-      setDeleteDialogOpen(false);
-      setChannelToDelete(null);
+      try {
+        await apiService.deleteChannel(channelToDelete.id);
+        await loadChannels();
+        setDeleteDialogOpen(false);
+        setChannelToDelete(null);
+      } catch (err) {
+        console.error('Error deleting channel:', err);
+        setError(err.message || 'Error deleting channel');
+        setDeleteDialogOpen(false);
+        setChannelToDelete(null);
+      }
     }
   };
 
@@ -342,20 +327,45 @@ export default function ChannelsPage() {
     setChannelToDelete(null);
   };
 
+  const handleManageCategories = (channel) => {
+    setChannelForCategories(channel);
+    setCategoriesDialogOpen(true);
+  };
+
+  const handleCategoriesDialogClose = () => {
+    setCategoriesDialogOpen(false);
+    setChannelForCategories(null);
+  };
+
+  const handleCategoriesUpdate = () => {
+    // Можно обновить таблицу если нужно показывать категории
+    loadChannels();
+  };
+
   const handleClearFilters = () => {
     setSearchQuery('');
     setStatusFilter('all');
-    setTopicFilter('all');
   };
 
   const isFormValid = Object.keys(formErrors).every(key => !formErrors[key]) && 
-                     formData.name.trim() && 
-                     formData.username.trim() && 
-                     formData.description.trim() && 
-                     formData.topics.trim();
+                     formData.title.trim() && 
+                     formData.telegram_id;
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
     <Box>
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <div>
           <Typography variant="h4" gutterBottom>
@@ -407,22 +417,7 @@ export default function ChannelsPage() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} md={2}>
-            <FormControl fullWidth variant="outlined">
-              <InputLabel>Topic</InputLabel>
-              <Select
-                value={topicFilter}
-                onChange={(e) => setTopicFilter(e.target.value)}
-                label="Topic"
-              >
-                <MenuItem value="all">All Topics</MenuItem>
-                {allTopics.map(topic => (
-                  <MenuItem key={topic} value={topic}>{topic}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid item xs={12} md={4}>
             <Button 
               variant="outlined" 
               onClick={handleClearFilters}
@@ -440,7 +435,6 @@ export default function ChannelsPage() {
             Showing {filteredChannels.length} of {channels.length} channels
             {searchQuery && ` (filtered by "${searchQuery}")`}
             {statusFilter !== 'all' && ` (${statusFilter} only)`}
-            {topicFilter !== 'all' && ` (topic: ${topicFilter})`}
           </Typography>
         </Box>
       </Paper>
@@ -452,7 +446,7 @@ export default function ChannelsPage() {
               <TableCell>Channel</TableCell>
               <TableCell>Description</TableCell>
               <TableCell>Topics</TableCell>
-              <TableCell>Subscribers</TableCell>
+              <TableCell>Telegram ID</TableCell>
               <TableCell>Status</TableCell>
               <TableCell align="right">Actions</TableCell>
             </TableRow>
@@ -462,7 +456,7 @@ export default function ChannelsPage() {
               <TableRow>
                 <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
                   <Typography variant="body1" color="textSecondary">
-                    {searchQuery || statusFilter !== 'all' || topicFilter !== 'all'
+                    {searchQuery || statusFilter !== 'all'
                       ? 'No channels match your search criteria' 
                       : 'No channels found'
                     }
@@ -479,45 +473,58 @@ export default function ChannelsPage() {
                       </Avatar>
                       <div>
                         <Typography variant="subtitle2">
-                          {channel.name}
+                          {channel.title}
                         </Typography>
                         <Typography variant="body2" color="textSecondary">
-                          {channel.username}
+                          {channel.username || 'No username'}
                         </Typography>
                       </div>
                     </Box>
                   </TableCell>
                   <TableCell>
                     <Typography variant="body2">
-                      {channel.description}
+                      {channel.description || 'No description'}
                     </Typography>
                   </TableCell>
                   <TableCell>
                     <Box display="flex" gap={1} flexWrap="wrap">
-                      {channel.topics.map((topic, index) => (
-                        <Chip
-                          key={index}
-                          label={topic}
-                          size="small"
-                          color="primary"
-                          variant="outlined"
-                        />
-                      ))}
+                      {channel.categories && channel.categories.length > 0 ? (
+                        channel.categories.map((category) => (
+                          <Chip
+                            key={category.id}
+                            label={`${category.emoji} ${category.name}`}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                          />
+                        ))
+                      ) : (
+                        <Typography variant="body2" color="textSecondary">
+                          No topics
+                        </Typography>
+                      )}
                     </Box>
                   </TableCell>
                   <TableCell>
                     <Typography variant="body2" fontWeight="medium">
-                      {channel.subscribers}
+                      {channel.telegram_id}
                     </Typography>
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={channel.active ? 'Active' : 'Inactive'}
-                      color={channel.active ? 'success' : 'default'}
+                      label={channel.is_active ? 'Active' : 'Inactive'}
+                      color={channel.is_active ? 'success' : 'default'}
                       size="small"
                     />
                   </TableCell>
                   <TableCell align="right">
+                    <IconButton 
+                      onClick={() => handleManageCategories(channel)} 
+                      size="small"
+                      title="Manage Topics"
+                    >
+                      <CategoryIcon />
+                    </IconButton>
                     <IconButton onClick={() => handleEdit(channel)} size="small">
                       <EditIcon />
                     </IconButton>
@@ -552,14 +559,14 @@ export default function ChannelsPage() {
           <TextField
             autoFocus
             margin="dense"
-            label="Channel Name"
+            label="Channel Title"
             fullWidth
             variant="outlined"
-            value={formData.name}
-            onChange={(e) => handleFieldChange('name', e.target.value)}
-            onBlur={() => handleFieldBlur('name')}
-            error={touched.name && !!formErrors.name}
-            helperText={touched.name && formErrors.name}
+            value={formData.title}
+            onChange={(e) => handleFieldChange('title', e.target.value)}
+            onBlur={() => handleFieldBlur('title')}
+            error={touched.title && !!formErrors.title}
+            helperText={touched.title && formErrors.title}
             sx={{ mb: 2 }}
             required
           />
@@ -574,7 +581,6 @@ export default function ChannelsPage() {
             error={touched.username && !!formErrors.username}
             helperText={touched.username && formErrors.username ? formErrors.username : 'Telegram username with @ (e.g., @techcrunch)'}
             sx={{ mb: 2 }}
-            required
             placeholder="@username"
           />
           <TextField
@@ -590,26 +596,26 @@ export default function ChannelsPage() {
             error={touched.description && !!formErrors.description}
             helperText={touched.description && formErrors.description ? formErrors.description : 'Describe what content this channel provides'}
             sx={{ mb: 2 }}
-            required
           />
           <TextField
             margin="dense"
-            label="Topics"
+            label="Telegram ID"
             fullWidth
             variant="outlined"
-            value={formData.topics}
-            onChange={(e) => handleFieldChange('topics', e.target.value)}
-            onBlur={() => handleFieldBlur('topics')}
-            error={touched.topics && !!formErrors.topics}
-            helperText={touched.topics && formErrors.topics ? formErrors.topics : 'Comma-separated topics this channel covers (e.g., Technology, AI, Startups)'}
+            type="number"
+            value={formData.telegram_id}
+            onChange={(e) => handleFieldChange('telegram_id', e.target.value)}
+            onBlur={() => handleFieldBlur('telegram_id')}
+            error={touched.telegram_id && !!formErrors.telegram_id}
+            helperText={touched.telegram_id && formErrors.telegram_id ? formErrors.telegram_id : 'Unique Telegram channel ID (numeric)'}
             sx={{ mb: 2 }}
             required
           />
           <FormControlLabel
             control={
               <Switch 
-                checked={formData.active} 
-                onChange={(e) => handleFieldChange('active', e.target.checked)}
+                checked={formData.is_active} 
+                onChange={(e) => handleFieldChange('is_active', e.target.checked)}
               />
             }
             label="Active"
@@ -640,7 +646,7 @@ export default function ChannelsPage() {
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete the channel <strong>"{channelToDelete?.name}"</strong> ({channelToDelete?.username})?
+            Are you sure you want to delete the channel <strong>"{channelToDelete?.title}"</strong> ({channelToDelete?.username || 'No username'})?
           </DialogContentText>
           <DialogContentText sx={{ mt: 2, color: 'warning.main' }}>
             <strong>Warning:</strong> This action cannot be undone. All posts from this channel will no longer be monitored.
@@ -651,13 +657,13 @@ export default function ChannelsPage() {
                 Channel details:
               </Typography>
               <Typography variant="body2">
-                • Subscribers: {channelToDelete.subscribers}
+                • Telegram ID: {channelToDelete.telegram_id}
               </Typography>
               <Typography variant="body2">
-                • Topics: {channelToDelete.topics?.join(', ')}
+                • Description: {channelToDelete.description || 'No description'}
               </Typography>
               <Typography variant="body2">
-                • Status: {channelToDelete.active ? 'Active' : 'Inactive'}
+                • Status: {channelToDelete.is_active ? 'Active' : 'Inactive'}
               </Typography>
             </Box>
           )}
@@ -676,6 +682,14 @@ export default function ChannelsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Categories Management Dialog */}
+      <ChannelCategoriesDialog
+        open={categoriesDialogOpen}
+        onClose={handleCategoriesDialogClose}
+        channel={channelForCategories}
+        onUpdate={handleCategoriesUpdate}
+      />
     </Box>
   );
 } 

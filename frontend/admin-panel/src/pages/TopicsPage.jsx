@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -27,6 +27,7 @@ import {
   InputAdornment,
   Grid,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -36,6 +37,7 @@ import {
   Search as SearchIcon,
   FilterList as FilterIcon,
 } from '@mui/icons-material';
+import apiService from '../services/api';
 
 const mockTopics = [
   { id: 1, name: 'Technology', description: 'Tech news and updates', keywords: ['tech', 'AI', 'software'], active: true },
@@ -44,7 +46,10 @@ const mockTopics = [
 ];
 
 export default function TopicsPage() {
-  const [topics, setTopics] = useState(mockTopics);
+  const [topics, setTopics] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
   const [open, setOpen] = useState(false);
   const [editingTopic, setEditingTopic] = useState(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -58,11 +63,30 @@ export default function TopicsPage() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    keywords: '',
-    active: true
+    emoji: '📝',
+    is_active: true,
+    ai_prompt: '',
+    sort_order: 0
   });
   const [formErrors, setFormErrors] = useState({});
   const [touched, setTouched] = useState({});
+
+  useEffect(() => {
+    loadTopics();
+  }, []);
+
+  const loadTopics = async () => {
+    try {
+      setLoading(true);
+      const data = await apiService.getCategories();
+      setTopics(data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load topics: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Validation rules
   const validateField = (name, value) => {
@@ -85,29 +109,20 @@ export default function TopicsPage() {
         return '';
       
       case 'description':
-        if (!value || value.trim().length < 10) {
-          return 'Description must be at least 10 characters long';
-        }
-        if (value.trim().length > 200) {
-          return 'Description must be less than 200 characters';
+        if (value && value.trim().length > 500) {
+          return 'Description must be less than 500 characters';
         }
         return '';
       
-      case 'keywords':
-        if (!value || value.trim().length === 0) {
-          return 'At least one keyword is required';
+      case 'emoji':
+        if (value && value.length > 10) {
+          return 'Emoji must be less than 10 characters';
         }
-        const keywordsArray = value.split(',').map(k => k.trim()).filter(k => k);
-        if (keywordsArray.length === 0) {
-          return 'At least one keyword is required';
-        }
-        if (keywordsArray.length > 10) {
-          return 'Maximum 10 keywords allowed';
-        }
-        // Check for keyword length
-        const hasLongKeywords = keywordsArray.some(k => k.length > 20);
-        if (hasLongKeywords) {
-          return 'Each keyword must be less than 20 characters';
+        return '';
+      
+      case 'ai_prompt':
+        if (value && value.trim().length > 1000) {
+          return 'AI prompt must be less than 1000 characters';
         }
         return '';
       
@@ -119,7 +134,7 @@ export default function TopicsPage() {
   const validateForm = () => {
     const errors = {};
     Object.keys(formData).forEach(field => {
-      if (field !== 'active') { // Skip validation for switch
+      if (field !== 'is_active' && field !== 'sort_order') { // Skip validation for switch and sort_order
         const error = validateField(field, formData[field]);
         if (error) {
           errors[field] = error;
@@ -152,13 +167,12 @@ export default function TopicsPage() {
       // Search filter
       const matchesSearch = searchQuery === '' || 
         topic.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        topic.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        topic.keywords.some(keyword => keyword.toLowerCase().includes(searchQuery.toLowerCase()));
+        (topic.description && topic.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
       // Status filter
       const matchesStatus = statusFilter === 'all' || 
-        (statusFilter === 'active' && topic.active) ||
-        (statusFilter === 'inactive' && !topic.active);
+        (statusFilter === 'active' && topic.is_active) ||
+        (statusFilter === 'inactive' && !topic.is_active);
       
       return matchesSearch && matchesStatus;
     });
@@ -169,8 +183,10 @@ export default function TopicsPage() {
     setFormData({
       name: '',
       description: '',
-      keywords: '',
-      active: true
+      emoji: '📝',
+      is_active: true,
+      ai_prompt: '',
+      sort_order: 0
     });
     setFormErrors({});
     setTouched({});
@@ -181,9 +197,11 @@ export default function TopicsPage() {
     setEditingTopic(topic);
     setFormData({
       name: topic.name,
-      description: topic.description,
-      keywords: topic.keywords.join(', '),
-      active: topic.active
+      description: topic.description || '',
+      emoji: topic.emoji || '📝',
+      is_active: topic.is_active,
+      ai_prompt: topic.ai_prompt || '',
+      sort_order: topic.sort_order || 0
     });
     setFormErrors({});
     setTouched({});
@@ -196,53 +214,48 @@ export default function TopicsPage() {
     setFormData({
       name: '',
       description: '',
-      keywords: '',
-      active: true
+      emoji: '📝',
+      is_active: true,
+      ai_prompt: '',
+      sort_order: 0
     });
     setFormErrors({});
     setTouched({});
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // Mark all fields as touched for validation display
     setTouched({
       name: true,
       description: true,
-      keywords: true
+      emoji: true,
+      ai_prompt: true
     });
 
     if (!validateForm()) {
       return; // Don't save if validation fails
     }
 
-    const keywordsArray = formData.keywords.split(',').map(k => k.trim()).filter(k => k);
-    
-    if (editingTopic) {
-      // Update existing topic
-      setTopics(prev => prev.map(topic => 
-        topic.id === editingTopic.id 
-          ? {
-              ...topic,
-              name: formData.name.trim(),
-              description: formData.description.trim(),
-              keywords: keywordsArray,
-              active: formData.active
-            }
-          : topic
-      ));
-    } else {
-      // Add new topic
-      const newTopic = {
-        id: Math.max(...topics.map(t => t.id)) + 1,
-        name: formData.name.trim(),
-        description: formData.description.trim(),
-        keywords: keywordsArray,
-        active: formData.active
-      };
-      setTopics(prev => [...prev, newTopic]);
+    try {
+      setSaving(true);
+      
+      if (editingTopic) {
+        // Update existing topic
+        await apiService.updateCategory(editingTopic.id, formData);
+      } else {
+        // Add new topic
+        await apiService.createCategory(formData);
+      }
+      
+      // Reload topics from API
+      await loadTopics();
+      handleClose();
+      setError(null);
+    } catch (err) {
+      setError(`Failed to save topic: ${err.message}`);
+    } finally {
+      setSaving(false);
     }
-    
-    handleClose();
   };
 
   const handleDeleteClick = (topic) => {
@@ -250,11 +263,20 @@ export default function TopicsPage() {
     setDeleteDialogOpen(true);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (topicToDelete) {
-      setTopics(topics.filter(topic => topic.id !== topicToDelete.id));
-      setDeleteDialogOpen(false);
-      setTopicToDelete(null);
+      try {
+        setSaving(true);
+        await apiService.deleteCategory(topicToDelete.id);
+        await loadTopics();
+        setDeleteDialogOpen(false);
+        setTopicToDelete(null);
+        setError(null);
+      } catch (err) {
+        setError(`Failed to delete topic: ${err.message}`);
+      } finally {
+        setSaving(false);
+      }
     }
   };
 
@@ -269,12 +291,23 @@ export default function TopicsPage() {
   };
 
   const isFormValid = Object.keys(formErrors).every(key => !formErrors[key]) && 
-                     formData.name.trim() && 
-                     formData.description.trim() && 
-                     formData.keywords.trim();
+                     formData.name.trim();
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
     <Box>
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <div>
           <Typography variant="h4" gutterBottom>
@@ -358,7 +391,7 @@ export default function TopicsPage() {
             <TableRow>
               <TableCell>Name</TableCell>
               <TableCell>Description</TableCell>
-              <TableCell>Keywords</TableCell>
+              <TableCell>Emoji</TableCell>
               <TableCell>Status</TableCell>
               <TableCell align="right">Actions</TableCell>
             </TableRow>
@@ -383,23 +416,18 @@ export default function TopicsPage() {
                       {topic.name}
                     </Typography>
                   </TableCell>
-                  <TableCell>{topic.description}</TableCell>
                   <TableCell>
-                    <Box display="flex" gap={1} flexWrap="wrap">
-                      {topic.keywords.map((keyword, index) => (
-                        <Chip
-                          key={index}
-                          label={keyword}
-                          size="small"
-                          variant="outlined"
-                        />
-                      ))}
-                    </Box>
+                    {topic.description || 'No description'}
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="h6">
+                      {topic.emoji || '📝'}
+                    </Typography>
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={topic.active ? 'Active' : 'Inactive'}
-                      color={topic.active ? 'success' : 'default'}
+                      label={topic.is_active ? 'Active' : 'Inactive'}
+                      color={topic.is_active ? 'success' : 'default'}
                       size="small"
                     />
                   </TableCell>
@@ -462,39 +490,52 @@ export default function TopicsPage() {
             error={touched.description && !!formErrors.description}
             helperText={touched.description && formErrors.description ? formErrors.description : 'Provide a clear description of what this topic covers'}
             sx={{ mb: 2 }}
-            required
           />
           <TextField
             margin="dense"
-            label="Keywords"
+            label="Emoji"
             fullWidth
             variant="outlined"
-            value={formData.keywords}
-            onChange={(e) => handleFieldChange('keywords', e.target.value)}
-            onBlur={() => handleFieldBlur('keywords')}
-            error={touched.keywords && !!formErrors.keywords}
-            helperText={touched.keywords && formErrors.keywords ? formErrors.keywords : 'Comma-separated keywords for content filtering (e.g., tech, AI, software)'}
+            value={formData.emoji}
+            onChange={(e) => handleFieldChange('emoji', e.target.value)}
+            onBlur={() => handleFieldBlur('emoji')}
+            error={touched.emoji && !!formErrors.emoji}
+            helperText={touched.emoji && formErrors.emoji ? formErrors.emoji : 'Choose an emoji for this topic (e.g., 💻, 🚀, 📈)'}
             sx={{ mb: 2 }}
-            required
+          />
+          <TextField
+            margin="dense"
+            label="AI Prompt"
+            fullWidth
+            multiline
+            rows={3}
+            variant="outlined"
+            value={formData.ai_prompt}
+            onChange={(e) => handleFieldChange('ai_prompt', e.target.value)}
+            onBlur={() => handleFieldBlur('ai_prompt')}
+            error={touched.ai_prompt && !!formErrors.ai_prompt}
+            helperText={touched.ai_prompt && formErrors.ai_prompt ? formErrors.ai_prompt : 'Custom AI prompt for processing posts in this topic (optional)'}
+            sx={{ mb: 2 }}
           />
           <FormControlLabel
             control={
               <Switch 
-                checked={formData.active} 
-                onChange={(e) => handleFieldChange('active', e.target.checked)}
+                checked={formData.is_active} 
+                onChange={(e) => handleFieldChange('is_active', e.target.checked)}
               />
             }
             label="Active"
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleClose}>Cancel</Button>
+          <Button onClick={handleClose} disabled={saving}>Cancel</Button>
           <Button 
             onClick={handleSave} 
             variant="contained"
-            disabled={!isFormValid}
+            disabled={!isFormValid || saving}
+            startIcon={saving ? <CircularProgress size={20} /> : null}
           >
-            {editingTopic ? 'Update' : 'Create'}
+            {saving ? 'Saving...' : (editingTopic ? 'Update' : 'Create')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -523,25 +564,26 @@ export default function TopicsPage() {
                 Topic details:
               </Typography>
               <Typography variant="body2">
-                • Keywords: {topicToDelete.keywords?.join(', ')}
+                • Description: {topicToDelete.description || 'No description'}
               </Typography>
               <Typography variant="body2">
-                • Status: {topicToDelete.active ? 'Active' : 'Inactive'}
+                • Status: {topicToDelete.is_active ? 'Active' : 'Inactive'}
               </Typography>
             </Box>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleDeleteCancel}>
+          <Button onClick={handleDeleteCancel} disabled={saving}>
             Cancel
           </Button>
           <Button 
             onClick={handleDeleteConfirm} 
             variant="contained" 
             color="error"
-            startIcon={<DeleteIcon />}
+            disabled={saving}
+            startIcon={saving ? <CircularProgress size={20} /> : <DeleteIcon />}
           >
-            Delete Topic
+            {saving ? 'Deleting...' : 'Delete Topic'}
           </Button>
         </DialogActions>
       </Dialog>

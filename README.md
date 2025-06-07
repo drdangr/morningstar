@@ -242,6 +242,88 @@ CREATE TABLE digests (
 );
 ```
 
+### Система управления конфигурацией
+
+Проект использует гибридный подход к хранению конфигурации:
+
+#### Архитектура конфигурации
+- **Секретные данные** - остаются только в `.env` файле (API ключи, пароли, токены)
+- **Системные настройки** - могут быть перенесены в БД для управления через админ-панель
+- **ConfigManager** - единый интерфейс для доступа к конфигурации из любого источника
+
+#### Категории настроек
+1. **Критически секретные** (только .env):
+   ```bash
+   TELEGRAM_API_ID=12345
+   TELEGRAM_API_HASH=abcdef...
+   BOT_TOKEN=123456:ABC...
+   OPENAI_API_KEY=sk-...
+   DATABASE_URL=postgresql://...
+   ```
+
+2. **Умеренно чувствительные** (можно в админ-панели):
+   ```bash
+   ADMIN_IDS=123456789,987654321
+   ADMIN_USERNAME=admin_user
+   ```
+
+3. **Системные настройки** (управляются через админ-панель):
+   ```bash
+   CHECK_INTERVAL=30
+   MAX_POSTS_PER_DIGEST=10
+   DIGEST_GENERATION_TIME=09:00
+   AI_MODEL=gpt-4
+   MAX_SUMMARY_LENGTH=150
+   ```
+
+#### Таблица config_settings
+```sql
+CREATE TABLE config_settings (
+    id SERIAL PRIMARY KEY,
+    key VARCHAR(255) UNIQUE NOT NULL,
+    value TEXT,
+    value_type VARCHAR(50) DEFAULT 'string', -- string, integer, boolean, float, json
+    category VARCHAR(100),
+    description TEXT,
+    is_editable BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Пример данных
+INSERT INTO config_settings (key, value, value_type, category, description) VALUES
+('CHECK_INTERVAL', '30', 'integer', 'system', 'Интервал проверки каналов в минутах'),
+('MAX_POSTS_PER_DIGEST', '10', 'integer', 'digest', 'Максимальное количество постов в дайджесте'),
+('DIGEST_GENERATION_TIME', '09:00', 'string', 'digest', 'Время генерации дайджестов'),
+('AI_MODEL', 'gpt-4', 'string', 'ai', 'Модель AI для обработки контента'),
+('MAX_SUMMARY_LENGTH', '150', 'integer', 'ai', 'Максимальная длина summary в символах');
+```
+
+#### ConfigManager класс
+```python
+class ConfigManager:
+    def __init__(self):
+        self.env_vars = self._load_env()
+        self.db_settings = self._load_db_settings()
+    
+    def get(self, key: str, default=None):
+        """Получить значение конфигурации из .env или БД"""
+        # Сначала проверяем .env (приоритет для секретных данных)
+        if key in self.env_vars:
+            return self.env_vars[key]
+        
+        # Затем проверяем БД
+        if key in self.db_settings:
+            return self.db_settings[key]['value']
+        
+        return default
+    
+    def set_db_setting(self, key: str, value: str):
+        """Обновить настройку в БД"""
+        # Реализация обновления в БД
+        pass
+```
+
 ## API и взаимодействие
 
 ### Webhook endpoints (n8n)
