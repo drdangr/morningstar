@@ -4,7 +4,7 @@
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "telegram-digest",
+        "path": "telegram-posts",
         "options": {}
       },
       "name": "Webhook - Receive Posts",

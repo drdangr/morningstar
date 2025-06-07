@@ -16,7 +16,7 @@ from typing import Dict, Any, Union
 load_dotenv()
 
 # Настройка базы данных
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./morningstar.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.dirname(os.path.abspath(__file__))}/morningstar.db")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

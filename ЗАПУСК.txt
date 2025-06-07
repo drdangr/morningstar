@@ -1,0 +1,28 @@
+ЗАПУСК MorningStarBot3 - Простые команды
+==========================================
+
+1. BACKEND (в первом терминале):
+   cd C:\Work\MorningStarBot3\backend
+   python main.py
+
+2. N8N (во втором терминале): 
+   cd C:\Work\MorningStarBot3
+   npx n8n
+
+3. USERBOT (в третьем терминале, когда нужно):
+   cd C:\Work\MorningStarBot3\userbot
+   python src/bot.py
+
+ВАЖНО: В PowerShell НЕ используйте &&
+Правильно: сначала cd, потом Enter, потом вторая команда
+
+4. ADMIN PANEL (в четвертом терминале):
+   cd C:\Work\MorningStarBot3\frontend\admin-panel
+   npm start
+
+Проверка работы:
+- Backend: http://localhost:8000/api/channels
+- N8N: http://localhost:5678
+- Admin Panel: http://localhost:3000
+
+ОСТАНОВКА: Ctrl+C в каждом окне 
