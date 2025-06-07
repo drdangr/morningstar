@@ -1,0 +1,194 @@
+{
+  "name": "Telegram Digest Workflow (Configurable)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-digest",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "webhook-receive-posts"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Загрузка конфигурации из environment variables\nconst config = {\n  maxPostsPerDigest: parseInt(process.env.MAX_POSTS_PER_DIGEST || '20'),\n  minPostLength: parseInt(process.env.MIN_POST_LENGTH || '50'),\n  minViewsThreshold: parseInt(process.env.MIN_VIEWS_THRESHOLD || '100'),\n  collectionHours: parseInt(process.env.COLLECTION_HOURS || '24'),\n  qualityThreshold: parseFloat(process.env.QUALITY_THRESHOLD || '0.7'),\n  enableAI: process.env.ENABLE_AI_PROCESSING === 'true',\n  debugMode: process.env.DEBUG_MODE === 'true'\n};\n\n// Логирование полученных данных\nconst data = $input.all();\nconst payload = data[0].body;\nconst stats = payload.collection_stats || {};\nconst posts = payload.posts || [];\n\nif (config.debugMode) {\n  console.log('🔧 Configuration loaded:', JSON.stringify(config, null, 2));\n  console.log('📥 Received data from userbot:', JSON.stringify(data, null, 2));\n}\n\nconsole.log(`📊 Statistics: ${stats.total_posts} posts from ${stats.successful_channels} channels`);\nconsole.log(`⚙️ Config: max_posts=${config.maxPostsPerDigest}, min_length=${config.minPostLength}`);\n\nreturn {\n  timestamp: payload.timestamp,\n  stats: stats,\n  posts: posts,\n  total_posts: posts.length,\n  config: config\n};"
+      },
+      "name": "Load Config & Process Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "id": "load-config-process"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.total_posts}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "id": "has-posts-check"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Конфигурируемая фильтрация постов\nconst posts = $json.posts || [];\nconst config = $json.config;\n\nconsole.log('🔍 Applying basic filters...');\n\n// Фильтрация по базовым критериям\nconst filteredPosts = posts.filter(post => {\n  const textLength = (post.text || '').length;\n  const views = post.views || 0;\n  \n  // Проверяем минимальную длину текста\n  if (textLength < config.minPostLength) {\n    return false;\n  }\n  \n  // Проверяем минимальное количество просмотров\n  if (views < config.minViewsThreshold) {\n    return false;\n  }\n  \n  // Проверяем временное окно (опционально)\n  const postDate = new Date(post.date);\n  const hoursAgo = (Date.now() - postDate.getTime()) / (1000 * 60 * 60);\n  if (hoursAgo > config.collectionHours) {\n    return false;\n  }\n  \n  return true;\n});\n\nconsole.log(`📊 Basic filtering: ${posts.length} → ${filteredPosts.length} posts`);\n\nreturn {\n  timestamp: $json.timestamp,\n  stats: $json.stats,\n  posts: filteredPosts,\n  total_posts: filteredPosts.length,\n  config: config,\n  filtering_stats: {\n    original: posts.length,\n    after_basic_filter: filteredPosts.length\n  }\n};"
+      },
+      "name": "Basic Filtering",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 200],
+      "id": "basic-filtering"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Группировка постов по каналам с учетом настроек\nconst posts = $json.posts || [];\nconst config = $json.config;\n\nconst groupedByChannel = {};\n\nposts.forEach(post => {\n  const channelKey = post.channel_username || post.channel_id;\n  \n  if (!groupedByChannel[channelKey]) {\n    groupedByChannel[channelKey] = {\n      channel_title: post.channel_title,\n      channel_username: post.channel_username,\n      posts: [],\n      // Здесь будут настройки канала из API (Stage 3)\n      settings: {\n        priority: 'medium',\n        max_posts: Math.ceil(config.maxPostsPerDigest / 3) // Равномерное распределение\n      }\n    };\n  }\n  \n  groupedByChannel[channelKey].posts.push({\n    id: post.id,\n    text: post.text,\n    date: post.date,\n    url: post.url,\n    views: post.views,\n    media_type: post.media_type,\n    categories: post.categories || [] // Для Stage 3\n  });\n});\n\n// Сортировка постов в каждом канале по просмотрам\nObject.keys(groupedByChannel).forEach(channelKey => {\n  const channelData = groupedByChannel[channelKey];\n  channelData.posts.sort((a, b) => (b.views || 0) - (a.views || 0));\n  \n  console.log(`📋 ${channelData.channel_title}: ${channelData.posts.length} posts`);\n});\n\nreturn {\n  timestamp: $json.timestamp,\n  stats: $json.stats,\n  grouped_posts: groupedByChannel,\n  total_channels: Object.keys(groupedByChannel).length,\n  config: config,\n  filtering_stats: $json.filtering_stats\n};"
+      },
+      "name": "Group & Sort by Channels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 200],
+      "id": "group-sort-channels"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Умная обработка с конфигурируемыми параметрами\nconst groupedPosts = $json.grouped_posts || {};\nconst config = $json.config;\n\nconsole.log('🤖 Smart processing with configuration...');\n\nconst processedChannels = {};\nlet totalProcessedPosts = 0;\n\nObject.keys(groupedPosts).forEach(channelKey => {\n  const channelData = groupedPosts[channelKey];\n  const maxPostsForChannel = channelData.settings.max_posts;\n  \n  // Дополнительная фильтрация постов\n  const smartFiltered = channelData.posts.filter(post => {\n    const textLength = (post.text || '').length;\n    \n    // Исключаем слишком короткие посты\n    if (textLength < config.minPostLength) return false;\n    \n    // Исключаем посты только с медиа без текста\n    if (post.media_type !== 'text' && textLength < 20) return false;\n    \n    // В будущем здесь будет AI качественная оценка\n    return true;\n  });\n  \n  // Берем топ постов для канала\n  const selectedPosts = smartFiltered.slice(0, maxPostsForChannel);\n  \n  processedChannels[channelKey] = {\n    ...channelData,\n    posts: selectedPosts,\n    filtered_count: selectedPosts.length,\n    original_count: channelData.posts.length\n  };\n  \n  totalProcessedPosts += selectedPosts.length;\n  \n  console.log(`  ${channelData.channel_title}: ${channelData.posts.length} → ${selectedPosts.length} posts`);\n});\n\n// Проверяем лимит общего количества постов\nif (totalProcessedPosts > config.maxPostsPerDigest) {\n  console.log(`⚠️ Total posts (${totalProcessedPosts}) exceeds limit (${config.maxPostsPerDigest})`);\n  \n  // Пропорциональное сокращение постов по каналам\n  const reductionRatio = config.maxPostsPerDigest / totalProcessedPosts;\n  \n  Object.keys(processedChannels).forEach(channelKey => {\n    const channelData = processedChannels[channelKey];\n    const newLimit = Math.max(1, Math.floor(channelData.posts.length * reductionRatio));\n    channelData.posts = channelData.posts.slice(0, newLimit);\n    channelData.filtered_count = channelData.posts.length;\n  });\n  \n  totalProcessedPosts = Object.values(processedChannels)\n    .reduce((sum, channel) => sum + channel.posts.length, 0);\n    \n  console.log(`✂️ Reduced to ${totalProcessedPosts} posts total`);\n}\n\nreturn {\n  timestamp: $json.timestamp,\n  processed_at: new Date().toISOString(),\n  stats: $json.stats,\n  processed_channels: processedChannels,\n  total_channels: Object.keys(processedChannels).length,\n  total_selected_posts: totalProcessedPosts,\n  config: config,\n  filtering_stats: {\n    ...$json.filtering_stats,\n    after_smart_filter: totalProcessedPosts\n  }\n};"
+      },
+      "name": "Smart Processing",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1340, 200],
+      "id": "smart-processing"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Финальная подготовка дайджеста с конфигурацией\nconst processedChannels = $json.processed_channels || {};\nconst config = $json.config;\n\nconsole.log('📄 Preparing configurable digest...');\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: $json.timestamp,\n  processed_at: $json.processed_at,\n  channels: [],\n  total_posts: $json.total_selected_posts,\n  configuration: {\n    max_posts_limit: config.maxPostsPerDigest,\n    min_post_length: config.minPostLength,\n    min_views_threshold: config.minViewsThreshold,\n    processing_mode: config.enableAI ? 'ai' : 'basic'\n  },\n  summary: {\n    channels_processed: Object.keys(processedChannels).length,\n    original_posts: $json.stats.total_posts,\n    filtered_posts: $json.total_selected_posts,\n    filtering_stages: $json.filtering_stats\n  }\n};\n\nObject.keys(processedChannels).forEach(channelKey => {\n  const channelData = processedChannels[channelKey];\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    posts_count: channelData.posts.length,\n    posts: channelData.posts.map(post => {\n      const preview = (post.text || '').substring(0, 100);\n      return {\n        title: preview + (preview.length === 100 ? '...' : ''),\n        url: post.url,\n        views: post.views,\n        date: post.date,\n        media_type: post.media_type\n      };\n    })\n  });\n});\n\nconsole.log(`✅ Configurable digest ready:`);\nconsole.log(`   Posts: ${digest.total_posts}/${config.maxPostsPerDigest} (limit)`);\nconsole.log(`   Channels: ${digest.channels.length}`);\nconsole.log(`   Processing: ${digest.configuration.processing_mode}`);\n\nreturn digest;"
+      },
+      "name": "Prepare Configurable Digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1560, 200],
+      "id": "prepare-configurable-digest"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Конфигурируемое сохранение в Backend API\nconst digest = $json;\nconst backendUrl = process.env.BACKEND_API_URL || 'http://localhost:8000';\nconst saveEnabled = process.env.ENABLE_BACKEND_SAVE === 'true';\n\nconsole.log('💾 Configurable save to backend...');\nconsole.log('Backend URL:', backendUrl);\nconsole.log('Save enabled:', saveEnabled);\nconsole.log('Digest ID:', digest.id);\nconsole.log('Total posts:', digest.total_posts);\n\nif (saveEnabled) {\n  // TODO: Реальная отправка в Backend API\n  console.log('🚀 Would save to:', `${backendUrl}/api/digests`);\n  console.log('📦 Payload size:', JSON.stringify(digest).length, 'bytes');\n} else {\n  console.log('⏸️ Backend save disabled, logging only');\n}\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  message: `Digest ${saveEnabled ? 'saved' : 'prepared'} with ${digest.total_posts} posts from ${digest.channels.length} channels`,\n  timestamp: new Date().toISOString(),\n  configuration: digest.configuration,\n  backend_url: backendUrl,\n  save_enabled: saveEnabled\n};"
+      },
+      "name": "Save to Backend (Configurable)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1780, 200],
+      "id": "save-configurable"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка случая когда нет постов\nconst config = $json.config || {};\n\nconsole.log('⚠️ No posts received from userbot');\nconsole.log('🔧 Active configuration:', JSON.stringify(config, null, 2));\n\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString(),\n  configuration: config\n};"
+      },
+      "name": "No Posts Handler (Configurable)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 400],
+      "id": "no-posts-configurable"
+    }
+  ],
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Load Config & Process Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config & Process Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Basic Filtering",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler (Configurable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic Filtering": {
+      "main": [
+        [
+          {
+            "node": "Group & Sort by Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group & Sort by Channels": {
+      "main": [
+        [
+          {
+            "node": "Smart Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Smart Processing": {
+      "main": [
+        [
+          {
+            "node": "Prepare Configurable Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Configurable Digest": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend (Configurable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {},
+  "versionId": "2"
+} 

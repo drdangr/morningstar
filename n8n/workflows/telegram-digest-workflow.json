@@ -1,0 +1,197 @@
+{
+  "name": "Telegram Digest Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-digest",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "id": "webhook-receive-posts"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Логирование полученных данных от userbot\nconst data = $input.all();\n\nconsole.log('📥 Received data from userbot:', JSON.stringify(data, null, 2));\n\n// Извлекаем статистику и посты\nconst payload = data[0].body;\nconst stats = payload.collection_stats || {};\nconst posts = payload.posts || [];\n\nconsole.log(`📊 Statistics: ${stats.total_posts} posts from ${stats.successful_channels} channels`);\nconsole.log(`📝 First 3 posts:`);\n\nposts.slice(0, 3).forEach((post, index) => {\n  console.log(`  ${index + 1}. ${post.channel_title}: ${(post.text || 'No text').substring(0, 100)}...`);\n});\n\n// Возвращаем данные для дальнейшей обработки\nreturn {\n  timestamp: payload.timestamp,\n  stats: stats,\n  posts: posts,\n  total_posts: posts.length\n};"
+      },
+      "name": "Process & Log Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ],
+      "id": "process-log-data"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.total_posts}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "id": "has-posts-check"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Группировка постов по каналам\nconst posts = $json.posts || [];\n\nconst groupedByChannel = {};\n\nposts.forEach(post => {\n  const channelKey = post.channel_username || post.channel_id;\n  \n  if (!groupedByChannel[channelKey]) {\n    groupedByChannel[channelKey] = {\n      channel_title: post.channel_title,\n      channel_username: post.channel_username,\n      posts: []\n    };\n  }\n  \n  groupedByChannel[channelKey].posts.push({\n    id: post.id,\n    text: post.text,\n    date: post.date,\n    url: post.url,\n    views: post.views,\n    media_type: post.media_type\n  });\n});\n\nconsole.log('📋 Grouped posts by channels:');\nObject.keys(groupedByChannel).forEach(channel => {\n  const data = groupedByChannel[channel];\n  console.log(`  ${data.channel_title}: ${data.posts.length} posts`);\n});\n\nreturn {\n  timestamp: $json.timestamp,\n  stats: $json.stats,\n  grouped_posts: groupedByChannel,\n  total_channels: Object.keys(groupedByChannel).length\n};"
+      },
+      "name": "Group by Channels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        900,
+        200
+      ],
+      "id": "group-by-channels"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Заглушка для AI обработки постов\nconst groupedPosts = $json.grouped_posts || {};\n\nconsole.log('🤖 AI Processing simulation...');\n\n// Симуляция AI анализа\nconst processedChannels = {};\n\nObject.keys(groupedPosts).forEach(channelKey => {\n  const channelData = groupedPosts[channelKey];\n  \n  // Простая фильтрация по длине текста (симуляция AI)\n  const relevantPosts = channelData.posts.filter(post => {\n    const textLength = (post.text || '').length;\n    return textLength > 50; // Минимальная длина для релевантности\n  });\n  \n  // Сортировка по просмотрам\n  relevantPosts.sort((a, b) => (b.views || 0) - (a.views || 0));\n  \n  processedChannels[channelKey] = {\n    ...channelData,\n    posts: relevantPosts.slice(0, 10), // Топ 10 постов\n    filtered_count: relevantPosts.length,\n    original_count: channelData.posts.length\n  };\n  \n  console.log(`  ${channelData.channel_title}: ${channelData.posts.length} → ${relevantPosts.length} posts`);\n});\n\nreturn {\n  timestamp: $json.timestamp,\n  processed_at: new Date().toISOString(),\n  stats: $json.stats,\n  processed_channels: processedChannels,\n  total_channels: Object.keys(processedChannels).length\n};"
+      },
+      "name": "AI Processing (Mock)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        200
+      ],
+      "id": "ai-processing"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Финальная подготовка дайджеста\nconst processedChannels = $json.processed_channels || {};\n\nconsole.log('📄 Preparing final digest...');\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: $json.timestamp,\n  processed_at: $json.processed_at,\n  channels: [],\n  total_posts: 0,\n  summary: {\n    channels_processed: Object.keys(processedChannels).length,\n    original_posts: $json.stats.total_posts,\n    filtered_posts: 0\n  }\n};\n\nObject.keys(processedChannels).forEach(channelKey => {\n  const channelData = processedChannels[channelKey];\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    posts_count: channelData.posts.length,\n    posts: channelData.posts.map(post => ({\n      title: (post.text || '').substring(0, 100) + '...',\n      url: post.url,\n      views: post.views,\n      date: post.date\n    }))\n  });\n  \n  digest.total_posts += channelData.posts.length;\n  digest.summary.filtered_posts += channelData.filtered_count;\n});\n\nconsole.log(`✅ Digest ready: ${digest.total_posts} posts from ${digest.channels.length} channels`);\n\nreturn digest;"
+      },
+      "name": "Prepare Digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        200
+      ],
+      "id": "prepare-digest"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Отправка обратно в Backend API (или сохранение)\nconst digest = $json;\n\nconsole.log('💾 Saving digest to backend...');\nconsole.log('Digest ID:', digest.id);\nconsole.log('Total posts:', digest.total_posts);\nconsole.log('Channels:', digest.channels.length);\n\n// TODO: Здесь будет реальная отправка в Backend API\n// Пока просто логируем результат\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  message: `Digest saved with ${digest.total_posts} posts from ${digest.channels.length} channels`,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "Save to Backend",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        200
+      ],
+      "id": "save-to-backend"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка случая когда нет постов\nconsole.log('⚠️ No posts received from userbot');\n\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "No Posts Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        900,
+        400
+      ],
+      "id": "no-posts-handler"
+    }
+  ],
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Log Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Group by Channels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Channels": {
+      "main": [
+        [
+          {
+            "node": "AI Processing (Mock)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Processing (Mock)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Digest": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {},
+  "versionId": "1"
+} 

@@ -146,24 +146,43 @@ SESSION_NAME = str(SESSION_DIR / "morningstar")
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
 N8N_WEBHOOK_TOKEN = os.getenv("N8N_WEBHOOK_TOKEN", "")
 
-# Получение каналов из переменных окружения или использование по умолчанию
+# Настройки Backend API
+BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
+
+# Детальная диагностика TEST_MODE
+TEST_MODE_RAW = os.getenv("TEST_MODE", "true")
+print(f"🔍 TEST_MODE диагностика:")
+print(f"   📋 Сырое значение из .env: '{TEST_MODE_RAW}'")
+print(f"   📋 Тип значения: {type(TEST_MODE_RAW)}")
+print(f"   📋 Длина строки: {len(TEST_MODE_RAW)}")
+print(f"   📋 После .lower(): '{TEST_MODE_RAW.lower()}'")
+print(f"   📋 Сравнение с 'true': {TEST_MODE_RAW.lower()} == 'true' = {TEST_MODE_RAW.lower() == 'true'}")
+
+TEST_MODE = TEST_MODE_RAW.lower() == "true"
+print(f"   ✅ Финальное значение TEST_MODE: {TEST_MODE}")
+
+# Получение каналов из переменных окружения (fallback для тестирования)
 CHANNELS_ENV = os.getenv("CHANNELS", "")
 print(f"🔍 CHANNELS_ENV из .env: '{CHANNELS_ENV}'")
 
+FALLBACK_CHANNELS = []
 if CHANNELS_ENV:
-    TEST_CHANNELS = [ch.strip() for ch in CHANNELS_ENV.split(",") if ch.strip()]
+    FALLBACK_CHANNELS = [ch.strip() for ch in CHANNELS_ENV.split(",") if ch.strip()]
 else:
-    TEST_CHANNELS = [
+    FALLBACK_CHANNELS = [
         "@rt_russian",
         "@rian_ru", 
         "@lentachold"
     ]
 
-print(f"📡 Итоговые каналы: {TEST_CHANNELS}")
+print(f"🌐 Backend API: {BACKEND_API_URL}")
+print(f"🧪 Режим тестирования: {TEST_MODE}")
+print(f"📡 Fallback каналы: {FALLBACK_CHANNELS}")
 
 logger.info("📁 Логи сохраняются в: %s", LOGS_DIR)
 logger.info("💾 Сессия сохраняется в: %s", SESSION_DIR)
-logger.info("📡 Настроенные каналы: %s", TEST_CHANNELS)
+logger.info("🌐 Backend API: %s", BACKEND_API_URL)
+logger.info("🧪 Режим тестирования: %s", TEST_MODE)
 logger.info("🔗 N8N Webhook: %s", "✅ Настроен" if N8N_WEBHOOK_URL else "❌ Не настроен")
 
 
@@ -198,6 +217,46 @@ class MorningStarUserbot:
         except Exception as e:
             logger.error("💥 Ошибка при запуске: %s", e)
             raise
+
+    async def get_channels_from_api(self):
+        """Получение списка активных каналов из Backend API"""
+        try:
+            url = f"{BACKEND_API_URL}/api/channels"
+            params = {"active_only": "true"}
+            
+            logger.info("🌐 Запрос каналов из Backend API: %s", url)
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        channels_data = await response.json()
+                        
+                        # Извлекаем username каналов
+                        api_channels = []
+                        for channel in channels_data:
+                            if channel.get('is_active', False):
+                                username = channel.get('username')
+                                if username:
+                                    # Добавляем @ если его нет
+                                    if not username.startswith('@'):
+                                        username = f"@{username}"
+                                    api_channels.append(username)
+                                elif channel.get('telegram_id'):
+                                    # Можно использовать telegram_id если нет username
+                                    api_channels.append(str(channel['telegram_id']))
+                        
+                        logger.info("✅ Получено %d активных каналов из API", len(api_channels))
+                        logger.info("📡 Каналы из API: %s", api_channels)
+                        return api_channels
+                    
+                    else:
+                        logger.warning("⚠️ API вернул статус %d, используем fallback каналы", response.status)
+                        return FALLBACK_CHANNELS
+                        
+        except Exception as e:
+            logger.error("❌ Ошибка при получении каналов из API: %s", e)
+            logger.info("🔄 Используем fallback каналы: %s", FALLBACK_CHANNELS)
+            return FALLBACK_CHANNELS
 
     async def get_channel_info(self, channel_username):
         """Получение информации о канале"""
@@ -320,6 +379,22 @@ class MorningStarUserbot:
 
     async def send_to_n8n(self, data):
         """Отправка данных в n8n webhook"""
+        # В режиме тестирования просто логируем данные
+        if TEST_MODE:
+            logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: данные для n8n:")
+            logger.info("📊 Статистика: %s", data.get('collection_stats', {}))
+            logger.info("📝 Количество постов: %d", len(data.get('posts', [])))
+            
+            # Показываем примеры постов
+            posts = data.get('posts', [])
+            if posts:
+                logger.info("📄 Примеры постов:")
+                for i, post in enumerate(posts[:3]):  # Показываем первые 3 поста
+                    logger.info("  %d. %s: %s", i+1, post.get('channel_title', 'N/A'), 
+                               (post.get('text', '') or 'Без текста')[:100] + '...')
+            
+            return True
+        
         if not N8N_WEBHOOK_URL:
             logger.warning("⚠️ N8N_WEBHOOK_URL не настроен, пропускаю отправку")
             return False
@@ -367,11 +442,17 @@ class MorningStarUserbot:
         successful_channels = 0
         failed_channels = 0
 
-        logger.info("📊 Начинаю сбор постов из %s каналов...", len(TEST_CHANNELS))
+        # Получаем список каналов из API
+        channels = await self.get_channels_from_api()
+        if not channels:
+            logger.warning("⚠️ Нет активных каналов для сбора постов")
+            return []
 
-        for i, channel in enumerate(TEST_CHANNELS):
+        logger.info("📊 Начинаю сбор постов из %s каналов...", len(channels))
+
+        for i, channel in enumerate(channels):
             logger.info(
-                "📺 Обрабатываю канал %s/%s: %s", i + 1, len(TEST_CHANNELS), channel
+                "📺 Обрабатываю канал %s/%s: %s", i + 1, len(channels), channel
             )
 
             try:
@@ -388,7 +469,7 @@ class MorningStarUserbot:
                 logger.error("❌ %s: ошибка - %s", channel, e)
 
             # Задержка между каналами для избежания rate limits
-            if i < len(TEST_CHANNELS) - 1:  # Не ждем после последнего канала
+            if i < len(channels) - 1:  # Не ждем после последнего канала
                 await asyncio.sleep(3)
 
         logger.info(
@@ -405,7 +486,7 @@ class MorningStarUserbot:
                     "total_posts": len(all_posts),
                     "successful_channels": successful_channels,
                     "failed_channels": failed_channels,
-                    "channels_processed": TEST_CHANNELS,
+                    "channels_processed": channels,
                 },
                 "posts": all_posts,
             }

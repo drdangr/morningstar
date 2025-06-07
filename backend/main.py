@@ -10,6 +10,7 @@ from typing import List, Optional
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+from typing import Dict, Any, Union
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -76,8 +77,116 @@ class Channel(Base):
     # Связи
     categories = relationship("Category", secondary=channel_categories, back_populates="channels")
 
+class ConfigSetting(Base):
+    __tablename__ = "config_settings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, nullable=False, index=True)
+    value = Column(Text)
+    value_type = Column(String, default="string")  # string, integer, boolean, float, json
+    category = Column(String)
+    description = Column(Text)
+    is_editable = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
 # Создание таблиц
 Base.metadata.create_all(bind=engine)
+
+# Функция для создания начальных настроек
+def create_default_settings():
+    """Создать начальные настройки системы"""
+    db = SessionLocal()
+    try:
+        # Проверяем, есть ли уже настройки
+        existing_count = db.query(ConfigSetting).count()
+        print(f"Найдено существующих настроек: {existing_count}")
+        if existing_count > 0:
+            print("Настройки уже существуют, пропускаем инициализацию")
+            return  # Настройки уже созданы
+        
+        default_settings = [
+            {
+                "key": "CHECK_INTERVAL",
+                "value": "30",
+                "value_type": "integer",
+                "category": "system",
+                "description": "Интервал проверки каналов в минутах",
+                "is_editable": True
+            },
+            {
+                "key": "MAX_POSTS_PER_DIGEST",
+                "value": "10",
+                "value_type": "integer",
+                "category": "digest",
+                "description": "Максимальное количество постов в дайджесте",
+                "is_editable": True
+            },
+            {
+                "key": "DIGEST_GENERATION_TIME",
+                "value": "09:00",
+                "value_type": "string",
+                "category": "digest",
+                "description": "Время генерации дайджестов",
+                "is_editable": True
+            },
+            {
+                "key": "AI_MODEL",
+                "value": "gpt-4",
+                "value_type": "string",
+                "category": "ai",
+                "description": "Модель AI для обработки контента",
+                "is_editable": True
+            },
+            {
+                "key": "MAX_SUMMARY_LENGTH",
+                "value": "150",
+                "value_type": "integer",
+                "category": "ai",
+                "description": "Максимальная длина summary в символах",
+                "is_editable": True
+            },
+            {
+                "key": "ENABLE_NOTIFICATIONS",
+                "value": "true",
+                "value_type": "boolean",
+                "category": "system",
+                "description": "Включить уведомления администратора",
+                "is_editable": True
+            },
+            {
+                "key": "LOG_LEVEL",
+                "value": "INFO",
+                "value_type": "string",
+                "category": "system",
+                "description": "Уровень логирования (DEBUG, INFO, WARNING, ERROR)",
+                "is_editable": True
+            },
+            {
+                "key": "BACKUP_RETENTION_DAYS",
+                "value": "30",
+                "value_type": "integer",
+                "category": "system",
+                "description": "Количество дней хранения резервных копий",
+                "is_editable": True
+            }
+        ]
+        
+        for setting_data in default_settings:
+            db_setting = ConfigSetting(**setting_data)
+            db.add(db_setting)
+        
+        db.commit()
+        print("Начальные настройки системы созданы")
+        
+    except Exception as e:
+        print(f"Ошибка при создании начальных настроек: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+# Создаем начальные настройки при запуске
+create_default_settings()
 
 # Pydantic модели
 class CategoryBase(BaseModel):
@@ -125,6 +234,84 @@ class ChannelResponse(ChannelBase):
     
     class Config:
         from_attributes = True
+
+class ConfigSettingBase(BaseModel):
+    key: str = Field(..., min_length=1, max_length=255)
+    value: Optional[str] = None
+    value_type: str = Field("string", pattern="^(string|integer|boolean|float|json)$")
+    category: Optional[str] = None
+    description: Optional[str] = None
+    is_editable: bool = True
+
+class ConfigSettingCreate(ConfigSettingBase):
+    pass
+
+class ConfigSettingUpdate(BaseModel):
+    value: Optional[str] = None
+    description: Optional[str] = None
+    is_editable: Optional[bool] = None
+
+class ConfigSettingResponse(ConfigSettingBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ConfigManager класс
+class ConfigManager:
+    def __init__(self, db: Session):
+        self.db = db
+        self.env_vars = dict(os.environ)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Получить значение конфигурации из .env или БД"""
+        # Сначала проверяем .env (приоритет для секретных данных)
+        if key in self.env_vars:
+            return self.env_vars[key]
+        
+        # Затем проверяем БД
+        db_setting = self.db.query(ConfigSetting).filter(ConfigSetting.key == key).first()
+        if db_setting:
+            return self._parse_value(db_setting.value, db_setting.value_type)
+        
+        return default
+    
+    def set_db_setting(self, key: str, value: str, value_type: str = "string") -> ConfigSetting:
+        """Обновить или создать настройку в БД"""
+        db_setting = self.db.query(ConfigSetting).filter(ConfigSetting.key == key).first()
+        if db_setting:
+            db_setting.value = value
+            db_setting.value_type = value_type
+            db_setting.updated_at = func.now()
+        else:
+            db_setting = ConfigSetting(key=key, value=value, value_type=value_type)
+            self.db.add(db_setting)
+        
+        self.db.commit()
+        self.db.refresh(db_setting)
+        return db_setting
+    
+    def _parse_value(self, value: str, value_type: str) -> Any:
+        """Парсинг значения в соответствии с типом"""
+        if value is None:
+            return None
+        
+        try:
+            if value_type == "integer":
+                return int(value)
+            elif value_type == "boolean":
+                return value.lower() in ("true", "1", "yes", "on")
+            elif value_type == "float":
+                return float(value)
+            elif value_type == "json":
+                import json
+                return json.loads(value)
+            else:  # string
+                return value
+        except (ValueError, json.JSONDecodeError):
+            return value  # возвращаем как строку если парсинг не удался
 
 # Зависимости
 def get_db():
@@ -430,6 +617,106 @@ def get_category_channels(category_id: int, db: Session = Depends(get_db)):
             detail="Категория не найдена"
         )
     return category.channels
+
+# API для настроек системы
+@app.get("/api/settings", response_model=List[ConfigSettingResponse])
+def get_settings(
+    category: Optional[str] = None,
+    editable_only: bool = False,
+    db: Session = Depends(get_db)
+):
+    """Получить список настроек с возможностью фильтрации"""
+    query = db.query(ConfigSetting)
+    
+    if category:
+        query = query.filter(ConfigSetting.category == category)
+    
+    if editable_only:
+        query = query.filter(ConfigSetting.is_editable == True)
+    
+    settings = query.order_by(ConfigSetting.category, ConfigSetting.key).all()
+    return settings
+
+@app.get("/api/settings/categories")
+def get_setting_categories():
+    """Получить список всех категорий настроек"""
+    # Временная заглушка с основными категориями
+    return {"categories": ["system", "digest", "ai"]}
+
+@app.post("/api/settings", response_model=ConfigSettingResponse, status_code=status.HTTP_201_CREATED)
+def create_setting(setting: ConfigSettingCreate, db: Session = Depends(get_db)):
+    """Создать новую настройку"""
+    # Проверяем уникальность ключа
+    existing = db.query(ConfigSetting).filter(ConfigSetting.key == setting.key).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Настройка с таким ключом уже существует"
+        )
+    
+    db_setting = ConfigSetting(**setting.model_dump())
+    db.add(db_setting)
+    db.commit()
+    db.refresh(db_setting)
+    return db_setting
+
+@app.get("/api/settings/{setting_id}", response_model=ConfigSettingResponse)
+def get_setting(setting_id: int, db: Session = Depends(get_db)):
+    """Получить настройку по ID"""
+    setting = db.query(ConfigSetting).filter(ConfigSetting.id == setting_id).first()
+    if not setting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Настройка не найдена"
+        )
+    return setting
+
+@app.put("/api/settings/{setting_id}", response_model=ConfigSettingResponse)
+def update_setting(setting_id: int, setting: ConfigSettingUpdate, db: Session = Depends(get_db)):
+    """Обновить настройку"""
+    db_setting = db.query(ConfigSetting).filter(ConfigSetting.id == setting_id).first()
+    if not db_setting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Настройка не найдена"
+        )
+    
+    # Обновляем только предоставленные поля
+    for field, value in setting.model_dump(exclude_unset=True).items():
+        setattr(db_setting, field, value)
+    
+    db.commit()
+    db.refresh(db_setting)
+    return db_setting
+
+@app.delete("/api/settings/{setting_id}")
+def delete_setting(setting_id: int, db: Session = Depends(get_db)):
+    """Удалить настройку"""
+    setting = db.query(ConfigSetting).filter(ConfigSetting.id == setting_id).first()
+    if not setting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Настройка не найдена"
+        )
+    
+    db.delete(setting)
+    db.commit()
+    return {"message": "Настройка успешно удалена"}
+
+# Endpoint для получения конфигурации через ConfigManager
+@app.get("/api/config/{key}")
+def get_config_value(key: str, db: Session = Depends(get_db)):
+    """Получить значение конфигурации через ConfigManager"""
+    config = ConfigManager(db)
+    value = config.get(key)
+    
+    if value is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Конфигурация не найдена"
+        )
+    
+    return {"key": key, "value": value}
 
 if __name__ == "__main__":
     import uvicorn

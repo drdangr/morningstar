@@ -7,6 +7,7 @@ import Layout from './components/Layout';
 import DashboardPage from './pages/DashboardPage';
 import TopicsPage from './pages/TopicsPage';
 import ChannelsPage from './pages/ChannelsPage';
+import SettingsPage from './pages/SettingsPage';
 import './App.css'
 
 const theme = createTheme({
@@ -31,7 +32,7 @@ function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/topics" element={<TopicsPage />} />
             <Route path="/channels" element={<ChannelsPage />} />
-            <Route path="/settings" element={<div><h1>Settings (Coming Soon)</h1></div>} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </Layout>
       </Router>
