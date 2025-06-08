@@ -1,5 +1,5 @@
 {
-  "name": "Telegram Digest Workflow v6.1 (Semantic Analysis)",
+  "name": "Telegram Digest Workflow v6.2 (Fixed OpenAI Parsing)",
   "nodes": [
     {
       "parameters": {
