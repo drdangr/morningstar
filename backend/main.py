@@ -98,12 +98,10 @@ def create_default_settings():
     """Создать начальные настройки системы"""
     db = SessionLocal()
     try:
-        # Проверяем, есть ли уже настройки
-        existing_count = db.query(ConfigSetting).count()
-        print(f"Найдено существующих настроек: {existing_count}")
-        if existing_count > 0:
-            print("Настройки уже существуют, пропускаем инициализацию")
-            return  # Настройки уже созданы
+        # Получаем список существующих ключей настроек
+        existing_keys = {setting.key for setting in db.query(ConfigSetting).all()}
+        print(f"Найдено существующих настроек: {len(existing_keys)}")
+        print(f"Существующие ключи: {existing_keys}")
         
         default_settings = [
             {
@@ -169,15 +167,47 @@ def create_default_settings():
                 "category": "system",
                 "description": "Количество дней хранения резервных копий",
                 "is_editable": True
+            },
+            {
+                "key": "COLLECTION_DEPTH_DAYS",
+                "value": "3",
+                "value_type": "integer",
+                "category": "system",
+                "description": "Сколько дней назад собирать посты из каналов",
+                "is_editable": True
+            },
+            {
+                "key": "MAX_POSTS_PER_CHANNEL",
+                "value": "50",
+                "value_type": "integer",
+                "category": "system",
+                "description": "Максимальное количество постов с одного канала",
+                "is_editable": True
+            },
+            {
+                "key": "MAX_POSTS_FOR_AI_ANALYSIS",
+                "value": "10",
+                "value_type": "integer",
+                "category": "ai",
+                "description": "Максимальное количество постов для AI анализа",
+                "is_editable": True
             }
         ]
         
+        # Добавляем только отсутствующие настройки
+        added_count = 0
         for setting_data in default_settings:
-            db_setting = ConfigSetting(**setting_data)
-            db.add(db_setting)
+            if setting_data["key"] not in existing_keys:
+                db_setting = ConfigSetting(**setting_data)
+                db.add(db_setting)
+                added_count += 1
+                print(f"Добавлена настройка: {setting_data['key']}")
         
-        db.commit()
-        print("Начальные настройки системы созданы")
+        if added_count > 0:
+            db.commit()
+            print(f"Добавлено {added_count} новых настроек")
+        else:
+            print("Все настройки уже существуют")
         
     except Exception as e:
         print(f"Ошибка при создании начальных настроек: {e}")

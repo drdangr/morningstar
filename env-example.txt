@@ -1,0 +1,15 @@
+# N8N Configuration
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/telegram-posts
+# N8N_WEBHOOK_PATH - автоматически извлекается из URL
+
+# Backend API
+BACKEND_API_URL=http://localhost:8000
+
+# Telegram API
+TELEGRAM_API_ID=your_api_id
+TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_SESSION_NAME=userbot_session
+
+# Other settings
+TEST_MODE=false
+FALLBACK_CHANNELS=@durov,@breakingmash 

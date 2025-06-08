@@ -1,0 +1,277 @@
+{
+  "name": "Telegram Digest Workflow v4.3 - Fixed Webhook Body Data",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-posts",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "abc123",
+      "id": "webhook-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Логирование и проверка входящих данных\nconst rawData = $json;\nconst data = rawData.body || rawData; // Извлекаем данные из body если есть\n\nconsole.log('📥 Received data from userbot:');\nconsole.log('🔍 Raw data keys:', Object.keys(rawData));\nconsole.log('🔍 Using data from:', rawData.body ? 'body' : 'root');\nconsole.log('  Timestamp:', data.timestamp);\nconsole.log('  Stats:', JSON.stringify(data.collection_stats, null, 2));\nconsole.log('  Posts exists:', !!data.posts);\nconsole.log('  Posts type:', typeof data.posts);\nconsole.log('  Posts count:', data.posts?.length || 0);\nconsole.log('  Channels metadata keys:', Object.keys(data.channels_metadata || {}));\n\n// Проверяем что есть посты\nif (!data.posts || data.posts.length === 0) {\n    console.log('⚠️ No posts received - posts array is empty or missing');\n    console.log('   Posts value:', data.posts);\n    console.log('   Data keys:', Object.keys(data));\n    return { has_posts: false, message: 'No posts in webhook data' };\n}\n\nconsole.log(`✅ Received ${data.posts.length} posts for processing`);\nreturn { ...data, has_posts: true };"
+      },
+      "name": "Process & Log Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ],
+      "id": "process-log-data"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_posts }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "id": "has-posts-check"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Группировка постов по каналам с сохранением метаданных\nconst data = $json;\nconst posts = data.posts || [];\nconst channelsMetadata = data.channels_metadata || {};\n\nconsole.log('📊 Grouping posts by channels...');\nconsole.log('📋 Available channels metadata:', Object.keys(channelsMetadata));\n\nconst grouped = {};\n\nposts.forEach(post => {\n    const key = post.channel_username || `channel_${post.channel_id}`;\n    \n    if (!grouped[key]) {\n        grouped[key] = {\n            channel_id: post.channel_id,\n            channel_username: post.channel_username,\n            channel_title: post.channel_title,\n            posts: [],\n            categories: channelsMetadata[post.channel_username]?.categories || []\n        };\n    }\n    \n    grouped[key].posts.push(post);\n});\n\nconst result = {\n    timestamp: data.timestamp,\n    stats: data.collection_stats,\n    grouped_posts: grouped,\n    channels_metadata: channelsMetadata\n};\n\nconsole.log(`📈 Grouped into ${Object.keys(grouped).length} channels`);\nObject.keys(grouped).forEach(key => {\n    const channel = grouped[key];\n    console.log(`  📺 ${channel.channel_title}: ${channel.posts.length} posts, ${channel.categories.length} categories`);\n});\n\nreturn result;"
+      },
+      "name": "Group by Channels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        900,
+        200
+      ],
+      "id": "group-by-channels"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Подготовка данных для AI с правильной Many-to-Many архитектурой v4.2\nconsole.log('🤖 Preparing data for OpenAI with Many-to-Many Categories v4.2...');\n\nconst groupedPostsData = $json;\nconst groupedPosts = groupedPostsData.grouped_posts || {};\nconst channelsMetadata = groupedPostsData.channels_metadata || {};\n\nconsole.log(`📋 Found grouped posts for ${Object.keys(groupedPosts).length} channels`);\nconsole.log('📋 Channels metadata available:', Object.keys(channelsMetadata));\n\n// Собираем информацию по Many-to-Many связям для каждого канала\nconst channelCategoryMap = {};\nconst categoryPrompts = {};\nlet allActiveCategories = new Set();\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    const channelUsername = channelData.channel_username;\n    \n    console.log(`📋 Канал: ${channelData.channel_title} (${channelUsername})`);\n    \n    // Используем категории прямо из grouped данных или метаданных\n    const categories = channelData.categories || channelsMetadata[channelUsername]?.categories || [];\n    const activeCategories = categories.filter(cat => cat.is_active);\n    \n    channelCategoryMap[channelUsername] = activeCategories;\n    \n    activeCategories.forEach(category => {\n        allActiveCategories.add(category.name);\n        // Сохраняем индивидуальные AI промпты для каждой категории\n        if (category.ai_prompt) {\n            categoryPrompts[category.name] = category.ai_prompt;\n        }\n        console.log(`  🏷️ Активная категория: ${category.name}`);\n        console.log(`    📝 AI prompt: ${category.ai_prompt?.substring(0, 80)}...`);\n    });\n    \n    if (activeCategories.length === 0) {\n        console.log(`  ⚠️ Нет активных категорий для ${channelUsername}`);\n    }\n});\n\n// Формируем список категорий для OpenAI\nconst categories = Array.from(allActiveCategories);\n\nconsole.log(`✅ Many-to-Many архитектура: Найдено ${categories.length} уникальных активных категорий:`, categories);\nconsole.log('🔗 Связи каналов с категориями:');\nObject.keys(channelCategoryMap).forEach(channel => {\n    const cats = channelCategoryMap[channel].map(c => c.name).join(', ');\n    console.log(`  ${channel} → [${cats}]`);\n});\n\n// Подготавливаем посты для AI анализа\nconst postsForAI = [];\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    \n    channelData.posts.forEach(post => {\n        if (post.text && post.text.length > 50) {\n            postsForAI.push({\n                id: post.id,\n                text: post.text.substring(0, 1000),\n                channel: channelData.channel_title,\n                channel_username: channelData.channel_username,\n                views: post.views || 0,\n                date: post.date,\n                url: post.url,\n                // Добавляем связанные категории канала\n                channel_categories: channelCategoryMap[channelData.channel_username]?.map(c => c.name) || []\n            });\n        }\n    });\n});\n\nconsole.log(`📝 Prepared ${postsForAI.length} posts for AI analysis`);\n\n// Формируем динамический промпт с категориями из связанных каналов\nconst categoriesText = categories.map(cat => {\n    const prompt = categoryPrompts[cat] ? ` - ${categoryPrompts[cat]}` : '';\n    return `- ${cat}${prompt}`;\n}).join('\\n');\n\nconst dynamicPrompt = `Ты анализируешь посты из Telegram каналов и оцениваешь их релевантность по следующим критериям:\n\n1. КАТЕГОРИИ (выбери 1-2 наиболее подходящие из списка):\n${categoriesText}\n\n2. КАЧЕСТВО (оценка 1-10):\n- Информативность и уникальность\n- Актуальность и важность  \n- Качество подачи\n\n3. КРАТКОЕ РЕЗЮМЕ (1-2 предложения)\n\nВозвращай результат в JSON формате:\n[{\"id\": \"post_id\", \"categories\": [\"категория1\"], \"quality_score\": 8, \"summary\": \"краткое резюме\"}]\n\nОБРАТИ ВНИМАНИЕ: Используй только категории из списка выше. Каждый пост должен анализироваться в контексте канала из которого он пришел.`;\n\nconsole.log('🔮 Generated dynamic prompt with Many-to-Many categories');\nconsole.log('📊 Categories with AI prompts:', Object.keys(categoryPrompts).length);\n\n// FALLBACK только если вообще нет категорий\nif (categories.length === 0) {\n    console.log('❌ КРИТИЧЕСКАЯ ОШИБКА: Нет активных категорий, используем fallback');\n    const fallbackPrompt = `Анализируй посты и категоризируй их в общие темы: Технологии, Политика, Бизнес, Наука, Культура, Другое. Оценивай качество 1-10 и создавай краткое резюме.`;\n    \n    return {\n        timestamp: groupedPostsData.timestamp,\n        stats: groupedPostsData.stats,\n        grouped_posts: groupedPosts,\n        posts_for_ai: postsForAI,\n        total_posts_for_ai: postsForAI.length,\n        dynamic_prompt: fallbackPrompt,\n        categories: ['Общие новости'],\n        channel_category_map: {},\n        error: 'No active categories found'\n    };\n}\n\nreturn {\n    timestamp: groupedPostsData.timestamp,\n    stats: groupedPostsData.stats,\n    grouped_posts: groupedPosts,\n    posts_for_ai: postsForAI,\n    total_posts_for_ai: postsForAI.length,\n    dynamic_prompt: dynamicPrompt,\n    categories: categories,\n    channel_category_map: channelCategoryMap,\n    category_prompts: categoryPrompts\n};"
+      },
+      "name": "Prepare for AI",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        200
+      ],
+      "id": "prepare-for-ai"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.dynamic_prompt }}"
+            },
+            {
+              "content": "=Проанализируй эти посты:\n\n{{ JSON.stringify($json.posts_for_ai) }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.3
+        }
+      },
+      "name": "OpenAI API",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        200
+      ],
+      "id": "openai-api",
+      "credentials": {
+        "openAiApi": {
+          "id": "RinkWxXeXs9tiXAB",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка результатов от OpenAI с Many-to-Many архитектурой v4.2\nconsole.log('🤖 Processing OpenAI response with Many-to-Many v4.2...');\n\ntry {\n    // Получаем данные от предыдущих узлов\n    const prepareForAIData = $('Prepare for AI').all()[0]?.json;\n    if (!prepareForAIData) {\n        throw new Error('Could not find data from Prepare for AI node');\n    }\n    \n    const groupedPosts = prepareForAIData.grouped_posts || {};\n    const channelCategoryMap = prepareForAIData.channel_category_map || {};\n    const originalStats = prepareForAIData.stats || {};\n    const originalTimestamp = prepareForAIData.timestamp || '';\n    \n    console.log('✅ Found data from Prepare for AI node');\n    console.log('📊 Channel-Category mapping:', Object.keys(channelCategoryMap));\n    \n    // Извлекаем AI ответ\n    let aiAnalysis = [];\n    \n    if ($json[0]?.message?.content?.posts) {\n        aiAnalysis = $json[0].message.content.posts;\n        console.log('✅ Found AI response in $json[0].message.content.posts (array format)');\n    } else if ($json.message?.content && typeof $json.message.content === 'string') {\n        try {\n            aiAnalysis = JSON.parse($json.message.content);\n            console.log('✅ Found AI response in message.content (string format)');\n        } catch (error) {\n            console.log('⚠️ Failed to parse message.content as JSON:', error.message);\n        }\n    } else if (Array.isArray($json)) {\n        aiAnalysis = $json;\n        console.log('✅ Found AI response as direct array');\n    } else {\n        console.log('❌ Could not find AI response in expected fields');\n        console.log('Available fields:', Object.keys($json));\n    }\n    \n    console.log(`📝 AI Analysis extracted: ${aiAnalysis.length} items`);\n    \n    // Применяем AI анализ к постам с учетом Many-to-Many связей\n    const processedChannels = {};\n    \n    Object.keys(groupedPosts).forEach(channelKey => {\n        const channelData = groupedPosts[channelKey];\n        const channelCategories = channelCategoryMap[channelData.channel_username] || [];\n        \n        console.log(`🔄 Processing channel: ${channelData.channel_title}`);\n        console.log(`  🏷️ Channel categories: ${channelCategories.map(c => c.name).join(', ')}`);\n        \n        const processedPosts = channelData.posts.map(post => {\n            // Ищем AI анализ для этого поста\n            const analysis = aiAnalysis.find(item => \n                item.id == post.id || \n                (item.text && post.text && item.text.includes(post.text.substring(0, 50)))\n            );\n            \n            const result = {\n                ...post,\n                ai_categories: analysis?.categories || ['Другое'],\n                ai_quality_score: analysis?.quality_score || 5,\n                ai_summary: analysis?.summary || post.text?.substring(0, 150) + '...',\n                processed_by_ai: !!analysis,\n                channel_categories: channelCategories.map(c => c.name), // Добавляем связанные категории канала\n                // Проверяем соответствие AI категорий и категорий канала\n                category_match: analysis?.categories?.some(aiCat => \n                    channelCategories.some(chanCat => chanCat.name === aiCat)\n                ) || false\n            };\n            \n            console.log(`  📝 Post ${post.id}: quality=${result.ai_quality_score}, AI cats=${JSON.stringify(result.ai_categories)}, match=${result.category_match}`);\n            return result;\n        });\n        \n        // Фильтруем по качеству (≥6) И соответствию категориям канала\n        const highQualityPosts = processedPosts.filter(post => {\n            const qualityFilter = post.ai_quality_score >= 6;\n            const categoryFilter = post.category_match || channelCategories.length === 0; // Если нет категорий канала, пропускаем фильтр\n            return qualityFilter && categoryFilter;\n        });\n        \n        // Сортируем по качеству и просмотрам\n        highQualityPosts.sort((a, b) => {\n            const scoreA = a.ai_quality_score * 10 + Math.log(a.views || 1);\n            const scoreB = b.ai_quality_score * 10 + Math.log(b.views || 1);\n            return scoreB - scoreA;\n        });\n        \n        processedChannels[channelKey] = {\n            ...channelData,\n            posts: highQualityPosts.slice(0, 8), // Топ 8\n            all_processed_posts: processedPosts.length,\n            high_quality_posts: highQualityPosts.length,\n            category_matched_posts: processedPosts.filter(p => p.category_match).length,\n            ai_processed: true,\n            channel_categories: channelCategories.map(c => c.name)\n        };\n        \n        console.log(`📊 ${channelData.channel_title}: ${processedPosts.length} total → ${highQualityPosts.length} high quality → ${Math.min(8, highQualityPosts.length)} final`);\n    });\n    \n    const result = {\n        timestamp: originalTimestamp || new Date().toISOString(),\n        processed_at: new Date().toISOString(),\n        stats: originalStats,\n        processed_channels: processedChannels,\n        total_channels: Object.keys(processedChannels).length,\n        ai_analysis_stats: {\n            total_analyzed: aiAnalysis.length,\n            avg_quality: aiAnalysis.reduce((sum, item) => sum + (item.quality_score || 0), 0) / Math.max(aiAnalysis.length, 1),\n            category_matches: Object.values(processedChannels).reduce((sum, ch) => sum + ch.category_matched_posts, 0)\n        },\n        many_to_many_applied: true\n    };\n    \n    console.log('🔍 FINAL RESULT with Many-to-Many:', JSON.stringify(result, null, 2));\n    return result;\n    \n} catch (error) {\n    console.log('❌ Error in Process AI Results:', error.message);\n    return {\n        error: 'Failed to process AI results: ' + error.message,\n        timestamp: new Date().toISOString(),\n        processed_channels: {},\n        total_channels: 0\n    };\n}"
+      },
+      "name": "Process AI Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        200
+      ],
+      "id": "process-ai-results"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Финальная подготовка дайджеста с Many-to-Many информацией\nconst processedChannels = $json.processed_channels || {};\n\nconsole.log('📄 Preparing final digest with Many-to-Many categories...');\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: $json.timestamp,\n  processed_at: $json.processed_at,\n  channels: [],\n  total_posts: 0,\n  many_to_many_applied: $json.many_to_many_applied || false,\n  summary: {\n    channels_processed: Object.keys(processedChannels).length,\n    original_posts: $json.stats?.total_posts || 0,\n    filtered_posts: 0,\n    category_matches: $json.ai_analysis_stats?.category_matches || 0\n  }\n};\n\nObject.keys(processedChannels).forEach(channelKey => {\n  const channelData = processedChannels[channelKey];\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    categories: channelData.channel_categories || [],\n    posts_count: channelData.posts.length,\n    category_matched_posts: channelData.category_matched_posts || 0,\n    posts: channelData.posts.map(post => ({\n      title: (post.text || '').substring(0, 100) + '...',\n      url: post.url,\n      views: post.views,\n      date: post.date,\n      ai_categories: post.ai_categories || [],\n      ai_quality_score: post.ai_quality_score,\n      category_match: post.category_match,\n      summary: post.ai_summary\n    }))\n  });\n  \n  digest.total_posts += channelData.posts.length;\n});\n\nconsole.log(`✅ Digest ready with Many-to-Many: ${digest.total_posts} posts from ${digest.channels.length} channels`);\nconsole.log(`📊 Category matches: ${digest.summary.category_matches}`);\n\nreturn digest;"
+      },
+      "name": "Prepare Digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        200
+      ],
+      "id": "prepare-digest"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Сохранение дайджеста с Many-to-Many информацией\nconst digest = $json;\n\nconsole.log('💾 Saving digest with Many-to-Many categories...');\nconsole.log('Digest ID:', digest.id);\nconsole.log('Total posts:', digest.total_posts);\nconsole.log('Channels:', digest.channels.length);\nconsole.log('Many-to-Many applied:', digest.many_to_many_applied);\nconsole.log('Category matches:', digest.summary.category_matches);\n\n// TODO: Здесь будет реальная отправка в Backend API для сохранения\n// С информацией о связях каналов и категорий\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  message: `Many-to-Many digest saved: ${digest.total_posts} posts, ${digest.summary.category_matches} category matches`,\n  timestamp: new Date().toISOString(),\n  many_to_many_stats: {\n    channels_with_categories: digest.channels.filter(ch => ch.categories.length > 0).length,\n    total_category_matches: digest.summary.category_matches\n  }\n};"
+      },
+      "name": "Save to Backend",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        200
+      ],
+      "id": "save-to-backend"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка случая когда нет постов\nconsole.log('⚠️ No posts received from userbot');\n\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "No Posts Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        680,
+        500
+      ],
+      "id": "no-posts-handler"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Log Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Group by Channels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Channels": {
+      "main": [
+        [
+          {
+            "node": "Prepare for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare for AI": {
+      "main": [
+        [
+          {
+            "node": "OpenAI API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI API": {
+      "main": [
+        [
+          {
+            "node": "Process AI Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process AI Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Digest": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "createdAt": "2025-12-08T08:00:00.000Z",
+  "updatedAt": "2025-12-08T08:00:00.000Z",
+  "settings": {},
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "active": false,
+  "id": "telegram-digest-workflow-v4.2"
+} 

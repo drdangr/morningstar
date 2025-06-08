@@ -1,0 +1,277 @@
+{
+  "name": "Telegram Digest Workflow v6.0",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-posts",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        200
+      ],
+      "id": "webhook-receive-posts",
+      "webhookId": "telegram-posts-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение и логирование данных от userbot с исправлением webhook структуры\nconst rawData = $json;\nconsole.log('📥 Raw webhook data received:', JSON.stringify(rawData, null, 2));\n\n// Исправляем структуру данных webhook (body vs direct)\nconst data = rawData.body || rawData;\nconsole.log('📊 Processing data structure...');\n\nif (!data) {\n    console.log('❌ No data found in webhook');\n    return { error: 'No data received', timestamp: new Date().toISOString() };\n}\n\nconst posts = data.posts || [];\nconst channelsMetadata = data.channels_metadata || {};\nconst collectionStats = data.collection_stats || {};\n\nconsole.log(`📈 Received: ${posts.length} posts from ${Object.keys(channelsMetadata).length} channels`);\nconsole.log('📋 Collection stats:', collectionStats);\n\nif (posts.length === 0) {\n    console.log('⚠️ No posts to process');\n    return {\n        posts: [],\n        channels_metadata: channelsMetadata,\n        collection_stats: collectionStats,\n        timestamp: new Date().toISOString(),\n        has_posts: false\n    };\n}\n\nconsole.log('✅ Posts processed successfully');\nreturn {\n    posts: posts,\n    channels_metadata: channelsMetadata,\n    collection_stats: collectionStats,\n    timestamp: new Date().toISOString(),\n    has_posts: true\n};"
+      },
+      "name": "Process & Log Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        460,
+        200
+      ],
+      "id": "process-log-data"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_posts }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        200
+      ],
+      "id": "has-posts-check"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Группировка постов по каналам с сохранением метаданных\nconst data = $json;\nconst posts = data.posts || [];\nconst channelsMetadata = data.channels_metadata || {};\n\nconsole.log('📊 Grouping posts by channels...');\nconsole.log('📋 Available channels metadata:', Object.keys(channelsMetadata));\n\nconst grouped = {};\n\nposts.forEach(post => {\n    const key = post.channel_username || `channel_${post.channel_id}`;\n    \n    if (!grouped[key]) {\n        grouped[key] = {\n            channel_id: post.channel_id,\n            channel_username: post.channel_username,\n            channel_title: post.channel_title,\n            posts: [],\n            categories: channelsMetadata[post.channel_username]?.categories || []\n        };\n    }\n    \n    grouped[key].posts.push(post);\n});\n\nconst result = {\n    timestamp: data.timestamp,\n    stats: data.collection_stats,\n    grouped_posts: grouped,\n    channels_metadata: channelsMetadata\n};\n\nconsole.log(`📈 Grouped into ${Object.keys(grouped).length} channels`);\nObject.keys(grouped).forEach(key => {\n    const channel = grouped[key];\n    console.log(`  📺 ${channel.channel_title}: ${channel.posts.length} posts, ${channel.categories.length} categories`);\n});\n\nreturn result;"
+      },
+      "name": "Group by Channels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        900,
+        200
+      ],
+      "id": "group-by-channels"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Подготовка данных для AI с Binary Relevance + Метрики подходом v6.0\nconsole.log('🤖 Preparing data for OpenAI with Binary Relevance + Metrics v6.0...');\n\nconst groupedPostsData = $json;\nconst groupedPosts = groupedPostsData.grouped_posts || {};\nconst channelsMetadata = groupedPostsData.channels_metadata || {};\n\nconsole.log(`📋 Found grouped posts for ${Object.keys(groupedPosts).length} channels`);\nconsole.log('📋 Channels metadata available:', Object.keys(channelsMetadata));\n\n// Собираем информацию по Many-to-Many связям для каждого канала\nconst channelCategoryMap = {};\nconst categoryPrompts = {};\nlet allActiveCategories = new Set();\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    const channelUsername = channelData.channel_username;\n    \n    console.log(`📋 Канал: ${channelData.channel_title} (${channelUsername})`);\n    \n    // Используем категории прямо из grouped данных или метаданных\n    const categories = channelData.categories || channelsMetadata[channelUsername]?.categories || [];\n    const activeCategories = categories.filter(cat => cat.is_active);\n    \n    channelCategoryMap[channelUsername] = activeCategories;\n    \n    activeCategories.forEach(category => {\n        allActiveCategories.add(category.name);\n        // Сохраняем индивидуальные AI промпты для каждой категории\n        if (category.ai_prompt) {\n            categoryPrompts[category.name] = category.ai_prompt;\n        }\n        console.log(`  🏷️ Активная категория: ${category.name}`);\n        console.log(`    📝 AI prompt: ${category.ai_prompt?.substring(0, 80)}...`);\n    });\n    \n    if (activeCategories.length === 0) {\n        console.log(`  ⚠️ Нет активных категорий для ${channelUsername}`);\n    }\n});\n\n// Формируем список категорий для OpenAI\nconst categories = Array.from(allActiveCategories);\n\nconsole.log(`✅ Binary Relevance + Metrics v6.0: Найдено ${categories.length} уникальных активных категорий:`, categories);\nconsole.log('🔗 Связи каналов с категориями:');\nObject.keys(channelCategoryMap).forEach(channel => {\n    const cats = channelCategoryMap[channel].map(c => c.name).join(', ');\n    console.log(`  ${channel} → [${cats}]`);\n});\n\n// Подготавливаем посты для AI анализа\nconst postsForAI = [];\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    \n    channelData.posts.forEach(post => {\n        if (post.text && post.text.length > 50) {\n            postsForAI.push({\n                id: post.id,\n                text: post.text.substring(0, 1000),\n                channel: channelData.channel_title,\n                channel_username: channelData.channel_username,\n                views: post.views || 0,\n                date: post.date,\n                url: post.url,\n                // Добавляем связанные категории канала\n                channel_categories: channelCategoryMap[channelData.channel_username]?.map(c => c.name) || []\n            });\n        }\n    });\n});\n\nconsole.log(`📝 Prepared ${postsForAI.length} posts for AI analysis`);\n\n// Формируем список тем для Binary Relevance анализа (через запятые)\nconst topicsDescription = categories.map(cat => {\n    const prompt = categoryPrompts[cat] || cat;\n    return `${cat} (${prompt})`;\n}).join(', ');\n\n// Новый промпт с Binary Relevance + Метрики v6.0\nconst dynamicPrompt = `Отфильтруй посты по теме: ${topicsDescription}.\\n\\nПравило: summary = \\\"NULL\\\" если текст поста НЕ имеет отношения НИ К ОДНОЙ из перечисленных тем.\\n\\nДля каждого поста:\\n\\nЕСЛИ пост имеет отношение к теме - дай краткое резюме + метрики 1-10.\\nЕСЛИ пост НЕ имеет отношения к темам - напиши \\\"NULL\\\" + метрики 0.\\n\\nВозвращай JSON:\\n{\\\"results\\\": [{\\\"id\\\": \\\"post_id\\\", \\\"summary\\\": \\\"резюме или NULL\\\", \\\"importance\\\": 8, \\\"urgency\\\": 6, \\\"significance\\\": 7}]}\\n\\nАнализируй по СМЫСЛУ, а не только по ключевым словам. Учитывай контекст и семантику.`;\n\nconsole.log('🔮 Generated Binary Relevance + Metrics prompt v6.1 (semantic analysis)');\nconsole.log('📊 Categories for analysis:', categories);\nconsole.log('📊 Categories with AI prompts:', Object.keys(categoryPrompts).length);\n\n// FALLBACK только если вообще нет категорий\nif (categories.length === 0) {\n    console.log('❌ КРИТИЧЕСКАЯ ОШИБКА: Нет активных категорий, используем fallback');\n    const fallbackPrompt = `Анализируй посты и определяй их релевантность общим новостным темам. Для релевантных постов давай краткое резюме и метрики важности/срочности/значимости, для нерелевантных - \\\"NULL\\\".`;\n    \n    return {\n        timestamp: groupedPostsData.timestamp,\n        stats: groupedPostsData.stats,\n        grouped_posts: groupedPosts,\n        posts_for_ai: postsForAI,\n        total_posts_for_ai: postsForAI.length,\n        dynamic_prompt: fallbackPrompt,\n        categories: ['Общие новости'],\n        channel_category_map: {},\n        error: 'No active categories found'\n    };\n}\n\nreturn {\n    timestamp: groupedPostsData.timestamp,\n    stats: groupedPostsData.stats,\n    grouped_posts: groupedPosts,\n    posts_for_ai: postsForAI,\n    total_posts_for_ai: postsForAI.length,\n    dynamic_prompt: dynamicPrompt,\n    categories: categories,\n    channel_category_map: channelCategoryMap,\n    category_prompts: categoryPrompts,\n    binary_relevance: true,\n    with_metrics: true\n};"
+      },
+      "name": "Prepare for AI",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        200
+      ],
+      "id": "prepare-for-ai"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.dynamic_prompt }}"
+            },
+            {
+              "content": "=Проанализируй эти посты:\\n\\n{{ JSON.stringify($json.posts_for_ai) }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.3
+        }
+      },
+      "name": "OpenAI API",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        200
+      ],
+      "id": "openai-api",
+      "credentials": {
+        "openAiApi": {
+          "id": "RinkWxXeXs9tiXAB",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка результатов от OpenAI с Binary Relevance + Метрики подходом v6.0\nconsole.log('🤖 Processing OpenAI response with Binary Relevance + Metrics v6.0...');\n\ntry {\n    // Получаем данные от предыдущих узлов\n    const prepareForAIData = $('Prepare for AI').all()[0]?.json;\n    if (!prepareForAIData) {\n        throw new Error('Could not find data from Prepare for AI node');\n    }\n    \n    const groupedPosts = prepareForAIData.grouped_posts || {};\n    const channelCategoryMap = prepareForAIData.channel_category_map || {};\n    const originalStats = prepareForAIData.stats || {};\n    const originalTimestamp = prepareForAIData.timestamp || '';\n    \n    console.log('✅ Found data from Prepare for AI node');\n    console.log('📊 Channel-Category mapping:', Object.keys(channelCategoryMap));\n    \n    // Извлекаем AI ответ\n    let aiAnalysis = [];\n    \n    if ($json[0]?.message?.content?.results) {\n        aiAnalysis = $json[0].message.content.results;\n        console.log('✅ Found AI response in $json[0].message.content.results (new format)');\n    } else if ($json[0]?.message?.content?.posts) {\n        aiAnalysis = $json[0].message.content.posts;\n        console.log('✅ Found AI response in $json[0].message.content.posts (array format)');\n    } else if ($json.message?.content && typeof $json.message.content === 'string') {\n        try {\n            aiAnalysis = JSON.parse($json.message.content);\n            console.log('✅ Found AI response in message.content (string format)');\n        } catch (error) {\n            console.log('⚠️ Failed to parse message.content as JSON:', error.message);\n        }\n    } else if (Array.isArray($json)) {\n        aiAnalysis = $json;\n        console.log('✅ Found AI response as direct array');\n    } else {\n        console.log('❌ Could not find AI response in expected fields');\n        console.log('🔍 Available $json structure:', JSON.stringify($json, null, 2));\n    }\n    \n    console.log(`📝 AI Analysis extracted: ${aiAnalysis.length} items`);\n    \n    // Применяем AI анализ к постам с Binary Relevance подходом\n    const processedChannels = {};\n    \n    Object.keys(groupedPosts).forEach(channelKey => {\n        const channelData = groupedPosts[channelKey];\n        const channelCategories = channelCategoryMap[channelData.channel_username] || [];\n        \n        console.log(`🔄 Processing channel: ${channelData.channel_title}`);\n        console.log(`  🏷️ Channel categories: ${channelCategories.map(c => c.name).join(', ')}`);\n        \n        const processedPosts = channelData.posts.map(post => {\n            // Ищем AI анализ для этого поста\n            const analysis = aiAnalysis.find(item => \n                item.id == post.id || \n                (item.text && post.text && item.text.includes(post.text.substring(0, 50)))\n            );\n            \n            // Binary Relevance v6.0: просто проверяем summary !== \\\"NULL\\\"\n            const isRelevant = analysis && analysis.summary && analysis.summary !== 'NULL';\n            \n            const result = {\n                ...post,\n                ai_summary: analysis?.summary || post.text?.substring(0, 150) + '...',\n                ai_importance: analysis?.importance || 0,\n                ai_urgency: analysis?.urgency || 0,\n                ai_significance: analysis?.significance || 0,\n                processed_by_ai: !!analysis,\n                channel_categories: channelCategories.map(c => c.name),\n                // Binary Relevance: релевантен если summary не NULL\n                is_relevant: isRelevant,\n                parsing_method: 'binary_relevance_v6.0'\n            };\n            \n            console.log(`  📝 Post ${post.id}: relevant=${isRelevant}, importance=${result.ai_importance}, urgency=${result.ai_urgency}, significance=${result.ai_significance}`);\n            return result;\n        });\n        \n        // Фильтруем только по релевантности (summary !== NULL)\n        const relevantPosts = processedPosts.filter(post => {\n            if (!post.is_relevant) {\n                console.log(`  ⚠️ Пост ${post.id} отфильтрован: не релевантен (summary=NULL)`);\n                return false;\n            }\n            return true;\n        });\n        \n        // Умная сортировка по метрикам + views\n        relevantPosts.sort((a, b) => {\n            const scoreA = a.ai_importance * 3 + a.ai_urgency * 2 + a.ai_significance * 2 + Math.log(a.views || 1);\n            const scoreB = b.ai_importance * 3 + b.ai_urgency * 2 + b.ai_significance * 2 + Math.log(b.views || 1);\n            return scoreB - scoreA;\n        });\n        \n        processedChannels[channelKey] = {\n            ...channelData,\n            posts: relevantPosts.slice(0, 8), // Топ 8\n            all_processed_posts: processedPosts.length,\n            relevant_posts: relevantPosts.length,\n            ai_processed: true,\n            channel_categories: channelCategories.map(c => c.name)\n        };\n        \n        console.log(`📊 ${channelData.channel_title}: ${processedPosts.length} total → ${relevantPosts.length} relevant → ${Math.min(8, relevantPosts.length)} final`);\n    });\n    \n    const result = {\n        timestamp: originalTimestamp || new Date().toISOString(),\n        processed_at: new Date().toISOString(),\n        stats: originalStats,\n        processed_channels: processedChannels,\n        total_channels: Object.keys(processedChannels).length,\n        ai_analysis_stats: {\n            total_analyzed: aiAnalysis.length,\n            avg_importance: aiAnalysis.reduce((sum, item) => sum + (item.importance || 0), 0) / Math.max(aiAnalysis.length, 1),\n            avg_urgency: aiAnalysis.reduce((sum, item) => sum + (item.urgency || 0), 0) / Math.max(aiAnalysis.length, 1),\n            avg_significance: aiAnalysis.reduce((sum, item) => sum + (item.significance || 0), 0) / Math.max(aiAnalysis.length, 1),\n            relevant_posts: Object.values(processedChannels).reduce((sum, ch) => sum + ch.relevant_posts, 0)\n        },\n        many_to_many_applied: true,\n        relevance_parsing_version: 'v6.0_binary_relevance_with_metrics'\n    };\n    \n    console.log('🔍 FINAL RESULT with Binary Relevance + Metrics v6.0:', JSON.stringify(result, null, 2));\n    return result;\n    \n} catch (error) {\n    console.log('❌ Error in Process AI Results:', error.message);\n    return {\n        error: 'Failed to process AI results: ' + error.message,\n        timestamp: new Date().toISOString(),\n        processed_channels: {},\n        total_channels: 0\n    };\n}"
+      },
+      "name": "Process AI Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        200
+      ],
+      "id": "process-ai-results"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Финальная подготовка дайджеста с Binary Relevance + Metrics информацией\nconst processedChannels = $json.processed_channels || {};\n\nconsole.log('📄 Preparing final digest with Binary Relevance + Metrics...');\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: $json.timestamp,\n  processed_at: $json.processed_at,\n  channels: [],\n  total_posts: 0,\n  binary_relevance_applied: true,\n  with_metrics: true,\n  summary: {\n    channels_processed: Object.keys(processedChannels).length,\n    original_posts: $json.stats?.total_posts || 0,\n    relevant_posts: $json.ai_analysis_stats?.relevant_posts || 0,\n    avg_importance: $json.ai_analysis_stats?.avg_importance || 0,\n    avg_urgency: $json.ai_analysis_stats?.avg_urgency || 0,\n    avg_significance: $json.ai_analysis_stats?.avg_significance || 0\n  }\n};\n\nObject.keys(processedChannels).forEach(channelKey => {\n  const channelData = processedChannels[channelKey];\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    categories: channelData.channel_categories || [],\n    posts_count: channelData.posts.length,\n    relevant_posts: channelData.relevant_posts || 0,\n    posts: channelData.posts.map(post => ({\n      title: (post.text || '').substring(0, 100) + '...',\n      url: post.url,\n      views: post.views,\n      date: post.date,\n      ai_importance: post.ai_importance,\n      ai_urgency: post.ai_urgency,\n      ai_significance: post.ai_significance,\n      summary: post.ai_summary\n    }))\n  });\n  \n  digest.total_posts += channelData.posts.length;\n});\n\nconsole.log(`✅ Digest ready with Binary Relevance + Metrics: ${digest.total_posts} posts from ${digest.channels.length} channels`);\nconsole.log(`📊 Relevant posts: ${digest.summary.relevant_posts}`);\nconsole.log(`📈 Avg metrics - Importance: ${digest.summary.avg_importance.toFixed(1)}, Urgency: ${digest.summary.avg_urgency.toFixed(1)}, Significance: ${digest.summary.avg_significance.toFixed(1)}`);\n\nreturn digest;"
+      },
+      "name": "Prepare Digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        200
+      ],
+      "id": "prepare-digest"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Сохранение дайджеста с Binary Relevance + Metrics информацией\nconst digest = $json;\n\nconsole.log('💾 Saving digest with Binary Relevance + Metrics...');\nconsole.log('Digest ID:', digest.id);\nconsole.log('Total posts:', digest.total_posts);\nconsole.log('Channels:', digest.channels.length);\nconsole.log('Binary Relevance applied:', digest.binary_relevance_applied);\nconsole.log('With Metrics:', digest.with_metrics);\nconsole.log('Relevant posts:', digest.summary.relevant_posts);\n\n// TODO: Здесь будет реальная отправка в Backend API для сохранения\n// С информацией о связях каналов и категорий + метриках\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  message: `Binary Relevance + Metrics digest saved: ${digest.total_posts} posts, ${digest.summary.relevant_posts} relevant`,\n  timestamp: new Date().toISOString(),\n  metrics_stats: {\n    avg_importance: digest.summary.avg_importance,\n    avg_urgency: digest.summary.avg_urgency,\n    avg_significance: digest.summary.avg_significance,\n    channels_with_categories: digest.channels.filter(ch => ch.categories.length > 0).length\n  }\n};"
+      },
+      "name": "Save to Backend",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        200
+      ],
+      "id": "save-to-backend"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка случая когда нет постов\nconsole.log('⚠️ No posts received from userbot');\n\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "No Posts Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        680,
+        500
+      ],
+      "id": "no-posts-handler"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Log Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Group by Channels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Channels": {
+      "main": [
+        [
+          {
+            "node": "Prepare for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare for AI": {
+      "main": [
+        [
+          {
+            "node": "OpenAI API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI API": {
+      "main": [
+        [
+          {
+            "node": "Process AI Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process AI Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Digest": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "createdAt": "2025-12-08T08:00:00.000Z",
+  "updatedAt": "2025-12-08T08:00:00.000Z",
+  "settings": {},
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "active": false,
+  "id": "telegram-digest-workflow-v6.0"
+} 

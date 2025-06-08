@@ -39,7 +39,22 @@ def find_and_load_env():
         
         if abs_path.exists():
             print(f"✅ Найден .env файл: {abs_path}")
-            load_dotenv(abs_path)
+            
+            # Проверяем содержимое .env файла для N8N_WEBHOOK_URL
+            try:
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    for line in content.split('\n'):
+                        if line.strip().startswith('N8N_WEBHOOK_URL='):
+                            print(f"📄 В .env файле найдено: {line.strip()}")
+                            break
+                    else:
+                        print("📄 N8N_WEBHOOK_URL не найден в .env файле")
+            except Exception as e:
+                print(f"❌ Ошибка чтения .env файла: {e}")
+            
+            load_dotenv(abs_path, override=True)  # Добавляем override=True
+            print(f"🔄 .env файл загружен с override=True")
             
             # Проверяем что переменные загрузились
             test_vars = ['API_ID', 'API_HASH', 'PHONE']
@@ -143,8 +158,18 @@ except ValueError as e:
 
 # Пути с адаптацией под среду
 SESSION_NAME = str(SESSION_DIR / "morningstar")
-N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
+
+# Детальная диагностика N8N_WEBHOOK_URL
+print("🔍 Диагностика N8N_WEBHOOK_URL:")
+print(f"   📋 Значение из os.getenv(): '{os.getenv('N8N_WEBHOOK_URL', 'НЕТ')}'")
+print(f"   📋 Есть ли в os.environ: {'N8N_WEBHOOK_URL' in os.environ}")
+if 'N8N_WEBHOOK_URL' in os.environ:
+    print(f"   📋 Значение из os.environ: '{os.environ['N8N_WEBHOOK_URL']}'")
+
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/telegram-posts")
 N8N_WEBHOOK_TOKEN = os.getenv("N8N_WEBHOOK_TOKEN", "")
+
+print(f"   ✅ Финальное значение N8N_WEBHOOK_URL: '{N8N_WEBHOOK_URL}'")
 
 # Настройки Backend API
 BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
@@ -178,12 +203,14 @@ else:
 print(f"🌐 Backend API: {BACKEND_API_URL}")
 print(f"🧪 Режим тестирования: {TEST_MODE}")
 print(f"📡 Fallback каналы: {FALLBACK_CHANNELS}")
+print(f"🔗 N8N Webhook URL: {N8N_WEBHOOK_URL}")
 
 logger.info("📁 Логи сохраняются в: %s", LOGS_DIR)
 logger.info("💾 Сессия сохраняется в: %s", SESSION_DIR)
 logger.info("🌐 Backend API: %s", BACKEND_API_URL)
 logger.info("🧪 Режим тестирования: %s", TEST_MODE)
 logger.info("🔗 N8N Webhook: %s", "✅ Настроен" if N8N_WEBHOOK_URL else "❌ Не настроен")
+logger.info("📡 N8N Webhook URL: %s", N8N_WEBHOOK_URL or "НЕ ЗАДАН")
 
 
 class MorningStarUserbot:
@@ -218,8 +245,24 @@ class MorningStarUserbot:
             logger.error("💥 Ошибка при запуске: %s", e)
             raise
 
+    async def get_config_value(self, key: str, default=None):
+        """Получение значения конфигурации из Backend API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{BACKEND_API_URL}/api/config/{key}") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"📋 Получена настройка {key}: {data.get('value', default)}")
+                        return data.get('value', default)
+                    else:
+                        logger.warning(f"⚠️ Настройка {key} не найдена, используем значение по умолчанию: {default}")
+                        return default
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении настройки {key}: {e}")
+            return default
+
     async def get_channels_from_api(self):
-        """Получение списка активных каналов из Backend API"""
+        """Получение списка активных каналов из Backend API с метаданными"""
         try:
             url = f"{BACKEND_API_URL}/api/channels"
             params = {"active_only": "true"}
@@ -231,8 +274,10 @@ class MorningStarUserbot:
                     if response.status == 200:
                         channels_data = await response.json()
                         
-                        # Извлекаем username каналов
+                        # Сохраняем полную информацию о каналах с категориями
+                        self.channels_metadata = {}
                         api_channels = []
+                        
                         for channel in channels_data:
                             if channel.get('is_active', False):
                                 username = channel.get('username')
@@ -240,22 +285,50 @@ class MorningStarUserbot:
                                     # Добавляем @ если его нет
                                     if not username.startswith('@'):
                                         username = f"@{username}"
+                                    
+                                    # Сохраняем метаданные канала включая категории
+                                    self.channels_metadata[username] = {
+                                        'id': channel.get('id'),
+                                        'telegram_id': channel.get('telegram_id'),
+                                        'title': channel.get('title'),
+                                        'categories': channel.get('categories', [])
+                                    }
+                                    
                                     api_channels.append(username)
                                 elif channel.get('telegram_id'):
                                     # Можно использовать telegram_id если нет username
-                                    api_channels.append(str(channel['telegram_id']))
+                                    telegram_id = str(channel['telegram_id'])
+                                    self.channels_metadata[telegram_id] = {
+                                        'id': channel.get('id'),
+                                        'telegram_id': channel.get('telegram_id'),
+                                        'title': channel.get('title'),
+                                        'categories': channel.get('categories', [])
+                                    }
+                                    api_channels.append(telegram_id)
                         
                         logger.info("✅ Получено %d активных каналов из API", len(api_channels))
                         logger.info("📡 Каналы из API: %s", api_channels)
+                        
+                        # Логируем категории для каждого канала
+                        for username, metadata in self.channels_metadata.items():
+                            categories = metadata.get('categories', [])
+                            if categories:
+                                category_names = [cat.get('name', 'N/A') for cat in categories]
+                                logger.info("🏷️ %s → категории: %s", username, category_names)
+                            else:
+                                logger.warning("⚠️ %s → категории не найдены", username)
+                        
                         return api_channels
                     
                     else:
                         logger.warning("⚠️ API вернул статус %d, используем fallback каналы", response.status)
+                        self.channels_metadata = {}
                         return FALLBACK_CHANNELS
                         
         except Exception as e:
             logger.error("❌ Ошибка при получении каналов из API: %s", e)
             logger.info("🔄 Используем fallback каналы: %s", FALLBACK_CHANNELS)
+            self.channels_metadata = {}
             return FALLBACK_CHANNELS
 
     async def get_channel_info(self, channel_username):
@@ -410,7 +483,8 @@ class MorningStarUserbot:
         try:
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                logger.debug("📤 Отправляю данные в n8n: %s", N8N_WEBHOOK_URL)
+                logger.info("📤 Отправляю данные в n8n: %s", N8N_WEBHOOK_URL)
+                logger.debug("📊 Размер данных: %d постов", len(data.get('posts', [])))
 
                 async with session.post(
                     N8N_WEBHOOK_URL, json=data, headers=headers
@@ -442,6 +516,17 @@ class MorningStarUserbot:
         successful_channels = 0
         failed_channels = 0
 
+        # Получаем настройки из Backend API
+        collection_depth_days = await self.get_config_value("COLLECTION_DEPTH_DAYS", 3)
+        max_posts_per_channel = await self.get_config_value("MAX_POSTS_PER_CHANNEL", 50)
+        
+        # Конвертируем дни в часы
+        collection_hours = int(collection_depth_days) * 24
+        max_posts_limit = int(max_posts_per_channel)
+        
+        logger.info("📋 Настройки сбора: %d дней (%d часов), максимум %d постов с канала", 
+                   collection_depth_days, collection_hours, max_posts_limit)
+
         # Получаем список каналов из API
         channels = await self.get_channels_from_api()
         if not channels:
@@ -456,7 +541,14 @@ class MorningStarUserbot:
             )
 
             try:
-                posts = await self.get_channel_posts(channel, hours=72)  # Увеличили до 72 часов
+                posts = await self.get_channel_posts(channel, hours=collection_hours)
+                
+                # Применяем лимит постов с канала
+                if posts and len(posts) > max_posts_limit:
+                    posts = posts[:max_posts_limit]
+                    logger.info("✂️ %s: ограничено до %d постов (было %d)", 
+                               channel, max_posts_limit, len(posts))
+                
                 if posts:
                     all_posts.extend(posts)
                     successful_channels += 1
@@ -489,6 +581,7 @@ class MorningStarUserbot:
                     "channels_processed": channels,
                 },
                 "posts": all_posts,
+                "channels_metadata": getattr(self, 'channels_metadata', {}),  # Добавляем метаданные каналов с категориями
             }
 
             success = await self.send_to_n8n(webhook_data)
