@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 from typing import Dict, Any, Union
+import json
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -87,6 +88,25 @@ class ConfigSetting(Base):
     category = Column(String)
     description = Column(Text)
     is_editable = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+class Digest(Base):
+    __tablename__ = "digests"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    digest_id = Column(String, unique=True, nullable=False, index=True)  # digest_timestamp от N8N
+    total_posts = Column(Integer, default=0)
+    channels_processed = Column(Integer, default=0)
+    original_posts = Column(Integer, default=0)
+    relevant_posts = Column(Integer, default=0)
+    avg_importance = Column(Float, default=0.0)
+    avg_urgency = Column(Float, default=0.0)
+    avg_significance = Column(Float, default=0.0)
+    binary_relevance_applied = Column(Boolean, default=False)
+    with_metrics = Column(Boolean, default=False)
+    digest_data = Column(Text)  # JSON данные полного дайджеста
+    processed_at = Column(DateTime)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -289,6 +309,43 @@ class ConfigSettingResponse(ConfigSettingBase):
     class Config:
         from_attributes = True
 
+# Pydantic модели для дайджестов
+class DigestCreate(BaseModel):
+    digest_id: str = Field(..., min_length=1, max_length=255)
+    total_posts: int = Field(0, ge=0)
+    channels_processed: int = Field(0, ge=0)
+    original_posts: int = Field(0, ge=0)
+    relevant_posts: int = Field(0, ge=0)
+    avg_importance: float = Field(0.0, ge=0.0, le=10.0)
+    avg_urgency: float = Field(0.0, ge=0.0, le=10.0)
+    avg_significance: float = Field(0.0, ge=0.0, le=10.0)
+    binary_relevance_applied: bool = False
+    with_metrics: bool = False
+    digest_data: Optional[str] = None  # JSON строка
+    processed_at: Optional[datetime] = None
+
+class DigestResponse(DigestCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DigestSummary(BaseModel):
+    """Краткая информация о дайджесте для списка"""
+    id: int
+    digest_id: str
+    total_posts: int
+    relevant_posts: int
+    channels_processed: int
+    avg_importance: float
+    processed_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 # ConfigManager класс
 class ConfigManager:
     def __init__(self, db: Session):
@@ -336,7 +393,6 @@ class ConfigManager:
             elif value_type == "float":
                 return float(value)
             elif value_type == "json":
-                import json
                 return json.loads(value)
             else:  # string
                 return value
@@ -747,6 +803,114 @@ def get_config_value(key: str, db: Session = Depends(get_db)):
         )
     
     return {"key": key, "value": value}
+
+# API для дайджестов
+@app.post("/api/digests", response_model=DigestResponse, status_code=status.HTTP_201_CREATED)
+def create_digest(digest: DigestCreate, db: Session = Depends(get_db)):
+    """Создать новый дайджест (endpoint для N8N)"""
+    # Проверяем уникальность digest_id
+    existing = db.query(Digest).filter(Digest.digest_id == digest.digest_id).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Дайджест с таким ID уже существует"
+        )
+    
+    db_digest = Digest(**digest.model_dump())
+    db.add(db_digest)
+    db.commit()
+    db.refresh(db_digest)
+    return db_digest
+
+@app.get("/api/digests", response_model=List[DigestSummary])
+def get_digests(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Получить список дайджестов (краткая информация)"""
+    digests = db.query(Digest).order_by(Digest.created_at.desc()).offset(skip).limit(limit).all()
+    return digests
+
+@app.get("/api/digests/{digest_id}", response_model=DigestResponse)
+def get_digest(digest_id: str, db: Session = Depends(get_db)):
+    """Получить полную информацию о дайджесте"""
+    digest = db.query(Digest).filter(Digest.digest_id == digest_id).first()
+    if not digest:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Дайджест не найден"
+        )
+    return digest
+
+@app.get("/api/digests/{digest_id}/data")
+def get_digest_data(digest_id: str, db: Session = Depends(get_db)):
+    """Получить полные данные дайджеста в JSON формате"""
+    digest = db.query(Digest).filter(Digest.digest_id == digest_id).first()
+    if not digest:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Дайджест не найден"
+        )
+    
+    try:
+        if digest.digest_data:
+            data = json.loads(digest.digest_data)
+            return data
+        else:
+            return {"error": "Данные дайджеста отсутствуют"}
+    except json.JSONDecodeError:
+        return {"error": "Ошибка парсинга данных дайджеста"}
+
+@app.delete("/api/digests/{digest_id}")
+def delete_digest(digest_id: str, db: Session = Depends(get_db)):
+    """Удалить дайджест"""
+    digest = db.query(Digest).filter(Digest.digest_id == digest_id).first()
+    if not digest:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Дайджест не найден"
+        )
+    
+    db.delete(digest)
+    db.commit()
+    return {"message": "Дайджест успешно удален"}
+
+@app.get("/api/digests/stats/summary")
+def get_digests_stats(db: Session = Depends(get_db)):
+    """Получить статистику дайджестов"""
+    total_digests = db.query(Digest).count()
+    
+    if total_digests == 0:
+        return {
+            "total_digests": 0,
+            "avg_posts_per_digest": 0,
+            "avg_relevance_rate": 0,
+            "total_posts_processed": 0
+        }
+    
+    # Агрегированная статистика
+    from sqlalchemy import func as sql_func
+    stats = db.query(
+        sql_func.avg(Digest.total_posts).label('avg_posts'),
+        sql_func.avg(Digest.relevant_posts).label('avg_relevant'),
+        sql_func.sum(Digest.total_posts).label('total_posts'),
+        sql_func.avg(Digest.avg_importance).label('avg_importance'),
+        sql_func.avg(Digest.avg_urgency).label('avg_urgency'),
+        sql_func.avg(Digest.avg_significance).label('avg_significance')
+    ).first()
+    
+    return {
+        "total_digests": total_digests,
+        "avg_posts_per_digest": round(stats.avg_posts or 0, 1),
+        "avg_relevance_rate": round((stats.avg_relevant / stats.avg_posts * 100) if stats.avg_posts else 0, 1),
+        "total_posts_processed": stats.total_posts or 0,
+        "avg_metrics": {
+            "importance": round(stats.avg_importance or 0, 1),
+            "urgency": round(stats.avg_urgency or 0, 1),
+            "significance": round(stats.avg_significance or 0, 1)
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn
