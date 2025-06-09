@@ -100,9 +100,7 @@ export default function DashboardPage() {
     if (!dateString) return 'Неизвестно';
     try {
       const now = new Date();
-      // Добавляем 'Z' если нет временной зоны, чтобы парсить как UTC
-      const utcDateString = dateString.includes('Z') || dateString.includes('+') ? dateString : dateString + 'Z';
-      const date = new Date(utcDateString);
+      const date = new Date(dateString);
       const diffMs = now - date;
       const diffMinutes = Math.floor(diffMs / (1000 * 60));
       const diffHours = Math.floor(diffMinutes / 60);
