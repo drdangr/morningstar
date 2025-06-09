@@ -15,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_TELEGRAM_ID'))
+PUBLIC_BOT_TOKEN = os.getenv('PUBLIC_BOT_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_TELEGRAM_ID') or os.getenv('ADMIN_CHAT_ID', '0'))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,7 +63,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск бота"""
     # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    if not PUBLIC_BOT_TOKEN:
+        logger.error("PUBLIC_BOT_TOKEN не найден в переменных окружения!")
+        return
+    
+    application = Application.builder().token(PUBLIC_BOT_TOKEN).build()
     
     # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
