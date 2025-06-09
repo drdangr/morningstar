@@ -331,17 +331,42 @@ class MorningStarUserbot:
             self.channels_metadata = {}
             return FALLBACK_CHANNELS
 
-    async def get_channel_info(self, channel_username):
-        """Получение информации о канале"""
-        try:
-            channel = await self.client.get_entity(channel_username)
-            logger.debug("📺 Канал найден: %s (ID: %s)", channel.title, channel.id)
-            return channel
-        except Exception as e:
-            logger.error(
-                "❌ Ошибка получения информации о канале %s: %s", channel_username, e
-            )
-            return None
+    async def get_channel_info(self, channel_identifier):
+        """Получение информации о канале с fallback логикой"""
+        # Получаем метаданные канала для fallback
+        metadata = self.channels_metadata.get(channel_identifier, {})
+        telegram_id = metadata.get('telegram_id')
+        
+        # Список способов подключения для fallback
+        connection_methods = []
+        
+        # 1. Основной способ - как передан
+        connection_methods.append(("основной", channel_identifier))
+        
+        # 2. Fallback к telegram_id если есть
+        if telegram_id:
+            connection_methods.append(("telegram_id", telegram_id))
+        
+        # 3. Если это t.me ссылка - извлекаем username
+        if isinstance(channel_identifier, str) and "t.me/" in channel_identifier:
+            username = channel_identifier.split("/")[-1]
+            if username and not username.startswith("@"):
+                username = f"@{username}"
+            connection_methods.append(("t.me_link", username))
+        
+        # Пробуем все способы подключения
+        for method_name, identifier in connection_methods:
+            try:
+                logger.debug("🔍 Пробую подключение (%s): %s", method_name, identifier)
+                channel = await self.client.get_entity(identifier)
+                logger.info("✅ Канал найден (%s): %s (ID: %s)", method_name, channel.title, channel.id)
+                return channel
+            except Exception as e:
+                logger.debug("❌ Способ %s не сработал для %s: %s", method_name, identifier, e)
+                continue
+        
+        logger.error("❌ Все способы подключения к каналу исчерпаны: %s", channel_identifier)
+        return None
 
     async def get_channel_posts(self, channel_username, hours=72):
         """Получение постов из канала за последние N часов"""

@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -109,7 +109,7 @@ export default function ChannelsPage() {
         }
         // Check for duplicate names (excluding current editing channel)
         const isDuplicateName = channels.some(channel => 
-          channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase() === value.trim().toLowerCase() && 
+          channel.title.toLowerCase() === value.trim().toLowerCase() && 
           channel.id !== editingChannel?.id
         );
         if (isDuplicateName) {
@@ -293,7 +293,7 @@ export default function ChannelsPage() {
   const handleEdit = (channel) => {
     setEditingChannel(channel);
     setFormData({
-      title: channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title,
+      title: channel.title,
       username: channel.username || '',
       description: channel.description || '',
       telegram_id: channel.telegram_id.toString(),
@@ -398,7 +398,7 @@ export default function ChannelsPage() {
   const filteredChannels = useMemo(() => {
     return channels.filter(channel => {
       const matchesSearch = !searchQuery || 
-        channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (channel.username && channel.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (channel.description && channel.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
@@ -445,7 +445,7 @@ export default function ChannelsPage() {
           <Grid item xs={12} sm={6} md={4}>
             <TextField
               fullWidth
-              size="small" variant="outlined"
+              size="small"
               placeholder="Поиск каналов..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -459,7 +459,7 @@ export default function ChannelsPage() {
             />
           </Grid>
           <Grid item xs={12} sm={4} md={3}>
-            <FormControl fullWidth size="small" variant="outlined">
+            <FormControl fullWidth size="small">
               <InputLabel>Статус</InputLabel>
               <Select
                 value={statusFilter}
@@ -494,25 +494,25 @@ export default function ChannelsPage() {
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: "20%" }}>Канал</TableCell>
-              <TableCell sx={{ width: "8%" }}>Username</TableCell>
-              <TableCell sx={{ width: "22%" }}>Описание</TableCell>
-              <TableCell sx={{ width: "12%" }}>Telegram ID</TableCell>
-              <TableCell sx={{ width: "8%" }}>Статус</TableCell>
-              <TableCell sx={{ width: "4%" }}>Категории</TableCell>
-              <TableCell align="right" sx={{ width: "12%" }}>Действия</TableCell>
+              <TableCell>Канал</TableCell>
+              <TableCell>Username</TableCell>
+              <TableCell>Описание</TableCell>
+              <TableCell>Telegram ID</TableCell>
+              <TableCell>Статус</TableCell>
+              <TableCell>Категории</TableCell>
+              <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {filteredChannels.map((channel) => (
-              <TableRow key={channel.id} hover>
+              <TableRow key={channel.id}>
                 <TableCell>
                   <Box display="flex" alignItems="center">
-                    <Avatar sx={{ width: 24, height: 24, mr: 1 }}>
-                      <TelegramIcon fontsize="small" variant="outlined" />
+                    <Avatar sx={{ width: 32, height: 32, mr: 2 }}>
+                      <TelegramIcon />
                     </Avatar>
-                    <Typography variant="body2" fontWeight="medium" sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title}
+                    <Typography variant="body2" fontWeight="medium">
+                      {channel.title}
                     </Typography>
                   </Box>
                 </TableCell>
@@ -542,26 +542,36 @@ export default function ChannelsPage() {
                 </TableCell>
                 <TableCell>
                   <Chip
-                    label={channel.is_active ? 'Вкл' : 'Выкл'}
+                    label={channel.is_active ? 'Активен' : 'Неактивен'}
                     color={channel.is_active ? 'success' : 'default'}
-                    size="small" icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
+                    size="small"
+                    icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
                   />
                 </TableCell>
                 <TableCell>
-                  <IconButton size="small" onClick={() => handleManageCategories(channel)} title="Управление категориями"><CategoryIcon fontSize="small" /></IconButton>
+                  <Button
+                    size="small"
+                    startIcon={<CategoryIcon />}
+                    onClick={() => handleManageCategories(channel)}
+                    variant="outlined"
+                  >
+                    Категории
+                  </Button>
                 </TableCell>
                 <TableCell align="right">
-                  <IconButton size="small"
+                  <IconButton
+                    size="small"
                     onClick={() => handleEdit(channel)}
                     color="primary"
                   >
-                    <EditIcon fontSize="small" />
+                    <EditIcon />
                   </IconButton>
-                  <IconButton size="small"
+                  <IconButton
+                    size="small"
                     onClick={() => handleDeleteClick(channel)}
                     color="error"
                   >
-                    <DeleteIcon fontSize="small" />
+                    <DeleteIcon />
                   </IconButton>
                 </TableCell>
               </TableRow>
@@ -798,8 +808,3 @@ export default function ChannelsPage() {
     </Box>
   );
 } 
-
-
-
-
-

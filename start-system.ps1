@@ -59,7 +59,7 @@ try {
         Start-Sleep 2
     }
     
-    $backendProcess = Start-Process -FilePath "python" -ArgumentList "backend/main.py" -WindowStyle Hidden -PassThru
+    $backendProcess = Start-Process -FilePath "backend/venv/Scripts/python.exe" -ArgumentList "-m", "uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8000" -WorkingDirectory "backend" -WindowStyle Hidden -PassThru
     Write-Host "📋 Backend PID: $($backendProcess.Id)" -ForegroundColor Gray
     
     # Ждем запуска Backend

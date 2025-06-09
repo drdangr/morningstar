@@ -658,6 +658,52 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Канал успешно удален"}
 
+@app.post("/api/channels/validate")
+async def validate_channel(request: dict):
+    """Валидация канала и получение предложений для автозаполнения"""
+    try:
+        user_input = request.get('channel_input', '').strip()
+        if not user_input:
+            return {
+                'success': False,
+                'error': 'Введите username, ссылку или Telegram ID канала',
+                'data': None
+            }
+        
+        # Импорт модуля валидации
+        from channel_validator import validate_channel_for_api
+        
+        result = await validate_channel_for_api(user_input)
+        
+        if result['validation']['valid']:
+            suggestions = result['suggestions']
+            return {
+                'success': True,
+                'data': {
+                    'title': suggestions.get('title'),
+                    'username': suggestions.get('username'),
+                    'description': suggestions.get('description'),
+                    'telegram_id': suggestions.get('telegram_id'),
+                    'subscribers': getattr(result, 'subscribers_count', None)
+                },
+                'message': 'Канал успешно найден и проверен'
+            }
+        else:
+            warnings = result['validation']['warnings']
+            error_message = warnings[0] if warnings else 'Не удалось проверить канал'
+            return {
+                'success': False,
+                'error': error_message,
+                'data': None
+            }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Ошибка валидации: {str(e)}',
+            'data': None
+        }
+
 # Дополнительные endpoints
 @app.get("/api/health")
 def health_check():

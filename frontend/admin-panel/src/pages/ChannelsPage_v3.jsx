@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -109,7 +109,7 @@ export default function ChannelsPage() {
         }
         // Check for duplicate names (excluding current editing channel)
         const isDuplicateName = channels.some(channel => 
-          channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase() === value.trim().toLowerCase() && 
+          channel.title.toLowerCase() === value.trim().toLowerCase() && 
           channel.id !== editingChannel?.id
         );
         if (isDuplicateName) {
@@ -118,30 +118,30 @@ export default function ChannelsPage() {
         return '';
       
       case 'username':
-        // Username теперь необязателен
-        if (value && value.trim().length > 0) {
-          if (!value.trim().startsWith('@')) {
-            return 'Username должен начинаться с @';
-          }
-          if (value.trim().length < 2) {
-            return 'Username должен содержать минимум 2 символа (включая @)';
-          }
-          if (value.trim().length > 33) {
-            return 'Username не должен превышать 33 символа';
-          }
-          // Check for valid username format (only letters, numbers, underscores)
-          const usernamePattern = /^@[a-zA-Z0-9_]+$/;
-          if (!usernamePattern.test(value.trim())) {
-            return 'Username может содержать только буквы, цифры и подчеркивания';
-          }
-          // Check for duplicate usernames (excluding current editing channel)
-          const isDuplicateUsername = channels.some(channel => 
-            channel.username && channel.username.toLowerCase() === value.trim().toLowerCase() && 
-            channel.id !== editingChannel?.id
-          );
-          if (isDuplicateUsername) {
-            return 'Канал с таким username уже существует';
-          }
+        if (!value || value.trim().length === 0) {
+          return 'Username обязателен';
+        }
+        if (!value.trim().startsWith('@')) {
+          return 'Username должен начинаться с @';
+        }
+        if (value.trim().length < 2) {
+          return 'Username должен содержать минимум 2 символа (включая @)';
+        }
+        if (value.trim().length > 33) {
+          return 'Username не должен превышать 33 символа';
+        }
+        // Check for valid username format (only letters, numbers, underscores)
+        const usernamePattern = /^@[a-zA-Z0-9_]+$/;
+        if (!usernamePattern.test(value.trim())) {
+          return 'Username может содержать только буквы, цифры и подчеркивания';
+        }
+        // Check for duplicate usernames (excluding current editing channel)
+        const isDuplicateUsername = channels.some(channel => 
+          channel.username.toLowerCase() === value.trim().toLowerCase() && 
+          channel.id !== editingChannel?.id
+        );
+        if (isDuplicateUsername) {
+          return 'Канал с таким username уже существует';
         }
         return '';
       
@@ -225,8 +225,7 @@ export default function ChannelsPage() {
         setValidationResult({
           success: true,
           data: response.data,
-          message: 'Канал найден и успешно проверен!',
-          originalInput: channelInput.trim() // Сохраняем изначальный ввод
+          message: 'Канал найден и успешно проверен!'
         });
       } else {
         setValidationResult({
@@ -245,16 +244,9 @@ export default function ChannelsPage() {
   const applyValidationResult = () => {
     if (validationResult?.success && validationResult.data) {
       const data = validationResult.data;
-      
-      // Если пользователь вводил через @username, сохраняем его
-      let username = data.username || '';
-      if (!username && validationResult.originalInput && validationResult.originalInput.startsWith('@')) {
-        username = validationResult.originalInput;
-      }
-      
       setFormData({
         title: data.title || '',
-        username: username,
+        username: data.username || '',
         description: data.description || '',
         telegram_id: data.telegram_id?.toString() || '',
         is_active: true
@@ -293,8 +285,8 @@ export default function ChannelsPage() {
   const handleEdit = (channel) => {
     setEditingChannel(channel);
     setFormData({
-      title: channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title,
-      username: channel.username || '',
+      title: channel.title,
+      username: channel.username,
       description: channel.description || '',
       telegram_id: channel.telegram_id.toString(),
       is_active: channel.is_active
@@ -333,8 +325,7 @@ export default function ChannelsPage() {
     try {
       const channelData = {
         ...formData,
-        telegram_id: parseInt(formData.telegram_id),
-        username: formData.username || null // Разрешаем null для username
+        telegram_id: parseInt(formData.telegram_id)
       };
 
       if (editingChannel) {
@@ -398,8 +389,8 @@ export default function ChannelsPage() {
   const filteredChannels = useMemo(() => {
     return channels.filter(channel => {
       const matchesSearch = !searchQuery || 
-        channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (channel.username && channel.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        channel.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (channel.description && channel.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
       const matchesStatus = statusFilter === 'all' || 
@@ -445,7 +436,7 @@ export default function ChannelsPage() {
           <Grid item xs={12} sm={6} md={4}>
             <TextField
               fullWidth
-              size="small" variant="outlined"
+              size="small"
               placeholder="Поиск каналов..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -459,7 +450,7 @@ export default function ChannelsPage() {
             />
           </Grid>
           <Grid item xs={12} sm={4} md={3}>
-            <FormControl fullWidth size="small" variant="outlined">
+            <FormControl fullWidth size="small">
               <InputLabel>Статус</InputLabel>
               <Select
                 value={statusFilter}
@@ -494,31 +485,31 @@ export default function ChannelsPage() {
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: "20%" }}>Канал</TableCell>
-              <TableCell sx={{ width: "8%" }}>Username</TableCell>
-              <TableCell sx={{ width: "22%" }}>Описание</TableCell>
-              <TableCell sx={{ width: "12%" }}>Telegram ID</TableCell>
-              <TableCell sx={{ width: "8%" }}>Статус</TableCell>
-              <TableCell sx={{ width: "4%" }}>Категории</TableCell>
-              <TableCell align="right" sx={{ width: "12%" }}>Действия</TableCell>
+              <TableCell>Канал</TableCell>
+              <TableCell>Username</TableCell>
+              <TableCell>Описание</TableCell>
+              <TableCell>Telegram ID</TableCell>
+              <TableCell>Статус</TableCell>
+              <TableCell>Категории</TableCell>
+              <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {filteredChannels.map((channel) => (
-              <TableRow key={channel.id} hover>
+              <TableRow key={channel.id}>
                 <TableCell>
                   <Box display="flex" alignItems="center">
-                    <Avatar sx={{ width: 24, height: 24, mr: 1 }}>
-                      <TelegramIcon fontsize="small" variant="outlined" />
+                    <Avatar sx={{ width: 32, height: 32, mr: 2 }}>
+                      <TelegramIcon />
                     </Avatar>
-                    <Typography variant="body2" fontWeight="medium" sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title}
+                    <Typography variant="body2" fontWeight="medium">
+                      {channel.title}
                     </Typography>
                   </Box>
                 </TableCell>
                 <TableCell>
                   <Typography variant="body2" color="text.secondary">
-                    {channel.username || 'Без username'}
+                    {channel.username}
                   </Typography>
                 </TableCell>
                 <TableCell>
@@ -542,26 +533,36 @@ export default function ChannelsPage() {
                 </TableCell>
                 <TableCell>
                   <Chip
-                    label={channel.is_active ? 'Вкл' : 'Выкл'}
+                    label={channel.is_active ? 'Активен' : 'Неактивен'}
                     color={channel.is_active ? 'success' : 'default'}
-                    size="small" icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
+                    size="small"
+                    icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
                   />
                 </TableCell>
                 <TableCell>
-                  <IconButton size="small" onClick={() => handleManageCategories(channel)} title="Управление категориями"><CategoryIcon fontSize="small" /></IconButton>
+                  <Button
+                    size="small"
+                    startIcon={<CategoryIcon />}
+                    onClick={() => handleManageCategories(channel)}
+                    variant="outlined"
+                  >
+                    Категории
+                  </Button>
                 </TableCell>
                 <TableCell align="right">
-                  <IconButton size="small"
+                  <IconButton
+                    size="small"
                     onClick={() => handleEdit(channel)}
                     color="primary"
                   >
-                    <EditIcon fontSize="small" />
+                    <EditIcon />
                   </IconButton>
-                  <IconButton size="small"
+                  <IconButton
+                    size="small"
                     onClick={() => handleDeleteClick(channel)}
                     color="error"
                   >
-                    <DeleteIcon fontSize="small" />
+                    <DeleteIcon />
                   </IconButton>
                 </TableCell>
               </TableRow>
@@ -653,7 +654,7 @@ export default function ChannelsPage() {
                       {validationResult.message}
                       <br />
                       <strong>Название:</strong> {validationResult.data.title}<br />
-                      <strong>Username:</strong> {validationResult.data.username || 'Отсутствует'}<br />
+                      <strong>Username:</strong> {validationResult.data.username}<br />
                       {validationResult.data.description && (
                         <>
                           <strong>Описание:</strong> {validationResult.data.description.slice(0, 100)}
@@ -690,14 +691,14 @@ export default function ChannelsPage() {
               />
               <TextField
                 margin="dense"
-                label="Username (необязательно)"
+                label="Username"
                 fullWidth
                 variant="outlined"
                 value={formData.username}
                 onChange={(e) => handleFieldChange('username', e.target.value)}
                 onBlur={() => handleFieldBlur('username')}
                 error={!!formErrors.username}
-                helperText={formErrors.username || 'Можно оставить пустым для каналов без публичного username'}
+                helperText={formErrors.username}
                 placeholder="@example"
                 sx={{ mb: 2 }}
               />
@@ -798,8 +799,3 @@ export default function ChannelsPage() {
     </Box>
   );
 } 
-
-
-
-
-
