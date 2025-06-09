@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, Fragment } from 'react';
 import {
   Box,
   Typography,
@@ -109,7 +109,7 @@ export default function ChannelsPage() {
         }
         // Check for duplicate names (excluding current editing channel)
         const isDuplicateName = channels.some(channel => 
-          channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase() === value.trim().toLowerCase() && 
+          channel.title.toLowerCase() === value.trim().toLowerCase() && 
           channel.id !== editingChannel?.id
         );
         if (isDuplicateName) {
@@ -293,7 +293,7 @@ export default function ChannelsPage() {
   const handleEdit = (channel) => {
     setEditingChannel(channel);
     setFormData({
-      title: channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title,
+      title: channel.title,
       username: channel.username || '',
       description: channel.description || '',
       telegram_id: channel.telegram_id.toString(),
@@ -398,7 +398,7 @@ export default function ChannelsPage() {
   const filteredChannels = useMemo(() => {
     return channels.filter(channel => {
       const matchesSearch = !searchQuery || 
-        channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        channel.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (channel.username && channel.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (channel.description && channel.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
@@ -424,13 +424,25 @@ export default function ChannelsPage() {
         <Typography variant="h4" component="h1">
           Каналы
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={handleClickOpen}
-        >
-          Добавить канал
-        </Button>
+        <Box display="flex" gap={1}>
+          <Button
+            variant="outlined"
+            startIcon={<SmartToyIcon />}
+            onClick={() => {
+              // TODO: Реализовать добавление из подписок
+              alert('Функция "Добавить из подписок" будет реализована в следующих версиях');
+            }}
+          >
+            Добавить из подписок
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={handleClickOpen}
+          >
+            Добавить канал
+          </Button>
+        </Box>
       </Box>
 
       {error && (
@@ -490,81 +502,138 @@ export default function ChannelsPage() {
         </Grid>
       </Paper>
 
-      <TableContainer component={Paper}>
-        <Table>
+      <TableContainer component={Paper} sx={{ width: "100%" }}>
+        <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: "20%" }}>Канал</TableCell>
-              <TableCell sx={{ width: "8%" }}>Username</TableCell>
-              <TableCell sx={{ width: "22%" }}>Описание</TableCell>
-              <TableCell sx={{ width: "12%" }}>Telegram ID</TableCell>
-              <TableCell sx={{ width: "8%" }}>Статус</TableCell>
-              <TableCell sx={{ width: "4%" }}>Категории</TableCell>
-              <TableCell align="right" sx={{ width: "12%" }}>Действия</TableCell>
+              <TableCell colSpan={5} sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                Информация о каналах
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredChannels.map((channel) => (
-              <TableRow key={channel.id} hover>
-                <TableCell>
-                  <Box display="flex" alignItems="center">
-                    <Avatar sx={{ width: 24, height: 24, mr: 1 }}>
-                      <TelegramIcon fontsize="small" variant="outlined" />
-                    </Avatar>
-                    <Typography variant="body2" fontWeight="medium" sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {channel.title.length > 15 ? channel.title.slice(0, 15) + "..." : channel.title}
+                          {filteredChannels.map((channel) => (
+                <Fragment key={channel.id}>
+                {/* Первая строка: основная информация */}
+                <TableRow hover>
+                  <TableCell sx={{ width: "25%", borderBottom: 'none', pb: 1 }}>
+                    <Box display="flex" alignItems="center">
+                      <Avatar sx={{ width: 20, height: 20, mr: 1 }}>
+                        <TelegramIcon fontSize="small" />
+                      </Avatar>
+                      <Typography variant="body2" fontWeight="medium" 
+                        sx={{ 
+                          maxWidth: 200,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}
+                        title={channel.title}
+                      >
+                        {channel.title}
+                      </Typography>
+                    </Box>
+                  </TableCell>
+                  <TableCell sx={{ width: "15%", borderBottom: 'none', pb: 1 }}>
+                    <Typography variant="body2" color="text.secondary" fontSize="0.75rem">
+                      {channel.username || 'Без username'}
                     </Typography>
-                  </Box>
-                </TableCell>
-                <TableCell>
-                  <Typography variant="body2" color="text.secondary">
-                    {channel.username || 'Без username'}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Typography 
-                    variant="body2" 
-                    color="text.secondary"
-                    sx={{
-                      maxWidth: 200,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    {channel.description || 'Без описания'}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Typography variant="body2" fontFamily="monospace">
-                    {channel.telegram_id}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    label={channel.is_active ? 'Вкл' : 'Выкл'}
-                    color={channel.is_active ? 'success' : 'default'}
-                    size="small" icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
-                  />
-                </TableCell>
-                <TableCell>
-                  <IconButton size="small" onClick={() => handleManageCategories(channel)} title="Управление категориями"><CategoryIcon fontSize="small" /></IconButton>
-                </TableCell>
-                <TableCell align="right">
-                  <IconButton size="small"
-                    onClick={() => handleEdit(channel)}
-                    color="primary"
-                  >
-                    <EditIcon fontSize="small" />
-                  </IconButton>
-                  <IconButton size="small"
-                    onClick={() => handleDeleteClick(channel)}
-                    color="error"
-                  >
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
+                  </TableCell>
+                  <TableCell sx={{ width: "30%", borderBottom: 'none', pb: 1 }}>
+                    <Typography 
+                      variant="body2" 
+                      color="text.secondary"
+                      fontSize="0.75rem"
+                      sx={{
+                        maxWidth: 250,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}
+                      title={channel.description || 'Без описания'}
+                    >
+                      {channel.description || 'Без описания'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ width: "15%", borderBottom: 'none', pb: 1 }}>
+                    <Typography variant="body2" fontFamily="monospace" fontSize="0.7rem">
+                      {channel.telegram_id}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ width: "15%", borderBottom: 'none', pb: 1 }}>
+                    <Chip
+                      label={channel.is_active ? 'Активен' : 'Выключен'}
+                      color={channel.is_active ? 'success' : 'default'}
+                      size="small" 
+                      icon={channel.is_active ? <CheckCircleIcon /> : <WarningIcon />}
+                    />
+                  </TableCell>
+                </TableRow>
+                
+                {/* Вторая строка: категории и действия */}
+                <TableRow>
+                  <TableCell colSpan={5} sx={{ pt: 0, pb: 2 }}>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
+                      {/* Категории */}
+                      <Box display="flex" flexWrap="wrap" gap={0.5} alignItems="center" flex={1}>
+                        <Typography variant="caption" color="text.secondary" sx={{ mr: 1, minWidth: 'fit-content' }}>
+                          Категории:
+                        </Typography>
+                        {channel.categories && channel.categories.length > 0 ? (
+                          channel.categories.map((category) => (
+                            <Chip
+                              key={category.id}
+                              label={`${category.emoji || '📝'} ${category.name}`}
+                              size="small"
+                              variant="outlined"
+                              color="primary"
+                              sx={{ 
+                                fontSize: '0.65rem',
+                                height: '20px',
+                                '& .MuiChip-label': { 
+                                  px: 0.5 
+                                }
+                              }}
+                            />
+                          ))
+                        ) : (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                            Нет назначенных категорий
+                          </Typography>
+                        )}
+                      </Box>
+                      
+                      {/* Действия */}
+                      <Box display="flex" alignItems="center" gap={0.5}>
+                        <IconButton 
+                          size="small" 
+                          onClick={() => handleManageCategories(channel)} 
+                          title="Управление категориями"
+                          color="primary"
+                        >
+                          <CategoryIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton 
+                          size="small"
+                          onClick={() => handleEdit(channel)}
+                          color="primary"
+                          title="Редактировать канал"
+                        >
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton 
+                          size="small"
+                          onClick={() => handleDeleteClick(channel)}
+                          color="error"
+                          title="Удалить канал"
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Box>
+                    </Box>
+                  </TableCell>
+                </TableRow>
+                              </Fragment>
             ))}
           </TableBody>
         </Table>

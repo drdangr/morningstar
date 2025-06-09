@@ -17,7 +17,7 @@ logging.basicConfig(
     level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/app/logs/userbot.log'),
+        logging.FileHandler('logs/userbot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 PHONE = os.getenv('PHONE')
-SESSION_NAME = '/app/session/morningstar'
+SESSION_NAME = 'session/morningstar'
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL')
 N8N_WEBHOOK_TOKEN = os.getenv('N8N_WEBHOOK_TOKEN')
 

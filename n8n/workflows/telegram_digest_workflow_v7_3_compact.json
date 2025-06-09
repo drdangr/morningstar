@@ -1,5 +1,5 @@
 {
-  "name": "telegram_digest_workflow_v7.3_individual_categorization",
+  "name": "telegram_digest_workflow_v7_3_compact",
   "nodes": [
     {
       "parameters": {
@@ -11,10 +11,10 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
       "position": [
-        -120,
-        0
+        -1280,
+        -200
       ],
-      "id": "57a69352-58fb-47df-b219-012767c8d01e",
+      "id": "2a5a49e5-e470-4c08-91f5-49f6a6005318",
       "webhookId": "telegram-posts-webhook"
     },
     {
@@ -25,10 +25,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        100,
-        0
+        -1060,
+        -200
       ],
-      "id": "f62f985d-92c3-4c76-bf4f-e7b333f885a3"
+      "id": "35cc1160-05b7-4114-a6ff-676a6c45ce92"
     },
     {
       "parameters": {
@@ -45,10 +45,10 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
       "position": [
-        320,
-        0
+        -840,
+        -200
       ],
-      "id": "6dfa77bc-d78a-4aeb-9d78-346a38edb1e2"
+      "id": "153c21da-04a1-4215-b929-a483e756438f"
     },
     {
       "parameters": {
@@ -58,10 +58,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        540,
-        0
+        -620,
+        -200
       ],
-      "id": "7cbddbbb-0fb9-4ba8-9264-893422fa44c0"
+      "id": "a29788cc-d733-42b5-a185-73c29f873ebc"
     },
     {
       "parameters": {
@@ -71,18 +71,18 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        780,
-        0
+        -380,
+        -200
       ],
-      "id": "bb1319c3-68a2-42dc-b5e5-3224d26cd196"
+      "id": "3e1e3620-3d5b-418b-abbd-49636d756410"
     },
     {
       "parameters": {
         "modelId": {
           "__rl": true,
-          "value": "gpt-4o-mini",
+          "value": "gpt-4o",
           "mode": "list",
-          "cachedResultName": "GPT-4O-MINI"
+          "cachedResultName": "GPT-4O"
         },
         "messages": {
           "values": [
@@ -104,10 +104,10 @@
       "type": "@n8n/n8n-nodes-langchain.openAi",
       "typeVersion": 1,
       "position": [
-        1000,
-        0
+        -160,
+        -200
       ],
-      "id": "5ac7650f-b400-4f89-a1d6-4301823b7270",
+      "id": "d861ef0a-b2fb-4554-ac56-bfc05392d7fc",
       "credentials": {
         "openAiApi": {
           "id": "RinkWxXeXs9tiXAB",
@@ -123,10 +123,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        1480,
-        0
+        340,
+        -200
       ],
-      "id": "8763312d-2d01-48b8-bce1-19f9bb0f47a5"
+      "id": "607d7911-4fc4-4b35-bae9-736fa85a5b3b"
     },
     {
       "parameters": {
@@ -136,10 +136,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        1660,
-        0
+        520,
+        -200
       ],
-      "id": "c7c4b22d-5c42-4a51-aaf8-3eaed10d3633"
+      "id": "43c2e287-aaca-4bf6-808c-9c10c3a7dd01"
     },
     {
       "parameters": {
@@ -163,10 +163,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [
-        1880,
-        0
+        740,
+        -200
       ],
-      "id": "2a636dd9-673c-4c3c-9661-d99778ea758a"
+      "id": "d8b9607a-9596-4eba-b583-02bffb531839"
     },
     {
       "parameters": {
@@ -176,10 +176,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        2100,
-        0
+        960,
+        -200
       ],
-      "id": "1b475303-0327-4391-8a0a-c8fe5ced54a4"
+      "id": "9a7b7bfd-c62d-4f1e-903f-d7756580be14"
     },
     {
       "parameters": {
@@ -189,10 +189,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        320,
-        300
+        -840,
+        100
       ],
-      "id": "a839444e-eec7-4c72-9c48-7b54f01fe312"
+      "id": "574ff489-12b3-4083-b01b-afcc7b07a157"
     },
     {
       "parameters": {
@@ -202,10 +202,10 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [
-        1300,
-        0
+        160,
+        -200
       ],
-      "id": "0ee7cbce-ceb7-4478-bace-afa8371d297e"
+      "id": "1480aa74-a595-4fca-900a-15bd5646772e"
     }
   ],
   "pinData": {},
@@ -332,10 +332,10 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "6795b34f-98b2-4c58-b002-cba5381fda7f",
+  "versionId": "c775ca16-7582-474d-beff-68a2400a24fb",
   "meta": {
     "instanceId": "883bf09e5b1ec169d367de4fbfec1bb4c59c9cdd2c1af7d7b7c29577e28e6ee0"
   },
-  "id": "4woIUKcHh6bley18",
+  "id": "pXDfiV9LFke5isaP",
   "tags": []
 }
