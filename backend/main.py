@@ -110,6 +110,33 @@ class Digest(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
+# Таблица связи пользователей и категорий (подписки)
+user_subscriptions = Table(
+    'user_subscriptions', Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
+)
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    username = Column(String)
+    first_name = Column(String)
+    last_name = Column(String)
+    language_code = Column(String, default="ru")
+    is_active = Column(Boolean, default=True)
+    last_activity = Column(DateTime)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Связи
+    subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
+
+# Обновляем модель Category для связи с пользователями
+Category.subscribers = relationship("User", secondary=user_subscriptions, back_populates="subscribed_categories")
+
 # Создание таблиц
 Base.metadata.create_all(bind=engine)
 
@@ -342,9 +369,46 @@ class DigestSummary(BaseModel):
     avg_importance: float
     processed_at: Optional[datetime]
     created_at: datetime
-
+    
     class Config:
         from_attributes = True
+
+class UserBase(BaseModel):
+    telegram_id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    language_code: str = "ru"
+    is_active: bool = True
+
+class UserCreate(UserBase):
+    pass
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    language_code: Optional[str] = None
+    is_active: Optional[bool] = None
+    last_activity: Optional[datetime] = None
+
+class UserResponse(UserBase):
+    id: int
+    last_activity: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    subscribed_categories: List['CategoryResponse'] = []
+    
+    class Config:
+        from_attributes = True
+
+class SubscriptionRequest(BaseModel):
+    category_ids: List[int] = Field(..., description="Список ID категорий для подписки")
+
+class SubscriptionResponse(BaseModel):
+    user_id: int
+    subscribed_categories: List['CategoryResponse'] = []
+    message: str
 
 # ConfigManager класс
 class ConfigManager:
@@ -607,19 +671,17 @@ def get_stats(db: Session = Depends(get_db)):
     channels_count = db.query(Channel).count()
     active_categories = db.query(Category).filter(Category.is_active == True).count()
     active_channels = db.query(Channel).filter(Channel.is_active == True).count()
+    digests_count = db.query(Digest).count()
     
     # Статистика связей
     total_links = db.query(channel_categories).count()
     
     return {
-        "categories": {
-            "total": categories_count,
-            "active": active_categories
-        },
-        "channels": {
-            "total": channels_count,
-            "active": active_channels
-        },
+        "total_categories": categories_count,
+        "active_categories": active_categories,
+        "total_channels": channels_count,
+        "active_channels": active_channels,
+        "total_digests": digests_count,
         "channel_category_links": total_links
     }
 
@@ -911,6 +973,114 @@ def get_digests_stats(db: Session = Depends(get_db)):
             "significance": round(stats.avg_significance or 0, 1)
         }
     }
+
+# API для пользователей и подписок
+@app.post("/api/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def create_or_update_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Создать нового пользователя или обновить существующего"""
+    # Проверяем, существует ли пользователь
+    existing_user = db.query(User).filter(User.telegram_id == user.telegram_id).first()
+    
+    if existing_user:
+        # Обновляем данные существующего пользователя
+        for field, value in user.model_dump().items():
+            if hasattr(existing_user, field) and value is not None:
+                setattr(existing_user, field, value)
+        existing_user.last_activity = func.now()
+        db.commit()
+        db.refresh(existing_user)
+        return existing_user
+    else:
+        # Создаем нового пользователя
+        db_user = User(**user.model_dump())
+        db_user.last_activity = func.now()
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+
+@app.get("/api/users/{telegram_id}", response_model=UserResponse)
+def get_user(telegram_id: int, db: Session = Depends(get_db)):
+    """Получить пользователя по Telegram ID"""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    return user
+
+@app.get("/api/users/{telegram_id}/subscriptions", response_model=List[CategoryResponse])
+def get_user_subscriptions(telegram_id: int, db: Session = Depends(get_db)):
+    """Получить подписки пользователя"""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    return user.subscribed_categories
+
+@app.post("/api/users/{telegram_id}/subscriptions", response_model=SubscriptionResponse)
+def update_user_subscriptions(telegram_id: int, subscription: SubscriptionRequest, db: Session = Depends(get_db)):
+    """Обновить подписки пользователя"""
+    # Получаем или создаем пользователя
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден. Сначала создайте пользователя."
+        )
+    
+    # Получаем категории по ID
+    categories = db.query(Category).filter(Category.id.in_(subscription.category_ids)).all()
+    if len(categories) != len(subscription.category_ids):
+        found_ids = [cat.id for cat in categories]
+        missing_ids = [cat_id for cat_id in subscription.category_ids if cat_id not in found_ids]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Категории не найдены: {missing_ids}"
+        )
+    
+    # Обновляем подписки
+    user.subscribed_categories = categories
+    user.last_activity = func.now()
+    db.commit()
+    db.refresh(user)
+    
+    return SubscriptionResponse(
+        user_id=user.id,
+        subscribed_categories=user.subscribed_categories,
+        message=f"Подписки обновлены. Выбрано категорий: {len(categories)}"
+    )
+
+@app.delete("/api/users/{telegram_id}/subscriptions/{category_id}")
+def remove_user_subscription(telegram_id: int, category_id: int, db: Session = Depends(get_db)):
+    """Удалить подписку на категорию"""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Категория не найдена"
+        )
+    
+    if category in user.subscribed_categories:
+        user.subscribed_categories.remove(category)
+        user.last_activity = func.now()
+        db.commit()
+        return {"message": "Подписка удалена"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пользователь не подписан на эту категорию"
+        )
 
 if __name__ == "__main__":
     import uvicorn
