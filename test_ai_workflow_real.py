@@ -4,7 +4,8 @@
 Использует РЕАЛЬНУЮ структуру данных как от userbot в Stage 2
 """
 
-import requests
+import asyncio
+import aiohttp
 import json
 from datetime import datetime
 
@@ -81,39 +82,93 @@ real_format_data = {
     "executionMode": "production"
 }
 
-def test_ai_workflow():
-    """Тестирует AI workflow с реальной структурой данных"""
+async def test_ai_workflow_diagnosis():
+    """Диагностика проблемы с OpenAI узлом в N8N workflow"""
     
-    headers = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'MorningStarUserbot/1.0',
-        'Authorization': 'Bearer bWLIbaQtoha0sm58OQVHeVSwHZNTszAXJK7ma9vmbEE'
-    }
+    print("🔍 ДИАГНОСТИКА ПРОБЛЕМЫ OpenAI УЗЛА")
+    print("=" * 60)
     
-    print("🧪 Тестирование AI Workflow с реальной структурой данных...")
-    print(f"📍 URL: {WEBHOOK_URL}")
-    print(f"📊 Отправляем {len(real_format_data['posts'])} постов из {len(real_format_data['collection_stats']['channels_processed'])} каналов")
+    backend_url = "http://localhost:8000"
+    
+    # Шаг 1: Проверяем настройку COLLECTION_DEPTH_DAYS
+    print("\n1. 📋 Проверяем настройку COLLECTION_DEPTH_DAYS...")
     
     try:
-        # Отправляем данные НАПРЯМУЮ без обертки "body"
-        response = requests.post(
-            WEBHOOK_URL,
-            headers=headers,
-            json=real_format_data,  # Отправляем напрямую, как userbot
-            timeout=30
-        )
-        
-        print(f"📤 Status Code: {response.status_code}")
-        print(f"📤 Response: {response.text}")
-        
-        if response.status_code == 200:
-            print("✅ Webhook вызван успешно!")
-            print("🔍 Проверьте логи N8N для деталей обработки")
-        else:
-            print(f"❌ Ошибка: {response.status_code}")
-            
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{backend_url}/api/config/COLLECTION_DEPTH_DAYS") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    collection_days = data.get('value', 1)
+                    print(f"✅ COLLECTION_DEPTH_DAYS: {collection_days} дней")
+                    
+                    # Оценка объема данных за указанный период
+                    estimated_posts_per_day = 50  # Примерная оценка
+                    estimated_total_posts = estimated_posts_per_day * int(collection_days)
+                    print(f"📊 Ожидаемое количество постов: ~{estimated_total_posts}")
+                    
+                    if estimated_total_posts > 100:
+                        print(f"⚠️ ПОТЕНЦИАЛЬНАЯ ПРОБЛЕМА: Слишком много постов для OpenAI API")
+                        print(f"   Рекомендация: добавить лимит MAX_POSTS_FOR_AI_ANALYSIS")
+                else:
+                    print(f"❌ Ошибка получения настройки: {response.status}")
+                    
     except Exception as e:
-        print(f"❌ Ошибка при отправке: {e}")
+        print(f"❌ Ошибка: {e}")
+    
+    # Шаг 2: Проверяем последние дайджесты
+    print("\n2. 📈 Анализ последних дайджестов...")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{backend_url}/api/digests?limit=3") as response:
+                if response.status == 200:
+                    digests = await response.json()
+                    print(f"✅ Найдено {len(digests)} последних дайджестов")
+                    
+                    for i, digest in enumerate(digests):
+                        print(f"\n  📄 Дайджест {i+1}:")
+                        print(f"     ID: {digest.get('digest_id', 'N/A')}")
+                        print(f"     Общий постов: {digest.get('total_posts', 0)}")
+                        print(f"     Релевантных: {digest.get('relevant_posts', 0)}")
+                        print(f"     Каналов: {digest.get('channels_processed', 0)}")
+                        print(f"     Время: {digest.get('processed_at', 'N/A')}")
+                        
+                        # Анализ данных дайджеста
+                        try:
+                            digest_data = json.loads(digest.get('digest_data', '{}'))
+                            original_posts = digest_data.get('summary', {}).get('original_posts', 0)
+                            if original_posts > 0:
+                                print(f"     📊 Исходных постов собрано: {original_posts}")
+                                if original_posts > 100:
+                                    print(f"     ⚠️ Много постов - возможна перегрузка OpenAI")
+                        except:
+                            pass
+                            
+                else:
+                    print(f"❌ Ошибка получения дайджестов: {response.status}")
+                    
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+    
+    # Шаг 3: Рекомендации по решению
+    print("\n3. 🛠️ РЕКОМЕНДАЦИИ ПО РЕШЕНИЮ:")
+    print("\nПроблема: OpenAI API захлебывается от большого количества постов")
+    print("\nВарианты решения:")
+    print("1. 📉 ДОБАВИТЬ ЛИМИТ в 'Prepare for AI' node:")
+    print("   - Ограничить до 50-100 постов максимум")
+    print("   - Код: postsForAI = postsForAI.slice(0, 50)")
+    
+    print("\n2. 📊 УВЕЛИЧИТЬ maxTokens в OpenAI node:")
+    print("   - Сейчас: 2000 tokens")
+    print("   - Попробовать: 4000-8000 tokens")
+    
+    print("\n3. 🎯 ФИЛЬТРАЦИЯ ПО КАЧЕСТВУ:")
+    print("   - Отбирать посты с views > 1000")
+    print("   - Фильтровать по длине текста")
+    
+    print("\n4. 📝 РАЗБИТЬ НА БАТЧИ:")
+    print("   - Обрабатывать по 25-30 постов за раз")
+    print("   - Использовать несколько OpenAI вызовов")
 
 if __name__ == "__main__":
-    test_ai_workflow() 
+    asyncio.run(test_ai_workflow_diagnosis()) 

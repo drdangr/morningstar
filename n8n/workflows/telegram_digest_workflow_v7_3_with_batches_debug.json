@@ -1,0 +1,367 @@
+{
+  "name": "telegram_digest_workflow_v7_3_with_batches_debug",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-posts",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [-1280, -200],
+      "id": "webhook-node",
+      "webhookId": "telegram-posts-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log('📥 Processing webhook data...');\nconst data = $json.body || $json;\nconst posts = data.posts || [];\nconsole.log(`📈 Received: ${posts.length} posts`);\nreturn {\n  posts: posts,\n  channels_metadata: data.channels_metadata || {},\n  collection_stats: data.collection_stats || {},\n  timestamp: new Date().toISOString(),\n  has_posts: posts.length > 0\n};"
+      },
+      "name": "Process & Log Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [-1060, -200],
+      "id": "process-log-node"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_posts }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-840, -200],
+      "id": "has-posts-check"
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log('📊 Grouping posts by channels...');\nconst data = $json;\nconst posts = data.posts || [];\nconst channelsMetadata = data.channels_metadata || {};\nconst grouped = {};\n\nposts.forEach(post => {\n    const key = post.channel_username || `channel_${post.channel_id}`;\n    if (!grouped[key]) {\n        grouped[key] = {\n            channel_id: post.channel_id,\n            channel_username: post.channel_username,\n            channel_title: post.channel_title,\n            posts: [],\n            categories: channelsMetadata[post.channel_username]?.categories || []\n        };\n    }\n    grouped[key].posts.push(post);\n});\n\nreturn {\n    timestamp: data.timestamp,\n    stats: data.collection_stats,\n    grouped_posts: grouped,\n    channels_metadata: channelsMetadata\n};"
+      },
+      "name": "Group by Channels",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [-620, -200],
+      "id": "group-channels-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log('🤖 Preparing data for AI with BATCHING...');\nconst groupedPostsData = $json;\nconst groupedPosts = groupedPostsData.grouped_posts || {};\nconst channelsMetadata = groupedPostsData.channels_metadata || {};\n\n// Собираем активные категории\nconst channelCategoryMap = {};\nconst categoryDescriptions = {};\nconst categoryAIPrompts = {};\nlet allActiveCategories = new Set();\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    const channelUsername = channelData.channel_username;\n    const categories = channelData.categories || [];\n    const activeCategories = categories.filter(cat => cat.is_active);\n    \n    channelCategoryMap[channelUsername] = activeCategories;\n    \n    activeCategories.forEach(category => {\n        allActiveCategories.add(category.name);\n        if (category.description) {\n            categoryDescriptions[category.name] = category.description;\n        }\n        if (category.ai_prompt) {\n            categoryAIPrompts[category.name] = category.ai_prompt;\n        }\n    });\n});\n\nconst categories = Array.from(allActiveCategories);\n\n// Подготавливаем посты для AI анализа\nconst postsForAI = [];\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    channelData.posts.forEach(post => {\n        if (post.text && post.text.length > 50) {\n            postsForAI.push({\n                id: post.id,\n                text: post.text.substring(0, 1000),\n                channel: channelData.channel_title,\n                channel_username: channelData.channel_username,\n                views: post.views || 0,\n                date: post.date,\n                url: post.url\n            });\n        }\n    });\n});\n\nconsole.log(`📝 Total posts for AI: ${postsForAI.length} (will be batched by 30)`);\nconsole.log(`📋 Sample post IDs: ${postsForAI.slice(0, 5).map(p => p.id).join(', ')}`);\n\n// Формируем промпт\nconst topicsDescription = categories.map(cat => {\n    const description = categoryDescriptions[cat] || cat;\n    return `${cat} (${description})`;\n}).join(', ');\n\nlet dynamicPrompt = `Отфильтруй посты по темам: ${topicsDescription}.\\n\\nПравило: summary = \\\"NULL\\\" если текст поста НЕ имеет отношения НИ К ОДНОЙ из перечисленных тем.\\n\\nВозвращай JSON: {\\\"results\\\": [{\\\"id\\\": \\\"post_id\\\", \\\"summary\\\": \\\"резюме или NULL\\\", \\\"importance\\\": 8, \\\"urgency\\\": 6, \\\"significance\\\": 7, \\\"category\\\": \\\"Точное название темы\\\"}]}\\n\\nВАЖНО: category должно быть одним из: ${categories.join(', ')} или \\\"NULL\\\"\\n\\nАнализируй по СМЫСЛУ.`;\n\nreturn {\n    timestamp: groupedPostsData.timestamp,\n    stats: groupedPostsData.stats,\n    grouped_posts: groupedPosts,\n    posts_for_ai: postsForAI,\n    total_posts_for_ai: postsForAI.length,\n    dynamic_prompt: dynamicPrompt,\n    categories: categories,\n    channel_category_map: channelCategoryMap,\n    batch_processing: true,\n    version: 'v7.3_with_batches_debug'\n};"
+      },
+      "name": "Prepare for AI",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [-380, -200],
+      "id": "prepare-ai-node"
+    },
+    {
+      "parameters": {
+        "batchSize": 30,
+        "options": {}
+      },
+      "name": "Split Posts Into Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-200, -200],
+      "id": "split-batches-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "const batchData = $json;\nconst prepareData = $('Prepare for AI').all()[0]?.json;\nconst currentBatch = batchData.posts_for_ai || [];\nconst batchIndex = $runIndex + 1;\nconst totalBatches = Math.ceil(prepareData.total_posts_for_ai / 30);\n\nconsole.log(`🔄 Processing batch ${batchIndex}/${totalBatches} with ${currentBatch.length} posts`);\nconsole.log(`📋 Batch ${batchIndex} post IDs: ${currentBatch.map(p => p.id).join(', ')}`);\n\nreturn {\n    dynamic_prompt: prepareData.dynamic_prompt,\n    posts_for_ai: currentBatch,\n    batch_index: batchIndex,\n    total_batches: totalBatches,\n    total_posts_in_batch: currentBatch.length\n};"
+      },
+      "name": "Prepare Batch",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [-20, -200],
+      "id": "prepare-batch-node"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.dynamic_prompt }}"
+            },
+            {
+              "content": "=Проанализируй эти {{ $json.total_posts_in_batch }} постов (батч {{ $json.batch_index }}/{{ $json.total_batches }}):\\n\\n{{ JSON.stringify($json.posts_for_ai) }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.3
+        }
+      },
+      "name": "OpenAI API (Batched)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [200, -200],
+      "id": "openai-batched-node",
+      "credentials": {
+        "openAiApi": {
+          "id": "RinkWxXeXs9tiXAB",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const openAIResponse = $json;\nconst batchData = $('Prepare Batch').all()[$runIndex]?.json;\n\nconsole.log(`📝 Processing OpenAI response for batch ${batchData?.batch_index}`);\nconsole.log(`🔍 OpenAI Response structure:`, JSON.stringify(openAIResponse, null, 2));\n\nlet aiAnalysis = [];\nif (openAIResponse.message?.content?.results) {\n    aiAnalysis = openAIResponse.message.content.results;\n    console.log(`✅ Found results in message.content.results: ${aiAnalysis.length}`);\n} else if (openAIResponse[0]?.message?.content?.results) {\n    aiAnalysis = openAIResponse[0].message.content.results;\n    console.log(`✅ Found results in [0].message.content.results: ${aiAnalysis.length}`);\n} else if (openAIResponse.message?.content && typeof openAIResponse.message.content === 'string') {\n    try {\n        const parsed = JSON.parse(openAIResponse.message.content);\n        aiAnalysis = parsed.results || parsed;\n        console.log(`✅ Parsed from string content: ${aiAnalysis.length}`);\n    } catch (error) {\n        console.log('⚠️ Failed to parse string content:', error.message);\n    }\n} else {\n    console.log('❌ No valid AI results found in any expected structure');\n    console.log('🔍 Available keys:', Object.keys(openAIResponse));\n}\n\nconsole.log(`✅ Extracted ${aiAnalysis.length} results from batch ${batchData?.batch_index}`);\nif (aiAnalysis.length > 0) {\n    console.log(`📋 Sample AI result:`, JSON.stringify(aiAnalysis[0], null, 2));\n}\n\nreturn {\n    batch_index: batchData?.batch_index || $runIndex + 1,\n    batch_results: aiAnalysis,\n    batch_posts_count: batchData?.total_posts_in_batch || 0,\n    processed_at: new Date().toISOString(),\n    debug_info: {\n        original_response_keys: Object.keys(openAIResponse),\n        ai_results_count: aiAnalysis.length\n    }\n};"
+      },
+      "name": "Process Batch Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [420, -200],
+      "id": "process-batch-results-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log('🔗 Merging all batch results...');\nconst allBatchResults = $input.all();\nconst prepareData = $('Prepare for AI').all()[0]?.json;\n\nlet allAIAnalysis = [];\nlet totalProcessedPosts = 0;\n\nallBatchResults.forEach((batchResult, index) => {\n    const batchData = batchResult.json;\n    console.log(`📦 Batch ${batchData.batch_index}: ${batchData.batch_results.length} results`);\n    allAIAnalysis = allAIAnalysis.concat(batchData.batch_results);\n    totalProcessedPosts += batchData.batch_posts_count;\n});\n\nconsole.log(`✅ Merged ${allAIAnalysis.length} AI results from ${allBatchResults.length} batches`);\nconsole.log(`📋 Sample merged AI IDs: ${allAIAnalysis.slice(0, 5).map(item => item.id).join(', ')}`);\n\n// Применяем результаты к постам\nconst groupedPosts = prepareData.grouped_posts || {};\nconst channelCategoryMap = prepareData.channel_category_map || {};\nconst processedChannels = {};\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    const channelCategories = channelCategoryMap[channelData.channel_username] || [];\n    \n    console.log(`🔍 Processing channel: ${channelData.channel_title} with ${channelData.posts.length} posts`);\n    \n    const processedPosts = channelData.posts.map(post => {\n        const analysis = allAIAnalysis.find(item => item.id == post.id);\n        const isRelevant = analysis && analysis.summary && analysis.summary !== 'NULL';\n        \n        if (analysis) {\n            console.log(`✅ Found AI analysis for post ${post.id}: relevant=${isRelevant}`);\n        } else {\n            console.log(`❌ No AI analysis found for post ${post.id}`);\n        }\n        \n        return {\n            ...post,\n            ai_summary: analysis?.summary || post.text?.substring(0, 150) + '...',\n            ai_importance: analysis?.importance || 0,\n            ai_urgency: analysis?.urgency || 0,\n            ai_significance: analysis?.significance || 0,\n            post_category: analysis?.category || 'Unknown',\n            is_relevant: isRelevant,\n            parsing_method: 'batch_processing_v7.3_debug'\n        };\n    });\n    \n    const relevantPosts = processedPosts.filter(post => post.is_relevant);\n    console.log(`📊 ${channelData.channel_title}: ${processedPosts.length} → ${relevantPosts.length} relevant`);\n    \n    relevantPosts.sort((a, b) => {\n        const scoreA = a.ai_importance * 3 + a.ai_urgency * 2 + a.ai_significance * 2 + Math.log(a.views || 1);\n        const scoreB = b.ai_importance * 3 + b.ai_urgency * 2 + b.ai_significance * 2 + Math.log(b.views || 1);\n        return scoreB - scoreA;\n    });\n    \n    processedChannels[channelKey] = {\n        ...channelData,\n        posts: relevantPosts.slice(0, 8),\n        all_processed_posts: processedPosts.length,\n        relevant_posts: relevantPosts.length,\n        ai_processed: true,\n        channel_categories: channelCategories.map(c => c.name)\n    };\n});\n\nreturn {\n    timestamp: prepareData.timestamp,\n    processed_at: new Date().toISOString(),\n    stats: prepareData.stats,\n    processed_channels: processedChannels,\n    total_channels: Object.keys(processedChannels).length,\n    ai_analysis_stats: {\n        total_analyzed: allAIAnalysis.length,\n        relevant_posts: Object.values(processedChannels).reduce((sum, ch) => sum + ch.relevant_posts, 0),\n        batches_processed: allBatchResults.length,\n        total_posts_processed: totalProcessedPosts,\n        avg_importance: allAIAnalysis.reduce((sum, item) => sum + (item.importance || 0), 0) / Math.max(allAIAnalysis.length, 1),\n        avg_urgency: allAIAnalysis.reduce((sum, item) => sum + (item.urgency || 0), 0) / Math.max(allAIAnalysis.length, 1),\n        avg_significance: allAIAnalysis.reduce((sum, item) => sum + (item.significance || 0), 0) / Math.max(allAIAnalysis.length, 1)\n    },\n    batch_processing_applied: true,\n    relevance_parsing_version: 'v7.3_batch_processing_debug'\n};"
+      },
+      "name": "Merge Batch Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [640, -200],
+      "id": "merge-results-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "const processedData = $json;\n\nconsole.log(`🔍 Prepare Digest: ${Object.keys(processedData.processed_channels).length} channels to process`);\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: processedData.timestamp,\n  processed_at: processedData.processed_at,\n  channels: [],\n  total_posts: 0,\n  batch_processing_applied: true,\n  summary: {\n    channels_processed: Object.keys(processedData.processed_channels).length,\n    original_posts: processedData.stats?.total_posts || 0,\n    relevant_posts: processedData.ai_analysis_stats?.relevant_posts || 0,\n    avg_importance: processedData.ai_analysis_stats?.avg_importance || 0,\n    avg_urgency: processedData.ai_analysis_stats?.avg_urgency || 0,\n    avg_significance: processedData.ai_analysis_stats?.avg_significance || 0,\n    batches_processed: processedData.ai_analysis_stats?.batches_processed || 0\n  }\n};\n\nObject.keys(processedData.processed_channels).forEach(channelKey => {\n  const channelData = processedData.processed_channels[channelKey];\n  \n  console.log(`📺 Adding channel ${channelData.channel_title}: ${channelData.posts.length} posts`);\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    categories: channelData.channel_categories || [],\n    posts_count: channelData.posts.length,\n    posts: channelData.posts.map(post => ({\n      title: (post.text || '').substring(0, 100) + '...',\n      url: post.url,\n      views: post.views,\n      date: post.date,\n      ai_importance: post.ai_importance,\n      ai_urgency: post.ai_urgency,\n      ai_significance: post.ai_significance,\n      summary: post.ai_summary,\n      post_category: post.post_category\n    }))\n  });\n  \n  digest.total_posts += channelData.posts.length;\n});\n\nconsole.log(`✅ Debug digest ready: ${digest.total_posts} posts, ${digest.summary.batches_processed} batches`);\nconsole.log(`📋 Final channels with posts: ${digest.channels.filter(ch => ch.posts_count > 0).length}`);\n\nreturn digest;"
+      },
+      "name": "Prepare Digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [860, -200],
+      "id": "prepare-digest-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "const digest = $json;\n\nconst backendPayload = {\n  digest_id: digest.id,\n  total_posts: digest.total_posts,\n  channels_processed: digest.summary.channels_processed,\n  original_posts: digest.summary.original_posts,\n  relevant_posts: digest.summary.relevant_posts,\n  avg_importance: digest.summary.avg_importance,\n  avg_urgency: digest.summary.avg_urgency,\n  avg_significance: digest.summary.avg_significance,\n  batch_processing_applied: digest.batch_processing_applied,\n  digest_data: JSON.stringify(digest),\n  processed_at: digest.processed_at\n};\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  backend_payload: backendPayload,\n  message: `Debug batch digest: ${digest.total_posts} posts, ${digest.summary.batches_processed} batches`,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "Prepare Backend Payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1080, -200],
+      "id": "prepare-backend-node"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/digests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.backend_payload) }}"
+      },
+      "name": "Save to Backend API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, -200],
+      "id": "save-backend-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "const apiResponse = $json;\n\nif (apiResponse.digest_id) {\n  console.log('🎉 Debug batch digest saved successfully!');\n  return {\n    success: true,\n    digest_id: apiResponse.digest_id,\n    message: 'Debug batch digest saved!',\n    timestamp: new Date().toISOString()\n  };\n} else {\n  return {\n    success: false,\n    error: 'Failed to save debug batch digest',\n    timestamp: new Date().toISOString()\n  };\n}"
+      },
+      "name": "Process API Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1520, -200],
+      "id": "process-api-response-node"
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log('⚠️ No posts to process');\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "No Posts Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [-840, 100],
+      "id": "no-posts-node"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Log Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Group by Channels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Channels": {
+      "main": [
+        [
+          {
+            "node": "Prepare for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare for AI": {
+      "main": [
+        [
+          {
+            "node": "Split Posts Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Posts Into Batches": {
+      "main": [
+        [
+          {
+            "node": "Prepare Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Batch": {
+      "main": [
+        [
+          {
+            "node": "OpenAI API (Batched)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI API (Batched)": {
+      "main": [
+        [
+          {
+            "node": "Process Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Batch Results": {
+      "main": [
+        [
+          {
+            "node": "Merge Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Batch Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Digest": {
+      "main": [
+        [
+          {
+            "node": "Prepare Backend Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Backend Payload": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Backend API": {
+      "main": [
+        [
+          {
+            "node": "Process API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "batch-debug-version",
+  "meta": {
+    "instanceId": "batch-debug-workflow"
+  },
+  "id": "BatchDebugWorkflow",
+  "tags": []
+} 
