@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -475,11 +476,11 @@ class MorningStarUserbot:
             logger.exception("Полная трассировка ошибки:")  # Добавляем полную трассировку
             return []
 
-    async def send_to_n8n(self, data):
-        """Отправка данных в n8n webhook"""
+    async def send_to_backend(self, data):
+        """Отправка данных в Backend API posts_cache"""
         # В режиме тестирования просто логируем данные
         if TEST_MODE:
-            logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: данные для n8n:")
+            logger.info("🧪 ТЕСТОВЫЙ РЕЖИМ: данные для Backend API:")
             logger.info("📊 Статистика: %s", data.get('collection_stats', {}))
             logger.info("📝 Количество постов: %d", len(data.get('posts', [])))
             
@@ -492,47 +493,68 @@ class MorningStarUserbot:
                                (post.get('text', '') or 'Без текста')[:100] + '...')
             
             return True
+            
+        BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
         
-        if not N8N_WEBHOOK_URL:
-            logger.warning("⚠️ N8N_WEBHOOK_URL не настроен, пропускаю отправку")
-            return False
+        # Конвертируем данные в формат PostsBatchCreate
+        posts_batch = {
+            "timestamp": data.get("timestamp"),
+            "collection_stats": data.get("collection_stats", {}),
+            "posts": [],
+            "channels_metadata": data.get("channels_metadata", {})
+        }
+        
+        # Конвертируем каждый пост в формат PostCacheCreate
+        for post in data.get("posts", []):
+            post_cache = {
+                "channel_telegram_id": post.get("channel_id"),
+                "telegram_message_id": post.get("id"),
+                "title": None,  # В userbot нет разделения title/content
+                "content": post.get("text", ""),
+                "media_urls": [post.get("url")] if post.get("url") else [],  # Массив URL, не JSON строка
+                "views": post.get("views", 0),
+                "post_date": post.get("date"),
+                "processing_status": "pending"
+            }
+            posts_batch["posts"].append(post_cache)
 
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "MorningStarUserbot/1.0",
         }
 
-        if N8N_WEBHOOK_TOKEN:
-            headers["Authorization"] = f"Bearer {N8N_WEBHOOK_TOKEN}"
-
         try:
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                logger.info("📤 Отправляю данные в n8n: %s", N8N_WEBHOOK_URL)
-                logger.debug("📊 Размер данных: %d постов", len(data.get('posts', [])))
+                backend_url = f"{BACKEND_API_URL}/api/posts/batch"
+                logger.info("📤 Отправляю данные в Backend API: %s", backend_url)
+                logger.debug("📊 Размер данных: %d постов", len(posts_batch["posts"]))
 
                 async with session.post(
-                    N8N_WEBHOOK_URL, json=data, headers=headers
+                    backend_url, json=posts_batch, headers=headers
                 ) as response:
-                    if response.status == 200:
+                    if response.status == 201:
+                        response_json = await response.json()
                         logger.info(
-                            "✅ Данные успешно отправлены в n8n: %s", response.status
+                            "✅ Данные успешно отправлены в Backend: создано %s постов, пропущено %s",
+                            response_json.get("created_posts", 0),
+                            response_json.get("skipped_posts", 0)
                         )
                         return True
                     else:
                         response_text = await response.text()
                         logger.error(
-                            "❌ Ошибка отправки в n8n: %s - %s",
+                            "❌ Ошибка отправки в Backend API: %s - %s",
                             response.status,
                             response_text,
                         )
                         return False
 
         except asyncio.TimeoutError:
-            logger.error("⏰ Timeout при отправке в n8n")
+            logger.error("⏰ Timeout при отправке в Backend API")
             return False
         except Exception as e:
-            logger.error("💥 Ошибка при отправке в n8n: %s", e)
+            logger.error("💥 Ошибка при отправке в Backend API: %s", e)
             return False
 
     async def collect_and_send(self):
@@ -595,7 +617,7 @@ class MorningStarUserbot:
             failed_channels,
         )
 
-        # Отправляем данные в n8n
+        # Отправляем данные в Backend API
         if all_posts:
             webhook_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -609,11 +631,11 @@ class MorningStarUserbot:
                 "channels_metadata": getattr(self, 'channels_metadata', {}),  # Добавляем метаданные каналов с категориями
             }
 
-            success = await self.send_to_n8n(webhook_data)
+            success = await self.send_to_backend(webhook_data)
             if success:
-                logger.info("📤 Отправлено %s постов в n8n", len(all_posts))
+                logger.info("📤 Отправлено %s постов в Backend API", len(all_posts))
             else:
-                logger.error("❌ Ошибка отправки в n8n")
+                logger.error("❌ Ошибка отправки в Backend API")
         else:
             logger.warning("⚠️ Нет постов для отправки")
 

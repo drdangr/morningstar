@@ -458,3 +458,47 @@ class ConflictManager:
 **✅ Миграционная стратегия ясна**
 
 **Следующий шаг:** Обновление ROADMAP.md с детальными задачами Stage 6
+
+---
+
+## 🔗 Запуск текущей системы (для разработки Stage 6)
+
+### Пошаговый запуск всех компонентов
+
+#### 1. Backend API (первым делом)
+```bash
+cd C:\Work\MorningStarBot3\backend
+python main.py
+```
+**Результат:** API на `http://localhost:8000` + Swagger документация
+
+#### 2. Admin Panel (веб-интерфейс)
+```bash
+cd C:\Work\MorningStarBot3\frontend\admin-panel
+npm install && npm run dev
+```
+**Результат:** Веб-интерфейс на `http://localhost:3000`
+
+#### 3. N8N Workflow Engine (временно для Stage 6)
+```bash
+cd C:\Work\MorningStarBot3
+npx n8n
+```
+**Результат:** N8N на `http://localhost:5678`
+
+#### 4. Публичный Telegram-бот
+```bash
+cd C:\Work\MorningStarBot3\bot
+python src/bot.py
+```
+
+#### 5. Userbot (сбор контента)
+```bash
+cd C:\Work\MorningStarBot3\userbot  
+python src/bot.py
+```
+
+### End-to-End проверка:
+✅ Backend API → ✅ Admin Panel → ✅ N8N → ✅ Публичный бот → ✅ Userbot
+
+**Полная цепочка работает — готова к эволюции в мультитенантную платформу!** 

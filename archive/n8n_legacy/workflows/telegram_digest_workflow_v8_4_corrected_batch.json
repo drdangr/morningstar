@@ -1,0 +1,404 @@
+{
+  "name": "Telegram Digest Workflow v8.4 - Corrected Batch Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-posts",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "name": "Webhook - Receive Posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        120
+      ],
+      "webhookId": "d2e90364-8975-4df2-b3e3-b88d38f7e78b",
+      "id": "b0aaf1b7-a00a-4deb-bed6-2d7d5cfda1b9"
+    },
+    {
+      "parameters": {
+        "functionCode": "const inputData = $json;\nconsole.log(`🎯 Received webhook data with ${JSON.stringify(inputData).length} characters`);\n\nif (inputData.posts && Array.isArray(inputData.posts)) {\n  console.log(`📊 Posts array contains: ${inputData.posts.length} items`);\n} else {\n  console.log('⚠️ Posts array not found or not an array');\n}\n\nreturn inputData;"
+      },
+      "name": "Process & Log Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        60,
+        120
+      ],
+      "id": "d84eb325-1ed8-4b88-88fe-ea8e8f6c8e85"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c6cc2cca-2c58-4e2b-94c8-fe2b71c40e86",
+              "leftValue": "={{ $json.posts && Array.isArray($json.posts) && $json.posts.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Has Posts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        280,
+        120
+      ],
+      "id": "be9b2987-b88c-4509-9e32-f06caa0e30a5"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ВОССТАНОВЛЕННАЯ ФУНКЦИОНАЛЬНОСТЬ v8.2 - полный функционал старой ноды \"Prepare for AI\"\nconsole.log('🤖 Preparing all posts for AI batching with FULL functionality v8.2...');\nconst data = $json;\nconst posts = data.posts || [];\nconst channelsMetadata = data.channels_metadata || {};\n\nconsole.log(`📋 Found posts: ${posts.length}`);\nconsole.log('📋 Channels metadata available:', Object.keys(channelsMetadata));\n\n// ВОССТАНОВЛЕНО: Разделяем объекты для description и ai_prompt\nconst allActiveCategories = new Set();\nconst channelCategoryMap = {};\nconst categoryDescriptions = {}; // Для тем анализа (description поле)\nconst categoryAIPrompts = {};     // Для кастомных инструкций (ai_prompt поле)\n\nObject.keys(channelsMetadata).forEach(channelUsername => {\n    const channelData = channelsMetadata[channelUsername];\n    console.log(`📋 Канал: ${channelData.title} (${channelUsername})`);\n    \n    if (channelData.categories && Array.isArray(channelData.categories)) {\n        const activeCategories = channelData.categories.filter(cat => cat.is_active);\n        channelCategoryMap[channelUsername] = activeCategories;\n        \n        activeCategories.forEach(category => {\n            allActiveCategories.add(category.name);\n            \n            // ВОССТАНОВЛЕНО: правильно разделяем поля\n            if (category.description) {\n                categoryDescriptions[category.name] = category.description;\n            }\n            if (category.ai_prompt) {\n                categoryAIPrompts[category.name] = category.ai_prompt;\n            }\n            \n            console.log(`  🏷️ Активная категория: ${category.name}`);\n            console.log(`    📝 Description: ${category.description?.substring(0, 50)}...`);\n            console.log(`    🤖 AI Prompt: ${category.ai_prompt?.substring(0, 50)}...`);\n        });\n        \n        if (activeCategories.length === 0) {\n            console.log(`  ⚠️ Нет активных категорий для ${channelUsername}`);\n        }\n    }\n});\n\nconst categories = Array.from(allActiveCategories);\n\nconsole.log(`✅ RESTORED v8.2: Найдено ${categories.length} уникальных активных категорий:`, categories);\nconsole.log('🔗 Связи каналов с категориями:');\nObject.keys(channelCategoryMap).forEach(channel => {\n    const cats = channelCategoryMap[channel].map(c => c.name).join(', ');\n    console.log(`  ${channel} → [${cats}]`);\n});\n\n// ВОССТАНОВЛЕНО: Формируем описание тем из поля description\nconst topicsDescription = categories.map(cat => {\n    const description = categoryDescriptions[cat] || cat;\n    return `${cat} (${description})`;\n}).join(', ');\n\n// ВОССТАНОВЛЕНО: Формируем структурированные кастомные инструкции\nconst customInstructions = categories.map(cat => {\n    const description = categoryDescriptions[cat] || cat;\n    const aiPrompt = categoryAIPrompts[cat];\n    if (aiPrompt) {\n        return `для постов на тему '${cat} (${description})' учти инструкции: ${aiPrompt}`;\n    }\n    return null;\n}).filter(instruction => instruction).join(', ');\n\n// ВОССТАНОВЛЕНО: Улучшенный промпт с правильным разделением полей\nlet dynamicPrompt = `Отфильтруй посты по темам: ${topicsDescription}.\n\nПравило: summary = \"NULL\" если текст поста НЕ имеет отношения НИ К ОДНОЙ из перечисленных тем.\n\nДля каждого поста:\n\nЕСЛИ пост имеет отношение к теме - дай краткое резюме + метрики 1-10.\nЕСЛИ пост НЕ имеет отношения к темам - напиши \"NULL\" + метрики 0.\n\nВозвращай JSON:\n{\"results\": [{\"id\": \"post_id\", \"summary\": \"резюме или NULL\", \"importance\": 8, \"urgency\": 6, \"significance\": 7, \"category\": \"Точное название темы\"}]}\n\nВАЖНО:\n- Поле \"category\" должно содержать ТОЧНОЕ название темы: ${categories.join(', ')}\n- Выбирай НАИБОЛЕЕ ПОДХОДЯЩУЮ тему для каждого поста\n- Для нерелевантных постов: category = \"NULL\"\n\nАнализируй по СМЫСЛУ, а не только по ключевым словам. Учитывай контекст и семантику.`;\n\n// ВОССТАНОВЛЕНО: Добавляем структурированные кастомные инструкции\nif (customInstructions) {\n    dynamicPrompt += `\n\nДополнительные инструкции: ${customInstructions}`;\n    console.log('✅ Added RESTORED custom AI instructions from ai_prompt fields');\n}\n\nconsole.log('🔮 Generated RESTORED prompt v8.2 with topic-specific instructions');\nconsole.log('📊 Categories for analysis (from description):', categories);\nconsole.log('📊 Custom instructions (from ai_prompt):', Object.keys(categoryAIPrompts).length, 'found');\nconsole.log('🎯 Topics description:', topicsDescription);\nif (customInstructions) {\n    console.log('🤖 Custom instructions:', customInstructions.substring(0, 200) + '...');\n}\n\n// FALLBACK только если вообще нет категорий\nif (categories.length === 0) {\n    console.log('❌ КРИТИЧЕСКАЯ ОШИБКА: Нет активных категорий, используем fallback');\n    const fallbackPrompt = `Анализируй посты и определяй их релевантность общим новостным темам. Для релевантных постов давай краткое резюме и метрики важности/срочности/значимости, для нерелевантных - \"NULL\".`;\n    \n    return {\n        timestamp: data.timestamp,\n        collection_stats: data.collection_stats,\n        channels_metadata: channelsMetadata,\n        posts: posts,\n        total_posts: posts.length,\n        dynamic_prompt: fallbackPrompt,\n        categories: ['Общие новости'],\n        channel_category_map: {},\n        category_descriptions: {},\n        category_ai_prompts: {},\n        error: 'No active categories found',\n        batch_processing: true,\n        version: 'v8.2_fallback'\n    };\n}\n\nconsole.log(`📝 Prepared ${posts.length} posts for ENHANCED batching`);\n\nreturn {\n    timestamp: data.timestamp,\n    collection_stats: data.collection_stats,\n    channels_metadata: channelsMetadata,\n    posts: posts,\n    total_posts: posts.length,\n    dynamic_prompt: dynamicPrompt,\n    categories: categories,\n    channel_category_map: channelCategoryMap,\n    category_descriptions: categoryDescriptions,\n    category_ai_prompts: categoryAIPrompts,\n    topics_description: topicsDescription,\n    custom_instructions: customInstructions,\n    binary_relevance: true,\n    with_metrics: true,\n    batch_processing: true,\n    version: 'v8.2_full_functionality_restored'\n};"
+      },
+      "name": "Prepare Posts for Batching",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        -60
+      ],
+      "id": "e7da8b63-b7ea-4b0a-9ea9-7e5d78e95d93"
+    },
+    {
+      "parameters": {
+        "batchSize": 30,
+        "options": {}
+      },
+      "name": "Split Posts Into Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        880,
+        -60
+      ],
+      "id": "7621a8d4-6703-4f39-bc5c-598e5dd8656a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ВОССТАНОВЛЕНА функциональность с категориями каналов v8.2\nconst currentBatch = $json;\nconst originalData = $('Prepare Posts for Batching').all()[0]?.json;\nconst batchIndex = $runIndex + 1;\nconst totalBatches = Math.ceil(originalData.total_posts / 30);\n\nconsole.log(`🔄 Processing ENHANCED batch ${batchIndex}/${totalBatches}`);\n\n// ВОССТАНОВЛЕНО: Подготавливаем текущий батч для AI с категориями каналов\nconst postsForAI = (Array.isArray(currentBatch) ? currentBatch : [currentBatch]).map(post => {\n    // ВОССТАНОВЛЕНО: добавляем категории канала к каждому посту\n    const channelUsername = post.channel_username;\n    const channelCategories = originalData.channel_category_map[channelUsername]?.map(c => c.name) || [];\n    \n    return {\n        id: post.id,\n        text: post.text?.substring(0, 1000) || '',\n        channel: post.channel_title,\n        channel_username: channelUsername,\n        views: post.views || 0,\n        date: post.date,\n        url: post.url,\n        channel_categories: channelCategories // ВОССТАНОВЛЕНО: важное поле!\n    };\n}).filter(post => post.text.length > 10); // ИСПРАВЛЕНО: было 50, стало 10\n\nconsole.log(`📊 ENHANCED Batch ${batchIndex}: ${(Array.isArray(currentBatch) ? currentBatch : [currentBatch]).length} input posts → ${postsForAI.length} after filter`);\n\n// ВОССТАНОВЛЕНО: передаем все важные данные для AI\nreturn {\n    dynamic_prompt: originalData.dynamic_prompt,\n    posts_for_ai: postsForAI,\n    batch_index: batchIndex,\n    total_batches: totalBatches,\n    total_posts_in_batch: postsForAI.length,\n    channels_metadata: originalData.channels_metadata,\n    channel_category_map: originalData.channel_category_map,\n    category_descriptions: originalData.category_descriptions,\n    category_ai_prompts: originalData.category_ai_prompts,\n    custom_instructions: originalData.custom_instructions,\n    categories: originalData.categories\n};"
+      },
+      "name": "Prepare Batch for AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        -260
+      ],
+      "id": "979a76fe-bbdb-4764-86df-f6aebf7d332e"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.dynamic_prompt }}"
+            },
+            {
+              "content": "=Проанализируй эти {{ $json.total_posts_in_batch }} постов (батч {{ $json.batch_index }}/{{ $json.total_batches }}):\n\n{{ JSON.stringify($json.posts_for_ai) }}\n\nДополнительный контекст:\n- Всего категорий для анализа: {{ $json.categories.join(', ') }}\n{{ $json.custom_instructions ? '- Кастомные инструкции: ' + $json.custom_instructions : '' }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "maxTokens": 6000,
+          "temperature": 0.3
+        }
+      },
+      "name": "OpenAI API (Enhanced)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        -260
+      ],
+      "id": "595372aa-023b-417b-919c-d4456a73663c",
+      "credentials": {
+        "openAiApi": {
+          "id": "RinkWxXeXeXs9tiXAB",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const openAIResponse = $json;\nconst batchData = $('Prepare Batch for AI').all()[$runIndex]?.json;\n\nconsole.log(`📝 Processing ENHANCED OpenAI response for batch ${batchData?.batch_index}`);\n\nlet aiAnalysis = [];\nlet parseSuccess = false;\n\n// ИСПРАВЛЕННЫЙ ПАРСИНГ - проверяем правильную структуру [0].message.content\nif (Array.isArray(openAIResponse) && openAIResponse[0]?.message?.content) {\n    const contentString = openAIResponse[0].message.content;\n    console.log(`🔍 Found content string, length: ${contentString.length}`);\n    \n    try {\n        const parsed = JSON.parse(contentString);\n        aiAnalysis = parsed.results || [];\n        parseSuccess = true;\n        console.log(`✅ Successfully parsed from [0].message.content: ${aiAnalysis.length} results`);\n    } catch (error) {\n        console.log('⚠️ Failed to parse [0].message.content as JSON:', error.message);\n        \n        // Попытка исправить обрезанный JSON\n        try {\n            let fixedContent = contentString;\n            if (!fixedContent.endsWith('}]}}') && !fixedContent.endsWith('}]}')) {\n                const openBraces = (fixedContent.match(/{/g) || []).length;\n                const closeBraces = (fixedContent.match(/}/g) || []).length;\n                const openBrackets = (fixedContent.match(/\\[/g) || []).length;\n                const closeBrackets = (fixedContent.match(/\\]/g) || []).length;\n                \n                for (let i = 0; i < openBraces - closeBraces; i++) {\n                    fixedContent += '}';\n                }\n                for (let i = 0; i < openBrackets - closeBrackets; i++) {\n                    fixedContent += ']';\n                }\n                \n                console.log(`🔧 Attempting to fix truncated JSON...`);\n                const fixedParsed = JSON.parse(fixedContent);\n                aiAnalysis = fixedParsed.results || [];\n                parseSuccess = true;\n                console.log(`✅ Fixed truncated JSON: ${aiAnalysis.length} results`);\n            }\n        } catch (fixError) {\n            console.log('❌ Failed to fix truncated JSON:', fixError.message);\n        }\n    }\n}\n\n// Fallback для других структур\nif (!parseSuccess) {\n    if (openAIResponse.message?.content?.results) {\n        aiAnalysis = openAIResponse.message.content.results;\n        console.log(`✅ Found results in message.content.results: ${aiAnalysis.length}`);\n    } else if (openAIResponse.message?.content && typeof openAIResponse.message.content === 'string') {\n        try {\n            const parsed = JSON.parse(openAIResponse.message.content);\n            aiAnalysis = parsed.results || parsed;\n            console.log(`✅ Parsed from string content: ${aiAnalysis.length}`);\n        } catch (error) {\n            console.log('⚠️ Failed to parse string content:', error.message);\n        }\n    }\n}\n\nconsole.log(`✅ ENHANCED Batch ${batchData?.batch_index} processed: ${aiAnalysis.length} AI results`);\n\n// Сохраняем результаты батча для последующего слияния\nreturn {\n    batch_index: batchData?.batch_index || $runIndex + 1,\n    batch_results: aiAnalysis,\n    batch_posts_count: batchData?.total_posts_in_batch || 0,\n    processed_at: new Date().toISOString(),\n    parse_success: parseSuccess,\n    channels_metadata: batchData?.channels_metadata,\n    channel_category_map: batchData?.channel_category_map,\n    category_descriptions: batchData?.category_descriptions,\n    category_ai_prompts: batchData?.category_ai_prompts,\n    custom_instructions: batchData?.custom_instructions\n};"
+      },
+      "name": "Process Batch Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        80
+      ],
+      "id": "d1f34e6e-8a7f-4461-8718-361454e59868"
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('🔗 Merging all ENHANCED batch results...');\n// ИСПРАВЛЕНО: получаем данные от Process Batch Results вместо $input.all()\nconst allBatchResults = $('Process Batch Results').all();\nconst originalData = $('Prepare Posts for Batching').all()[0]?.json;\n\n// Собираем все AI результаты\nlet allAIAnalysis = [];\nlet totalProcessedPosts = 0;\n\nallBatchResults.forEach((batchResult, index) => {\n    const batchData = batchResult?.json || {};\n    console.log(`📦 ENHANCED Batch ${batchData.batch_index || index + 1}: ${(batchData.batch_results || []).length} results (parse_success: ${batchData.parse_success || false})`);\n    \n    const batchResults = batchData.batch_results || [];\n    if (Array.isArray(batchResults)) {\n        allAIAnalysis = allAIAnalysis.concat(batchResults);\n    }\n    \n    totalProcessedPosts += batchData.batch_posts_count || 0;\n});\n\nconsole.log(`✅ Merged ${allAIAnalysis.length} ENHANCED AI results from ${allBatchResults.length} batches`);\n\n// Группируем исходные посты по каналам\nconst posts = originalData?.posts || [];\nconst channelsMetadata = originalData?.channels_metadata || {};\nconst channelCategoryMap = originalData?.channel_category_map || {};\n\nconst groupedPosts = {};\nposts.forEach(post => {\n    const key = post.channel_username || `channel_${post.channel_id}`;\n    if (!groupedPosts[key]) {\n        groupedPosts[key] = {\n            channel_id: post.channel_id,\n            channel_username: post.channel_username,\n            channel_title: post.channel_title,\n            posts: [],\n            categories: channelsMetadata[post.channel_username]?.categories || []\n        };\n    }\n    groupedPosts[key].posts.push(post);\n});\n\n// Применяем AI результаты к сгруппированным постам\nconst processedChannels = {};\n\nObject.keys(groupedPosts).forEach(channelKey => {\n    const channelData = groupedPosts[channelKey];\n    const channelCategories = channelCategoryMap[channelData.channel_username] || [];\n    \n    const processedPosts = channelData.posts.map(post => {\n        const analysis = allAIAnalysis.find(item => item.id == post.id);\n        const isRelevant = analysis && analysis.summary && analysis.summary !== 'NULL';\n        \n        return {\n            ...post,\n            ai_summary: analysis?.summary || post.text?.substring(0, 150) + '...',\n            ai_importance: analysis?.importance || 0,\n            ai_urgency: analysis?.urgency || 0,\n            ai_significance: analysis?.significance || 0,\n            post_category: analysis?.category || 'Unknown',\n            is_relevant: isRelevant,\n            parsing_method: 'enhanced_v8.4_corrected_batch_processing'\n        };\n    });\n    \n    const relevantPosts = processedPosts.filter(post => post.is_relevant);\n    \n    relevantPosts.sort((a, b) => {\n        const scoreA = a.ai_importance * 3 + a.ai_urgency * 2 + a.ai_significance * 2 + Math.log(a.views || 1);\n        const scoreB = b.ai_importance * 3 + b.ai_urgency * 2 + b.ai_significance * 2 + Math.log(b.views || 1);\n        return scoreB - scoreA;\n    });\n    \n    if (relevantPosts.length > 0) {\n        processedChannels[channelKey] = {\n            ...channelData,\n            posts: relevantPosts.slice(0, 8),\n            all_processed_posts: processedPosts.length,\n            relevant_posts: relevantPosts.length,\n            ai_processed: true,\n            channel_categories: channelCategories.map(c => c.name)\n        };\n    }\n    \n    console.log(`📊 ${channelData.channel_title}: ${processedPosts.length} → ${relevantPosts.length} relevant`);\n});\n\nreturn {\n    timestamp: originalData?.timestamp || new Date().toISOString(),\n    processed_at: new Date().toISOString(),\n    stats: originalData?.collection_stats || {},\n    processed_channels: processedChannels,\n    total_channels: Object.keys(processedChannels).length,\n    ai_analysis_stats: {\n        total_analyzed: allAIAnalysis.length,\n        relevant_posts: Object.values(processedChannels).reduce((sum, ch) => sum + ch.relevant_posts, 0),\n        batches_processed: allBatchResults.length,\n        total_posts_processed: totalProcessedPosts,\n        avg_importance: allAIAnalysis.reduce((sum, item) => sum + (item.importance || 0), 0) / Math.max(allAIAnalysis.length, 1),\n        avg_urgency: allAIAnalysis.reduce((sum, item) => sum + (item.urgency || 0), 0) / Math.max(allAIAnalysis.length, 1),\n        avg_significance: allAIAnalysis.reduce((sum, item) => sum + (item.significance || 0), 0) / Math.max(allAIAnalysis.length, 1)\n    },\n    batch_processing_applied: true,\n    enhanced_functionality: {\n        custom_instructions_applied: originalData?.custom_instructions ? true : false,\n        category_ai_prompts_count: Object.keys(originalData?.category_ai_prompts || {}).length,\n        categories_with_prompts: Object.keys(originalData?.category_ai_prompts || [])\n    },\n    relevance_parsing_version: 'v8.4_corrected_batch_processing'\n};"
+      },
+      "name": "Merge All Batch Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -40
+      ],
+      "id": "b7d78037-dac9-4c9d-a8c3-67f141d6954d"
+    },
+    {
+      "parameters": {
+        "jsCode": "const processedData = $json;\n\nconst digest = {\n  id: `digest_${Date.now()}`,\n  created_at: processedData.timestamp,\n  processed_at: processedData.processed_at,\n  channels: [],\n  total_posts: 0,\n  batch_processing_applied: true,\n  enhanced_functionality: processedData.enhanced_functionality,\n  summary: {\n    channels_processed: Object.keys(processedData.processed_channels).length,\n    original_posts: processedData.stats?.total_posts || 0,\n    relevant_posts: processedData.ai_analysis_stats?.relevant_posts || 0,\n    avg_importance: processedData.ai_analysis_stats?.avg_importance || 0,\n    avg_urgency: processedData.ai_analysis_stats?.avg_urgency || 0,\n    avg_significance: processedData.ai_analysis_stats?.avg_significance || 0,\n    batches_processed: processedData.ai_analysis_stats?.batches_processed || 0\n  }\n};\n\nObject.keys(processedData.processed_channels).forEach(channelKey => {\n  const channelData = processedData.processed_channels[channelKey];\n  \n  digest.channels.push({\n    title: channelData.channel_title,\n    username: channelData.channel_username,\n    categories: channelData.channel_categories || [],\n    posts_count: channelData.posts.length,\n    posts: channelData.posts.map(post => ({\n      title: (post.text || '').substring(0, 100) + '...',\n      url: post.url,\n      views: post.views,\n      date: post.date,\n      ai_importance: post.ai_importance,\n      ai_urgency: post.ai_urgency,\n      ai_significance: post.ai_significance,\n      summary: post.ai_summary,\n      post_category: post.post_category\n    }))\n  });\n  \n  digest.total_posts += channelData.posts.length;\n});\n\nconsole.log(`✅ ENHANCED digest ready: ${digest.total_posts} posts, ${digest.summary.batches_processed} batches, enhanced features: ${JSON.stringify(digest.enhanced_functionality)}`);\nreturn digest;"
+      },
+      "name": "Prepare Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -40
+      ],
+      "id": "41fe4710-644e-4430-96fc-f1f1aa1605b8"
+    },
+    {
+      "parameters": {
+        "jsCode": "const digest = $json;\n\nconst backendPayload = {\n  digest_id: digest.id,\n  total_posts: digest.total_posts,\n  channels_processed: digest.summary.channels_processed,\n  original_posts: digest.summary.original_posts,\n  relevant_posts: digest.summary.relevant_posts,\n  avg_importance: digest.summary.avg_importance,\n  avg_urgency: digest.summary.avg_urgency,\n  avg_significance: digest.summary.avg_significance,\n  batch_processing_applied: digest.batch_processing_applied,\n  enhanced_functionality: JSON.stringify(digest.enhanced_functionality),\n  digest_data: JSON.stringify(digest),\n  processed_at: digest.processed_at\n};\n\nreturn {\n  success: true,\n  digest_id: digest.id,\n  backend_payload: backendPayload,\n  message: `Enhanced digest v8.2: ${digest.total_posts} posts, ${digest.summary.batches_processed} batches, ${digest.enhanced_functionality.category_ai_prompts_count} custom prompts`,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "Prepare Backend Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -40
+      ],
+      "id": "674c81df-4e84-48ad-91ec-afa4c6a5d75e"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/digests",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.backend_payload) }}",
+        "options": {}
+      },
+      "name": "Save to Backend API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2420,
+        -40
+      ],
+      "id": "1d356fd8-4631-4903-be8c-cbde3be4f77e"
+    },
+    {
+      "parameters": {
+        "jsCode": "const apiResponse = $json;\n\nif (apiResponse.digest_id) {\n  console.log('🎉 ENHANCED digest v8.2 saved successfully!');\n  return {\n    success: true,\n    digest_id: apiResponse.digest_id,\n    message: 'Enhanced digest v8.2 with full functionality saved!',\n    timestamp: new Date().toISOString()\n  };\n} else {\n  return {\n    success: false,\n    error: 'Failed to save enhanced digest',\n    timestamp: new Date().toISOString()\n  };\n}"
+      },
+      "name": "Process API Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        -40
+      ],
+      "id": "a32b08c2-03b5-43c0-84d4-c6c09cf81e53"
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('⚠️ No posts to process');\nreturn {\n  success: false,\n  message: 'No posts to process',\n  timestamp: new Date().toISOString()\n};"
+      },
+      "name": "No Posts Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        260
+      ],
+      "id": "5b207b5e-d93a-4c71-90df-39d79aced015"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Log Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Log Data": {
+      "main": [
+        [
+          {
+            "node": "Has Posts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Posts?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Posts for Batching",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Posts Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Posts for Batching": {
+      "main": [
+        [
+          {
+            "node": "Split Posts Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Posts Into Batches": {
+      "main": [
+        [
+          {
+            "node": "Prepare Batch for AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge All Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Batch for AI": {
+      "main": [
+        [
+          {
+            "node": "OpenAI API (Enhanced)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI API (Enhanced)": {
+      "main": [
+        [
+          {
+            "node": "Process Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Batch Results": {
+      "main": [
+        []
+      ]
+    },
+    "Merge All Batch Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Digest": {
+      "main": [
+        [
+          {
+            "node": "Prepare Backend Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Backend Payload": {
+      "main": [
+        [
+          {
+            "node": "Save to Backend API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Backend API": {
+      "main": [
+        [
+          {
+            "node": "Process API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "c8bb756e-3a62-4598-8cdf-89e3a6dccc54",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8c50e89b1d0c69c3b7bddcd22b9e5feea4cf851f8f0e1e7eafdc3e6db8b4e6c1"
+  },
+  "id": "M9nHucdtJRBSRfE4",
+  "tags": []
+} 

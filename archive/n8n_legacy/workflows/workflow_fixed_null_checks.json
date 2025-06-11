@@ -1,0 +1,25 @@
+console.log('🔗 Merging all batch results...');
+const allBatchResults = $input.all();
+const originalData = $('Prepare Posts for Batching').all()[0]?.json;
+
+let allAIAnalysis = [];
+let totalProcessedPosts = 0;
+
+allBatchResults.forEach((batchResult, index) => {
+    const batchData = batchResult?.json || {};
+    const batchResults = batchData.batch_results || [];
+    
+    console.log(`📦 Batch ${batchData.batch_index || index + 1}: ${(batchResults.length || 0)} results (parse_success: ${batchData.parse_success || false})`);
+    
+    if (Array.isArray(batchResults)) {
+        allAIAnalysis = allAIAnalysis.concat(batchResults);
+    }
+    
+    totalProcessedPosts += batchData.batch_posts_count || 0;
+});
+
+console.log(`✅ Merged ${allAIAnalysis.length} AI results from ${allBatchResults.length} batches`);
+
+const posts = originalData?.posts || [];
+const channelsMetadata = originalData?.channels_metadata || {};
+const channelCategoryMap = originalData?.channel_category_map || {}; 

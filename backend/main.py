@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
@@ -17,8 +18,30 @@ import json
 load_dotenv()
 
 # Настройка базы данных
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.dirname(os.path.abspath(__file__))}/morningstar.db")
-engine = create_engine(DATABASE_URL)
+# PostgreSQL connection для multi-tenant архитектуры
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "digest_bot")
+DB_USER = os.getenv("DB_USER", "digest_bot")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "SecurePassword123!")
+
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# Fallback к SQLite если PostgreSQL недоступен
+SQLITE_FALLBACK = f"sqlite:///{os.path.dirname(os.path.abspath(__file__))}/morningstar.db"
+
+try:
+    engine = create_engine(DATABASE_URL, echo=False)
+    # Тестируем соединение
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        conn.execute(text("SELECT 1"))
+    print(f"✅ Подключен к PostgreSQL: {DB_HOST}:{DB_PORT}/{DB_NAME}")
+except Exception as e:
+    print(f"⚠️ PostgreSQL недоступен ({e}), переключаемся на SQLite")
+    DATABASE_URL = SQLITE_FALLBACK
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -49,12 +72,12 @@ class Category(Base):
     __tablename__ = "categories"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    category_name = Column(String, nullable=False)  # Изменено: name → category_name
     description = Column(Text)
-    emoji = Column(String, default="📝")
+    # emoji = Column(String, default="📝")  # Убрано: нет в БД
     is_active = Column(Boolean, default=True)
-    ai_prompt = Column(Text)
-    sort_order = Column(Integer, default=0)
+    # ai_prompt = Column(Text)  # Убрано: нет в БД
+    # sort_order = Column(Integer, default=0)  # Убрано: нет в БД
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
@@ -133,6 +156,21 @@ class User(Base):
     
     # Связи
     subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
+
+class PostCache(Base):
+    __tablename__ = "posts_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    channel_telegram_id = Column(Integer, nullable=False, index=True)
+    telegram_message_id = Column(Integer, nullable=False)
+    title = Column(Text)
+    content = Column(Text)
+    media_urls = Column(JSONB, default=[])  # Корректно используем JSONB тип
+    views = Column(Integer, default=0)
+    post_date = Column(DateTime, nullable=False)
+    collected_at = Column(DateTime, default=func.now(), nullable=False)
+    userbot_metadata = Column(JSONB, default={})  # Корректно используем JSONB тип
+    processing_status = Column(String, default="pending")  # pending, processing, completed, failed
 
 # Обновляем модель Category для связи с пользователями
 Category.subscribers = relationship("User", secondary=user_subscriptions, back_populates="subscribed_categories")
@@ -267,12 +305,12 @@ create_default_settings()
 
 # Pydantic модели
 class CategoryBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
+    category_name: str = Field(..., min_length=1, max_length=255)  # Изменено: name → category_name
     description: Optional[str] = None
-    emoji: str = Field("📝", max_length=10)
+    # emoji: str = Field("📝", max_length=10)  # Убрано: нет в БД
     is_active: bool = True
-    ai_prompt: Optional[str] = None
-    sort_order: int = 0
+    # ai_prompt: Optional[str] = None  # Убрано: нет в БД
+    # sort_order: int = 0  # Убрано: нет в БД
 
 class CategoryCreate(CategoryBase):
     pass
@@ -410,6 +448,34 @@ class SubscriptionResponse(BaseModel):
     subscribed_categories: List['CategoryResponse'] = []
     message: str
 
+class PostCacheBase(BaseModel):
+    channel_telegram_id: int
+    telegram_message_id: int
+    title: Optional[str] = None
+    content: Optional[str] = None
+    media_urls: Optional[List[str]] = []  # Список URL в виде JSONB массива
+    views: int = 0
+    post_date: datetime
+    userbot_metadata: Optional[Dict[str, Any]] = {}  # JSONB объект
+    processing_status: str = "pending"
+
+class PostCacheCreate(PostCacheBase):
+    pass
+
+class PostCacheResponse(PostCacheBase):
+    id: int
+    collected_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class PostsBatchCreate(BaseModel):
+    """Модель для batch создания posts от userbot"""
+    timestamp: datetime
+    collection_stats: Dict[str, Union[int, List[str]]]
+    posts: List[PostCacheCreate]
+    channels_metadata: Dict[str, Dict[str, Any]]
+
 # ConfigManager класс
 class ConfigManager:
     def __init__(self, db: Session):
@@ -471,6 +537,78 @@ def get_db():
     finally:
         db.close()
 
+def get_database_size():
+    """Получить размер базы данных в МБ"""
+    try:
+        # Используем прямой SQL запрос для получения размера БД
+        db = SessionLocal()
+        result = db.execute(text("SELECT pg_size_pretty(pg_database_size('digest_bot'))")).fetchone()
+        size_str = result[0] if result and result[0] else "0 MB"
+        
+        # Извлекаем числовое значение в МБ
+        if "GB" in size_str:
+            size_mb = float(size_str.split(" ")[0]) * 1024
+        elif "MB" in size_str:
+            size_mb = float(size_str.split(" ")[0])
+        elif "kB" in size_str:
+            size_mb = float(size_str.split(" ")[0]) / 1024
+        else:
+            size_mb = 0.0
+            
+        db.close()
+        return round(size_mb, 2)
+    except Exception as e:
+        print(f"Error getting database size: {e}")
+        return 0.0
+
+def get_filtered_data_size(channel_ids: list = None):
+    """Получить размер отфильтрованных данных в МБ"""
+    try:
+        db = SessionLocal()
+        
+        # Всегда используем одинаковую логику - размер данных в строках
+        if channel_ids:
+            # Размер данных для конкретных каналов
+            channel_ids_str = ','.join(map(str, channel_ids))
+            query = text(f"""
+                SELECT pg_size_pretty(
+                    sum(pg_column_size(posts_cache.*))::bigint
+                ) 
+                FROM posts_cache 
+                WHERE channel_telegram_id IN ({channel_ids_str})
+            """)
+        else:
+            # Размер данных во всех строках posts_cache (аналогично фильтрованному)
+            query = text("""
+                SELECT pg_size_pretty(
+                    sum(pg_column_size(posts_cache.*))::bigint
+                ) 
+                FROM posts_cache
+            """)
+        
+        result = db.execute(query).fetchone()
+        size_str = result[0] if result and result[0] else "0 bytes"
+        
+        # Извлекаем числовое значение в МБ
+        if "GB" in size_str:
+            size_mb = float(size_str.split(" ")[0]) * 1024
+        elif "MB" in size_str:
+            size_mb = float(size_str.split(" ")[0])
+        elif "kB" in size_str:
+            size_mb = float(size_str.split(" ")[0]) / 1024
+        elif "bytes" in size_str:
+            # Для очень маленьких размеров переводим байты в МБ
+            bytes_count = float(size_str.split(" ")[0])
+            size_mb = bytes_count / (1024 * 1024)
+        else:
+            size_mb = 0.0
+            
+        db.close()
+        return round(size_mb, 2)
+    except Exception as e:
+        print(f"Error getting filtered data size: {e}")
+        return 0.0
+
 # API Routes для категорий
 @app.get("/api/categories", response_model=List[CategoryResponse])
 def get_categories(
@@ -487,16 +625,16 @@ def get_categories(
         query = query.filter(Category.is_active == True)
     
     if search:
-        query = query.filter(Category.name.contains(search))
+        query = query.filter(Category.category_name.contains(search))
     
-    categories = query.order_by(Category.sort_order, Category.name).offset(skip).limit(limit).all()
+    categories = query.order_by(Category.category_name).offset(skip).limit(limit).all()
     return categories
 
 @app.post("/api/categories", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
 def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
     """Создать новую категорию"""
     # Проверяем уникальность имени
-    existing = db.query(Category).filter(Category.name == category.name).first()
+    existing = db.query(Category).filter(Category.category_name == category.category_name).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -532,7 +670,7 @@ def update_category(category_id: int, category: CategoryUpdate, db: Session = De
     
     # Проверяем уникальность имени (исключая текущую категорию)
     existing = db.query(Category).filter(
-        Category.name == category.name,
+        Category.category_name == category.category_name,
         Category.id != category_id
     ).first()
     if existing:
@@ -718,9 +856,15 @@ def get_stats(db: Session = Depends(get_db)):
     active_categories = db.query(Category).filter(Category.is_active == True).count()
     active_channels = db.query(Channel).filter(Channel.is_active == True).count()
     digests_count = db.query(Digest).count()
+    posts_total = db.query(PostCache).count()
+    posts_pending = db.query(PostCache).filter(PostCache.processing_status == "pending").count()
+    posts_processed = db.query(PostCache).filter(PostCache.processing_status == "completed").count()
     
     # Статистика связей
     total_links = db.query(channel_categories).count()
+    
+    # Размер базы данных
+    database_size = get_database_size()
     
     return {
         "total_categories": categories_count,
@@ -728,7 +872,11 @@ def get_stats(db: Session = Depends(get_db)):
         "total_channels": channels_count,
         "active_channels": active_channels,
         "total_digests": digests_count,
-        "channel_category_links": total_links
+        "total_posts": posts_total,
+        "posts_pending": posts_pending,
+        "posts_processed": posts_processed,
+        "channel_category_links": total_links,
+        "database_size_mb": database_size
     }
 
 # API для управления связями канал-категория
@@ -1126,6 +1274,304 @@ def remove_user_subscription(telegram_id: int, category_id: int, db: Session = D
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Пользователь не подписан на эту категорию"
+        )
+
+# API для posts_cache
+@app.post("/api/posts/batch", status_code=status.HTTP_201_CREATED)
+def create_posts_batch(batch: PostsBatchCreate, db: Session = Depends(get_db)):
+    """Принимает batch постов от userbot и сохраняет в posts_cache"""
+    try:
+        created_posts = []
+        skipped_posts = []
+        
+        for post_data in batch.posts:
+            # Проверяем, не существует ли уже такой пост
+            existing_post = db.query(PostCache).filter(
+                PostCache.channel_telegram_id == post_data.channel_telegram_id,
+                PostCache.telegram_message_id == post_data.telegram_message_id
+            ).first()
+            
+            if existing_post:
+                skipped_posts.append({
+                    "channel_id": post_data.channel_telegram_id,
+                    "message_id": post_data.telegram_message_id,
+                    "reason": "already_exists"
+                })
+                continue
+            
+            # Создаем новый пост
+            post_dict = post_data.model_dump()
+            # Добавляем metadata от userbot - ищем по различным ключам
+            metadata = {}
+            if batch.channels_metadata:
+                # Пытаемся найти metadata по различным идентификаторам
+                channel_key = None
+                for key in batch.channels_metadata.keys():
+                    if str(post_data.channel_telegram_id) in key or key == str(post_data.channel_telegram_id):
+                        channel_key = key
+                        break
+                
+                if channel_key:
+                    metadata = batch.channels_metadata[channel_key]
+            
+            # JSONB поля теперь сохраняются напрямую как Python объекты
+            post_dict["userbot_metadata"] = metadata if metadata else {}
+            
+            db_post = PostCache(**post_dict)
+            db.add(db_post)
+            created_posts.append(post_data.telegram_message_id)
+        
+        db.commit()
+        
+        return {
+            "message": "Batch обработан успешно",
+            "timestamp": batch.timestamp,
+            "collection_stats": batch.collection_stats,
+            "created_posts": len(created_posts),
+            "skipped_posts": len(skipped_posts),
+            "created_ids": created_posts,
+            "skipped_details": skipped_posts
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сохранения постов: {str(e)}"
+        )
+
+@app.get("/api/posts/cache", response_model=List[PostCacheResponse])
+def get_posts_cache(
+    skip: int = 0,
+    limit: int = 100,
+    channel_telegram_id: Optional[int] = None,
+    processing_status: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "collected_at",
+    sort_order: str = "desc",
+    db: Session = Depends(get_db)
+):
+    """Получить список постов из cache с расширенной фильтрацией"""
+    from datetime import datetime
+    
+    query = db.query(PostCache)
+    
+    # Фильтр по каналу
+    if channel_telegram_id:
+        query = query.filter(PostCache.channel_telegram_id == channel_telegram_id)
+    
+    # Фильтр по статусу обработки
+    if processing_status:
+        query = query.filter(PostCache.processing_status == processing_status)
+    
+    # Поиск по содержимому
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            PostCache.content.ilike(search_pattern) |
+            PostCache.title.ilike(search_pattern)
+        )
+    
+    # Фильтр по дате
+    if date_from:
+        try:
+            date_from_obj = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date >= date_from_obj)
+        except ValueError:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date <= date_to_obj)
+        except ValueError:
+            pass
+    
+    # Сортировка
+    sort_column = getattr(PostCache, sort_by, PostCache.collected_at)
+    if sort_order.lower() == "desc":
+        query = query.order_by(sort_column.desc())
+    else:
+        query = query.order_by(sort_column.asc())
+    
+    posts = query.offset(skip).limit(limit).all()
+    return posts
+
+@app.get("/api/posts/stats")
+def get_posts_stats(db: Session = Depends(get_db)):
+    """Получить статистику posts_cache"""
+    from sqlalchemy import func as sql_func
+    
+    # Общая статистика
+    total_posts = db.query(PostCache).count()
+    
+    # Статистика по каналам с дополнительной информацией
+    channel_stats = db.query(
+        PostCache.channel_telegram_id,
+        sql_func.count(PostCache.id).label('posts_count'),
+        sql_func.max(PostCache.collected_at).label('last_collected'),
+        sql_func.avg(PostCache.views).label('avg_views'),
+        sql_func.max(PostCache.views).label('max_views')
+    ).group_by(
+        PostCache.channel_telegram_id
+    ).all()
+    
+    # Статистика по статусам обработки
+    status_stats = db.query(
+        PostCache.processing_status,
+        sql_func.count(PostCache.id).label('count')
+    ).group_by(PostCache.processing_status).all()
+    
+    # Получаем информацию о каналах из основной таблицы
+    channel_info = {}
+    for stat in channel_stats:
+        channel = db.query(Channel).filter(Channel.telegram_id == stat.channel_telegram_id).first()
+        if channel:
+            channel_info[stat.channel_telegram_id] = {
+                "title": channel.title,
+                "username": channel.username,
+                "categories": [cat.name for cat in channel.categories]
+            }
+    
+    return {
+        "total_posts": total_posts,
+        "channels": [
+            {
+                "telegram_id": stat.channel_telegram_id,
+                "posts_count": stat.posts_count,
+                "last_collected": stat.last_collected,
+                "avg_views": round(stat.avg_views or 0, 0),
+                "max_views": stat.max_views or 0,
+                "title": channel_info.get(stat.channel_telegram_id, {}).get("title", f"Channel {stat.channel_telegram_id}"),
+                "username": channel_info.get(stat.channel_telegram_id, {}).get("username"),
+                "categories": channel_info.get(stat.channel_telegram_id, {}).get("categories", [])
+            }
+            for stat in channel_stats
+        ],
+        "processing_status": [
+            {
+                "status": stat.processing_status,
+                "count": stat.count
+            }
+            for stat in status_stats
+        ]
+    }
+
+@app.get("/api/posts/cache/count")
+def get_posts_cache_count(
+    channel_telegram_id: Optional[int] = None,
+    processing_status: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Получить количество постов с фильтрацией (для пагинации)"""
+    from datetime import datetime
+    
+    query = db.query(PostCache)
+    
+    if channel_telegram_id:
+        query = query.filter(PostCache.channel_telegram_id == channel_telegram_id)
+    
+    if processing_status:
+        query = query.filter(PostCache.processing_status == processing_status)
+    
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            PostCache.content.ilike(search_pattern) |
+            PostCache.title.ilike(search_pattern)
+        )
+    
+    if date_from:
+        try:
+            date_from_obj = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date >= date_from_obj)
+        except ValueError:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date <= date_to_obj)
+        except ValueError:
+            pass
+    
+    total_count = query.count()
+    return {"total_count": total_count}
+
+@app.get("/api/posts/cache/size")
+def get_posts_cache_size(
+    channel_telegram_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Получить размер posts_cache в МБ (общий или по каналу)"""
+    try:
+        if channel_telegram_id:
+            size_mb = get_filtered_data_size([channel_telegram_id])
+        else:
+            size_mb = get_filtered_data_size()
+        
+        # Отладочная информация
+        if not channel_telegram_id:
+            # Запрос для отладки - прямо в endpoint
+            result = db.execute(text("SELECT pg_size_pretty(pg_total_relation_size('posts_cache'))")).fetchone()
+            debug_size_str = result[0] if result else "unknown"
+            print(f"DEBUG: pg_size_pretty result for posts_cache: '{debug_size_str}'")
+        
+        return {
+            "size_mb": size_mb,
+            "channel_telegram_id": channel_telegram_id
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения размера данных: {str(e)}"
+        )
+
+@app.delete("/api/database/clear")
+def clear_database(
+    confirm: bool = False,
+    db: Session = Depends(get_db)
+):
+    """КРИТИЧЕСКОЕ ДЕЙСТВИЕ: Очистить всю базу данных"""
+    if not confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Для подтверждения критического действия необходимо передать параметр confirm=true"
+        )
+    
+    try:
+        # Получаем статистику перед удалением
+        posts_count = db.query(PostCache).count()
+        digests_count = db.query(Digest).count()
+        
+        # Удаляем все посты
+        db.query(PostCache).delete()
+        
+        # Удаляем все дайджесты  
+        db.query(Digest).delete()
+        
+        # Сбрасываем связи каналов с категориями (опционально)
+        # db.execute(text("TRUNCATE TABLE channel_categories"))
+        
+        db.commit()
+        
+        return {
+            "message": "База данных успешно очищена",
+            "deleted_posts": posts_count,
+            "deleted_digests": digests_count,
+            "warning": "Это действие необратимо!"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка очистки базы данных: {str(e)}"
         )
 
 if __name__ == "__main__":

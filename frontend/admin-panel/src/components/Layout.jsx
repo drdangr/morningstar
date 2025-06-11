@@ -19,6 +19,9 @@ import {
   Dashboard as DashboardIcon,
   Topic as TopicIcon,
   Tv as ChannelsIcon,
+  Storage as PostsCacheIcon,
+  Psychology as LLMSettingsIcon,
+  SmartToy as AIResultsIcon,
   Settings as SettingsIcon,
 } from '@mui/icons-material';
 import { Link, useLocation } from 'react-router-dom';
@@ -27,9 +30,11 @@ const drawerWidth = 240;
 
 const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
-  { text: 'Topics', icon: <TopicIcon />, path: '/topics' },
+  { text: 'Categories', icon: <TopicIcon />, path: '/categories' },
   { text: 'Channels', icon: <ChannelsIcon />, path: '/channels' },
-  { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+  { text: 'Posts Cache', icon: <PostsCacheIcon />, path: '/posts-cache' },
+  { text: 'Settings', icon: <LLMSettingsIcon />, path: '/settings' },
+  { text: 'AI Results', icon: <AIResultsIcon />, path: '/ai-results' },
 ];
 
 export default function Layout({ children }) {

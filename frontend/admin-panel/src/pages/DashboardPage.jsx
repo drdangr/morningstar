@@ -158,14 +158,6 @@ export default function DashboardPage() {
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
-            title="Total Topics"
-            value={stats?.total_categories || 0}
-            icon={<TopicIcon sx={{ fontSize: 40 }} />}
-            color="primary.light"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
             title="Active Channels"
             value={stats?.active_channels || 0}
             icon={<ChannelsIcon sx={{ fontSize: 40 }} />}
@@ -174,11 +166,99 @@ export default function DashboardPage() {
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
-            title="Total Channels"
-            value={stats?.total_channels || 0}
-            icon={<ChannelsIcon sx={{ fontSize: 40 }} />}
-            color="secondary.light"
+            title="Total Posts"
+            value={stats?.total_posts || 0}
+            icon={<TrendingUpIcon sx={{ fontSize: 40 }} />}
+            color="success.main"
           />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard
+            title="Database Size"
+            value={`${stats?.database_size_mb || 0} MB`}
+            icon={<TrendingUpIcon sx={{ fontSize: 40 }} />}
+            color="warning.main"
+          />
+        </Grid>
+      </Grid>
+
+      {/* Дополнительная статистика по постам */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Grid item xs={12} sm={4} md={3}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="h6">
+                    Pending Posts
+                  </Typography>
+                  <Typography variant="h4" component="h2">
+                    {stats?.posts_pending || 0}
+                  </Typography>
+                </Box>
+                <Box sx={{ color: 'warning.main', opacity: 0.7 }}>
+                  <ScheduleIcon sx={{ fontSize: 40 }} />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={4} md={3}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="h6">
+                    Processed Posts
+                  </Typography>
+                  <Typography variant="h4" component="h2">
+                    {stats?.posts_processed || 0}
+                  </Typography>
+                </Box>
+                <Box sx={{ color: 'success.main', opacity: 0.7 }}>
+                  <CheckCircleIcon sx={{ fontSize: 40 }} />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={4} md={3}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="h6">
+                    Total Digests
+                  </Typography>
+                  <Typography variant="h4" component="h2">
+                    {stats?.total_digests || 0}
+                  </Typography>
+                </Box>
+                <Box sx={{ color: 'primary.main', opacity: 0.7 }}>
+                  <TrendingUpIcon sx={{ fontSize: 40 }} />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={4} md={3}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box display="flex" alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="h6">
+                    Channel Links
+                  </Typography>
+                  <Typography variant="h4" component="h2">
+                    {stats?.channel_category_links || 0}
+                  </Typography>
+                </Box>
+                <Box sx={{ color: 'info.main', opacity: 0.7 }}>
+                  <TopicIcon sx={{ fontSize: 40 }} />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
         </Grid>
       </Grid>
 

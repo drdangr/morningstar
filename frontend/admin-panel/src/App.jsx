@@ -5,9 +5,11 @@ import CssBaseline from '@mui/material/CssBaseline';
 
 import Layout from './components/Layout';
 import DashboardPage from './pages/DashboardPage';
-import TopicsPage from './pages/TopicsPage';
+import CategoriesPage from './pages/CategoriesPage';
 import ChannelsPage from './pages/ChannelsPage';
-import SettingsPage from './pages/SettingsPage';
+import PostsCachePage from './pages/PostsCachePage';
+import LLMSettingsPage from './pages/LLMSettingsPage';
+import AIResultsPage from './pages/AIResultsPage';
 import './App.css'
 
 const theme = createTheme({
@@ -30,9 +32,11 @@ function App() {
         <Layout>
           <Routes>
             <Route path="/" element={<DashboardPage />} />
-            <Route path="/topics" element={<TopicsPage />} />
+            <Route path="/categories" element={<CategoriesPage />} />
             <Route path="/channels" element={<ChannelsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/posts-cache" element={<PostsCachePage />} />
+            <Route path="/ai-results" element={<AIResultsPage />} />
+            <Route path="/settings" element={<LLMSettingsPage />} />
           </Routes>
         </Layout>
       </Router>

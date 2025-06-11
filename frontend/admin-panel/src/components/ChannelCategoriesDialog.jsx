@@ -120,7 +120,7 @@ export default function ChannelCategoriesDialog({
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>
-        Управление топиками канала: {channel?.title}
+        Управление категориями канала: {channel?.title}
       </DialogTitle>
       
       <DialogContent>
@@ -133,14 +133,14 @@ export default function ChannelCategoriesDialog({
         {/* Текущие категории канала */}
         <Box mb={3}>
           <Typography variant="h6" gutterBottom>
-            Назначенные топики ({channelCategories.length})
+            Назначенные категории ({channelCategories.length})
           </Typography>
           
           {loading && channelCategories.length === 0 ? (
             <CircularProgress size={24} />
           ) : channelCategories.length === 0 ? (
             <Typography variant="body2" color="textSecondary">
-              У этого канала пока нет назначенных топиков
+              У этого канала пока нет назначенных категорий
             </Typography>
           ) : (
             <Box display="flex" gap={1} flexWrap="wrap">
@@ -164,20 +164,20 @@ export default function ChannelCategoriesDialog({
         {/* Добавление новой категории */}
         <Box>
           <Typography variant="h6" gutterBottom>
-            Добавить топик
+            Добавить категорию
           </Typography>
           
           <Box display="flex" gap={2} alignItems="center">
             <FormControl fullWidth variant="outlined" disabled={loading}>
-              <InputLabel>Выберите топик</InputLabel>
+              <InputLabel>Выберите категорию</InputLabel>
               <Select
                 value={selectedCategoryId}
                 onChange={(e) => setSelectedCategoryId(e.target.value)}
-                label="Выберите топик"
+                label="Выберите категорию"
               >
                 {availableCategories.length === 0 ? (
                   <MenuItem disabled>
-                    Нет доступных топиков
+                    Нет доступных категорий
                   </MenuItem>
                 ) : (
                   availableCategories.map((category) => (
@@ -201,7 +201,7 @@ export default function ChannelCategoriesDialog({
 
           {availableCategories.length === 0 && allCategories.length > 0 && (
             <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-              Все доступные топики уже назначены этому каналу
+              Все доступные категории уже назначены этому каналу
             </Typography>
           )}
         </Box>
