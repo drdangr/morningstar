@@ -64,6 +64,11 @@ function PostsCachePage() {
   const [clearing, setClearing] = useState(false);
   const [clearSuccess, setClearSuccess] = useState('');
 
+  // Состояние для очистки orphan постов
+  const [orphanConfirmDialog, setOrphanConfirmDialog] = useState(false);
+  const [clearingOrphans, setClearingOrphans] = useState(false);
+  const [orphanSuccess, setOrphanSuccess] = useState('');
+
   // Состояние для фильтров
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
@@ -186,6 +191,36 @@ function PostsCachePage() {
     return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
   };
 
+  // Обработка очистки orphan постов
+  const handleCleanupOrphans = async () => {
+    try {
+      setClearingOrphans(true);
+      const response = await fetch(`${API_BASE_URL}/api/posts/orphans?confirm=true`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Ошибка очистки orphan постов');
+      }
+
+      const result = await response.json();
+      setOrphanSuccess(result.message);  
+      setOrphanConfirmDialog(false);
+      
+      // Перезагружаем данные
+      loadPosts();
+      loadStats();
+    } catch (err) {
+      setError('Ошибка очистки orphan постов: ' + err.message);
+      setOrphanConfirmDialog(false);
+    } finally {
+      setClearingOrphans(false);
+    }
+  };
+
   // Обработка очистки базы данных
   const handleClearDatabase = async () => {
     try {
@@ -227,16 +262,28 @@ function PostsCachePage() {
         <Typography variant="h4">
           Posts Cache Monitor
         </Typography>
-        <Button
-          variant="outlined"
-          color="error"
-          startIcon={<DeleteIcon />}
-          onClick={() => setFirstWarningDialog(true)}
-          size="large"
-          sx={{ minWidth: 200 }}
-        >
-          Очистить База Данных
-        </Button>
+        <Box sx={{ display: 'flex', gap: 2 }}>
+          <Button
+            variant="outlined"
+            color="warning"
+            startIcon={<WarningIcon />}
+            onClick={() => setOrphanConfirmDialog(true)}
+            size="large"
+            disabled={clearingOrphans}
+          >
+            {clearingOrphans ? 'Очистка...' : 'Очистить Orphan Посты'}
+          </Button>
+          <Button
+            variant="outlined"
+            color="error"
+            startIcon={<DeleteIcon />}
+            onClick={() => setFirstWarningDialog(true)}
+            size="large"
+            sx={{ minWidth: 200 }}
+          >
+            Очистить База Данных
+          </Button>
+        </Box>
       </Box>
 
         {/* Статистика */}
@@ -604,6 +651,68 @@ function PostsCachePage() {
         >
           <Alert severity="success" onClose={() => setClearSuccess('')}>
             {clearSuccess}
+          </Alert>
+        </Snackbar>
+
+        {/* Диалог подтверждения orphan cleanup */}
+        <Dialog
+          open={orphanConfirmDialog}
+          onClose={() => setOrphanConfirmDialog(false)}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>
+            <Box display="flex" alignItems="center" gap={2}>
+              <WarningIcon color="warning" />
+              <Typography variant="h6" color="warning.main">
+                Очистка Orphan Постов
+              </Typography>
+            </Box>
+          </DialogTitle>
+          <DialogContent>
+            <DialogContentText sx={{ fontSize: '1.1rem' }}>
+              🧹 Эта операция удалит посты от каналов, которые больше не активны в системе.
+            </DialogContentText>
+            <DialogContentText sx={{ mt: 2 }}>
+              Orphan посты - это посты в posts_cache от каналов, которые были удалены из таблицы channels.
+            </DialogContentText>
+            <DialogContentText sx={{ mt: 2 }}>
+              Текущая ситуация:
+            </DialogContentText>
+            <Box component="ul" sx={{ mt: 1, mb: 2 }}>
+              <li>Активных каналов в системе: {stats?.channels?.filter(c => stats.channels.find(ch => ch.telegram_id === c.telegram_id))?.length || 0}</li>
+              <li>Каналов в posts_cache: {stats?.channels?.length || 0}</li>
+              <li>Возможно orphan каналов: {stats ? stats.channels.length - 2 : 0}</li>
+            </Box>
+            <DialogContentText color="info.main" sx={{ fontWeight: 'bold' }}>
+              Эта операция безопасна и рекомендуется для очистки мусорных данных.
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setOrphanConfirmDialog(false)}>
+              Отмена
+            </Button>
+            <Button
+              onClick={handleCleanupOrphans}
+              color="warning"
+              variant="contained"
+              disabled={clearingOrphans}
+              startIcon={clearingOrphans ? <CircularProgress size={20} /> : <WarningIcon />}
+            >
+              {clearingOrphans ? 'Очистка...' : 'Очистить Orphan Посты'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Уведомление об успешной очистке orphan */}
+        <Snackbar
+          open={!!orphanSuccess}
+          autoHideDuration={6000}
+          onClose={() => setOrphanSuccess('')}
+          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        >
+          <Alert severity="success" onClose={() => setOrphanSuccess('')}>
+            {orphanSuccess}
           </Alert>
         </Snackbar>
       </Box>

@@ -13,34 +13,43 @@ import os
 from dotenv import load_dotenv
 from typing import Dict, Any, Union
 import json
+from urllib.parse import quote_plus
 
 # Загрузка переменных окружения
 load_dotenv()
 
-# Настройка базы данных
-# PostgreSQL connection для multi-tenant архитектуры
-DB_HOST = os.getenv("DB_HOST", "localhost")
+# Конфигурация базы данных
+DB_HOST = "127.0.0.1"  # Принудительно IPv4 вместо localhost
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "digest_bot")
 DB_USER = os.getenv("DB_USER", "digest_bot")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "SecurePassword123!")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "Demiurg12@")  # Правильный дефолт
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# URL кодирование пароля для специальных символов
+encoded_password = quote_plus(DB_PASSWORD) if DB_PASSWORD else ""
+DATABASE_URL = f"postgresql://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Fallback к SQLite если PostgreSQL недоступен
 SQLITE_FALLBACK = f"sqlite:///{os.path.dirname(os.path.abspath(__file__))}/morningstar.db"
 
+# Определяем тип БД для выбора правильных типов данных
+USE_POSTGRESQL = False
+
 try:
-    engine = create_engine(DATABASE_URL, echo=False)
+    test_engine = create_engine(DATABASE_URL, echo=False)
     # Тестируем соединение
-    with engine.connect() as conn:
+    with test_engine.connect() as conn:
         from sqlalchemy import text
         conn.execute(text("SELECT 1"))
     print(f"✅ Подключен к PostgreSQL: {DB_HOST}:{DB_PORT}/{DB_NAME}")
+    USE_POSTGRESQL = True
+    engine = test_engine
 except Exception as e:
-    print(f"⚠️ PostgreSQL недоступен ({e}), переключаемся на SQLite")
+    print(f"⚠️ PostgreSQL недоступен: {str(e)[:100]}...")
+    print("🔄 Переключаемся на SQLite fallback")
     DATABASE_URL = SQLITE_FALLBACK
-engine = create_engine(DATABASE_URL)
+    USE_POSTGRESQL = False
+    engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -166,11 +175,12 @@ class PostCache(Base):
     telegram_message_id = Column(Integer, nullable=False)
     title = Column(Text)
     content = Column(Text)
-    media_urls = Column(JSONB, default=[])  # Корректно используем JSONB тип
+    # Условные типы данных в зависимости от БД
+    media_urls = Column(JSONB if USE_POSTGRESQL else Text, default=[] if USE_POSTGRESQL else "[]")
     views = Column(Integer, default=0)
     post_date = Column(DateTime, nullable=False)
     collected_at = Column(DateTime, default=func.now(), nullable=False)
-    userbot_metadata = Column(JSONB, default={})  # Корректно используем JSONB тип
+    userbot_metadata = Column(JSONB if USE_POSTGRESQL else Text, default={} if USE_POSTGRESQL else "{}")
     processing_status = Column(String, default="pending")  # pending, processing, completed, failed
 
 # Обновляем модель Category для связи с пользователями
@@ -180,8 +190,13 @@ class PostCache(Base):
 # ВРЕМЕННО ОТКЛЮЧАЕМ СВЯЗЬ В USER МОДЕЛИ:
 # subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
 
-# Создание таблиц
-Base.metadata.create_all(bind=engine)
+# Dependency для получения сессии БД
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Функция для создания начальных настроек
 def create_default_settings():
@@ -536,13 +551,6 @@ class ConfigManager:
             return value  # возвращаем как строку если парсинг не удался
 
 # Зависимости
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 def get_database_size():
     """Получить размер базы данных в МБ"""
     try:
@@ -1589,6 +1597,78 @@ def clear_database(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка очистки базы данных: {str(e)}"
         )
+
+@app.delete("/api/posts/orphans")
+def cleanup_orphan_posts(
+    confirm: bool = False,
+    db: Session = Depends(get_db)
+):
+    """Удалить посты от каналов, которых больше нет в системе (orphan cleanup)"""
+    if not confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Для подтверждения действия необходимо передать параметр confirm=true"
+        )
+    
+    try:
+        # Получаем список активных telegram_id каналов
+        active_channel_ids = db.query(Channel.telegram_id).filter(Channel.is_active == True).all()
+        active_ids_set = {row[0] for row in active_channel_ids}
+        
+        # Находим посты от несуществующих каналов
+        orphan_posts_query = db.query(PostCache).filter(
+            ~PostCache.channel_telegram_id.in_(active_ids_set)
+        )
+        
+        # Статистика до удаления
+        orphan_count = orphan_posts_query.count()
+        
+        if orphan_count == 0:
+            return {
+                "message": "Orphan постов не найдено",
+                "deleted_posts": 0,
+                "active_channels": len(active_ids_set)
+            }
+        
+        # Получаем детали orphan каналов для отчета
+        orphan_channels_stats = db.query(
+            PostCache.channel_telegram_id,
+            sql_func.count(PostCache.id).label('posts_count')
+        ).filter(
+            ~PostCache.channel_telegram_id.in_(active_ids_set)
+        ).group_by(PostCache.channel_telegram_id).all()
+        
+        # Удаляем orphan посты
+        deleted_count = orphan_posts_query.delete(synchronize_session=False)
+        db.commit()
+        
+        return {
+            "message": f"Успешно удалено {deleted_count} orphan постов",
+            "deleted_posts": deleted_count,
+            "orphan_channels": [
+                {
+                    "telegram_id": stat.channel_telegram_id,
+                    "deleted_posts": stat.posts_count
+                }
+                for stat in orphan_channels_stats
+            ],
+            "active_channels": len(active_ids_set)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка очистки orphan постов: {str(e)}"
+        )
+
+# Создание таблиц БД - выполняется в конце после всех определений
+print("🔧 Создание таблиц в базе данных...")
+try:
+    Base.metadata.create_all(bind=engine)
+    print("✅ Таблицы созданы успешно")
+except Exception as e:
+    print(f"❌ Ошибка создания таблиц: {e}")
 
 if __name__ == "__main__":
     import uvicorn

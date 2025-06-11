@@ -64,8 +64,11 @@ def find_and_load_env():
             print("📋 Проверка загруженных переменных:")
             for var, value in loaded_vars.items():
                 status = "✅" if value else "❌"
-                display_value = f"{value[:10]}..." if value and len(str(value)) > 10 else value
-                print(f"   {status} {var}: {display_value}")
+                # Безопасный вывод без отображения реальных значений
+                if value:
+                    print(f"   {status} {var}: [КОНФИДЕНЦИАЛЬНО]")
+                else:
+                    print(f"   {status} {var}: НЕ НАЙДЕНО")
             
             if all(loaded_vars.values()):
                 print("🎉 Все переменные успешно загружены!")
@@ -275,7 +278,7 @@ class MorningStarUserbot:
                     if response.status == 200:
                         channels_data = await response.json()
                         
-                        # Сохраняем полную информацию о каналах с категориями
+                        # Сохраняем метаданные каналов (БЕЗ категорий согласно РЕВОЛЮЦИОННОМУ РЕШЕНИЮ v7.3)
                         self.channels_metadata = {}
                         api_channels = []
                         
@@ -287,12 +290,11 @@ class MorningStarUserbot:
                                     if not username.startswith('@'):
                                         username = f"@{username}"
                                     
-                                    # Сохраняем метаданные канала включая категории
+                                    # Сохраняем базовые метаданные канала (категории обрабатываются отдельно в AI)
                                     self.channels_metadata[username] = {
                                         'id': channel.get('id'),
                                         'telegram_id': channel.get('telegram_id'),
-                                        'title': channel.get('title'),
-                                        'categories': channel.get('categories', [])
+                                        'title': channel.get('title')
                                     }
                                     
                                     api_channels.append(username)
@@ -302,22 +304,13 @@ class MorningStarUserbot:
                                     self.channels_metadata[telegram_id] = {
                                         'id': channel.get('id'),
                                         'telegram_id': channel.get('telegram_id'),
-                                        'title': channel.get('title'),
-                                        'categories': channel.get('categories', [])
+                                        'title': channel.get('title')
                                     }
                                     api_channels.append(telegram_id)
                         
                         logger.info("✅ Получено %d активных каналов из API", len(api_channels))
                         logger.info("📡 Каналы из API: %s", api_channels)
-                        
-                        # Логируем категории для каждого канала
-                        for username, metadata in self.channels_metadata.items():
-                            categories = metadata.get('categories', [])
-                            if categories:
-                                category_names = [cat.get('name', 'N/A') for cat in categories]
-                                logger.info("🏷️ %s → категории: %s", username, category_names)
-                            else:
-                                logger.warning("⚠️ %s → категории не найдены", username)
+                        logger.info("🧠 Категории будут назначены AI сервисами согласно РЕВОЛЮЦИОННОМУ РЕШЕНИЮ v7.3")
                         
                         return api_channels
                     
