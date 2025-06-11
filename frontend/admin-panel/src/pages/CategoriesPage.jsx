@@ -73,7 +73,14 @@ export default function CategoriesPage() {
     try {
       setLoading(true);
       const data = await apiService.getCategories();
-      setCategories(data);
+      
+      // Transform backend data (category_name -> name for frontend)
+      const transformedData = data.map(category => ({
+        ...category,
+        name: category.category_name || category.name || ''
+      }));
+      
+      setCategories(transformedData);
       setError(null);
     } catch (err) {
       setError('Failed to load categories: ' + err.message);
@@ -94,7 +101,7 @@ export default function CategoriesPage() {
         }
         // Check for duplicate names (excluding current editing category)
         const isDuplicate = categories.some(category => 
-          category.name.toLowerCase() === value.trim().toLowerCase() && 
+          category.name && category.name.toLowerCase() === value.trim().toLowerCase() && 
           category.id !== editingCategory?.id
         );
         if (isDuplicate) {
@@ -160,7 +167,7 @@ export default function CategoriesPage() {
     return categories.filter(category => {
       // Search filter
       const matchesSearch = searchQuery === '' || 
-        category.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (category.name && category.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (category.description && category.description.toLowerCase().includes(searchQuery.toLowerCase()));
       
       // Status filter
@@ -233,12 +240,19 @@ export default function CategoriesPage() {
     try {
       setSaving(true);
       
+      // Transform data for backend API (name -> category_name)
+      const apiData = {
+        ...formData,
+        category_name: formData.name
+      };
+      delete apiData.name;
+
       if (editingCategory) {
         // Update existing category
-        await apiService.updateCategory(editingCategory.id, formData);
+        await apiService.updateCategory(editingCategory.id, apiData);
       } else {
         // Add new category
-        await apiService.createCategory(formData);
+        await apiService.createCategory(apiData);
       }
       
       // Reload categories from API

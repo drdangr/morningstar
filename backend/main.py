@@ -40,7 +40,7 @@ try:
 except Exception as e:
     print(f"⚠️ PostgreSQL недоступен ({e}), переключаемся на SQLite")
     DATABASE_URL = SQLITE_FALLBACK
-    engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -88,6 +88,7 @@ class Channel(Base):
     __tablename__ = "channels"
     
     id = Column(Integer, primary_key=True, index=True)
+    channel_name = Column(String, nullable=False)  # Добавлено поле для совместимости с БД
     telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String)
     title = Column(String, nullable=False)
@@ -155,7 +156,7 @@ class User(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
     # Связи
-    subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
+    # ВРЕМЕННО ОТКЛЮЧЕНО: subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
 
 class PostCache(Base):
     __tablename__ = "posts_cache"
@@ -173,7 +174,11 @@ class PostCache(Base):
     processing_status = Column(String, default="pending")  # pending, processing, completed, failed
 
 # Обновляем модель Category для связи с пользователями
-Category.subscribers = relationship("User", secondary=user_subscriptions, back_populates="subscribed_categories")
+# ВРЕМЕННО ОТКЛЮЧЕНО ДО ИСПРАВЛЕНИЯ СТРУКТУРЫ ТАБЛИЦЫ user_subscriptions:
+# Category.subscribers = relationship("User", secondary=user_subscriptions, back_populates="subscribed_categories")
+
+# ВРЕМЕННО ОТКЛЮЧАЕМ СВЯЗЬ В USER МОДЕЛИ:
+# subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
 
 # Создание таблиц
 Base.metadata.create_all(bind=engine)
@@ -327,9 +332,10 @@ class CategoryResponse(CategoryBase):
         from_attributes = True
 
 class ChannelBase(BaseModel):
+    channel_name: str = Field(..., min_length=1, max_length=255)  # Основное поле для БД
     telegram_id: int
     username: Optional[str] = None
-    title: str = Field(..., min_length=1, max_length=255)
+    title: Optional[str] = None  # Сделано опциональным, т.к. используем channel_name
     description: Optional[str] = None
     is_active: bool = True
 
@@ -737,7 +743,12 @@ def create_channel(channel: ChannelCreate, db: Session = Depends(get_db)):
             detail="Канал с таким Telegram ID уже существует"
         )
     
-    db_channel = Channel(**channel.model_dump())
+    # Создаем данные для БД с автозаполнением title
+    channel_data = channel.model_dump()
+    if not channel_data.get('title'):
+        channel_data['title'] = channel_data['channel_name']  # Заполняем title из channel_name
+    
+    db_channel = Channel(**channel_data)
     db.add(db_channel)
     db.commit()
     db.refresh(db_channel)
@@ -775,7 +786,12 @@ def update_channel(channel_id: int, channel: ChannelUpdate, db: Session = Depend
             detail="Канал с таким Telegram ID уже существует"
         )
     
-    for field, value in channel.model_dump().items():
+    # Обновляем данные с автозаполнением title
+    channel_data = channel.model_dump()
+    if not channel_data.get('title'):
+        channel_data['title'] = channel_data['channel_name']  # Заполняем title из channel_name
+    
+    for field, value in channel_data.items():
         setattr(db_channel, field, value)
     
     db.commit()

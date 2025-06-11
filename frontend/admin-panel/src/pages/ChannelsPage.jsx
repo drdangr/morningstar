@@ -39,13 +39,12 @@ import {
   Warning as WarningIcon,
   Search as SearchIcon,
   FilterList as FilterIcon,
-  Category as CategoryIcon,
   CheckCircle as CheckCircleIcon,
   Info as InfoIcon,
   SmartToy as SmartToyIcon,
 } from '@mui/icons-material';
 import apiService from '../services/api';
-import ChannelCategoriesDialog from '../components/ChannelCategoriesDialog';
+
 
 export default function ChannelsPage() {
   const [channels, setChannels] = useState([]);
@@ -56,8 +55,7 @@ export default function ChannelsPage() {
   const [editingChannel, setEditingChannel] = useState(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
-  const [categoriesDialogOpen, setCategoriesDialogOpen] = useState(false);
-  const [channelForCategories, setChannelForCategories] = useState(null);
+
 
   // Search and filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -88,7 +86,12 @@ export default function ChannelsPage() {
     try {
       setLoading(true);
       const data = await apiService.getChannels();
-      setChannels(data);
+      // Трансформируем channel_name в title для отображения
+      const transformedData = data.map(channel => ({
+        ...channel,
+        title: channel.channel_name || channel.title
+      }));
+      setChannels(transformedData);
       setError(null);
     } catch (err) {
       setError('Не удалось загрузить каналы: ' + err.message);
@@ -333,9 +336,12 @@ export default function ChannelsPage() {
     try {
       const channelData = {
         ...formData,
+        channel_name: formData.title, // Backend ожидает channel_name
         telegram_id: parseInt(formData.telegram_id),
         username: formData.username || null // Разрешаем null для username
       };
+      // Убираем title так как backend ожидает channel_name
+      delete channelData.title;
 
       if (editingChannel) {
         await apiService.updateChannel(editingChannel.id, channelData);
@@ -373,20 +379,6 @@ export default function ChannelsPage() {
   const handleDeleteCancel = () => {
     setDeleteDialogOpen(false);
     setChannelToDelete(null);
-  };
-
-  const handleManageCategories = (channel) => {
-    setChannelForCategories(channel);
-    setCategoriesDialogOpen(true);
-  };
-
-  const handleCategoriesDialogClose = () => {
-    setCategoriesDialogOpen(false);
-    setChannelForCategories(null);
-  };
-
-  const handleCategoriesUpdate = () => {
-    loadChannels();
   };
 
   const handleClearFilters = () => {
@@ -512,8 +504,8 @@ export default function ChannelsPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-                          {filteredChannels.map((channel) => (
-                <Fragment key={channel.id}>
+            {filteredChannels.map((channel) => (
+              <Fragment key={channel.id}>
                 {/* Первая строка: основная информация */}
                 <TableRow hover>
                   <TableCell sx={{ width: "25%", borderBottom: 'none', pb: 1 }}>
@@ -570,70 +562,31 @@ export default function ChannelsPage() {
                   </TableCell>
                 </TableRow>
                 
-                {/* Вторая строка: категории и действия */}
+                {/* Вторая строка: действия */}
                 <TableRow>
                   <TableCell colSpan={5} sx={{ pt: 0, pb: 2 }}>
-                    <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
-                      {/* Категории */}
-                      <Box display="flex" flexWrap="wrap" gap={0.5} alignItems="center" flex={1}>
-                        <Typography variant="caption" color="text.secondary" sx={{ mr: 1, minWidth: 'fit-content' }}>
-                          Категории:
-                        </Typography>
-                        {channel.categories && channel.categories.length > 0 ? (
-                          channel.categories.map((category) => (
-                            <Chip
-                              key={category.id}
-                              label={`${category.emoji || '📝'} ${category.name}`}
-                              size="small"
-                              variant="outlined"
-                              color="primary"
-                              sx={{ 
-                                fontSize: '0.65rem',
-                                height: '20px',
-                                '& .MuiChip-label': { 
-                                  px: 0.5 
-                                }
-                              }}
-                            />
-                          ))
-                        ) : (
-                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
-                            Нет назначенных категорий
-                          </Typography>
-                        )}
-                      </Box>
-                      
+                    <Box display="flex" justifyContent="flex-end" alignItems="center" gap={0.5}>
                       {/* Действия */}
-                      <Box display="flex" alignItems="center" gap={0.5}>
-                        <IconButton 
-                          size="small" 
-                          onClick={() => handleManageCategories(channel)} 
-                          title="Управление категориями"
-                          color="primary"
-                        >
-                          <CategoryIcon fontSize="small" />
-                        </IconButton>
-                        <IconButton 
-                          size="small"
-                          onClick={() => handleEdit(channel)}
-                          color="primary"
-                          title="Редактировать канал"
-                        >
-                          <EditIcon fontSize="small" />
-                        </IconButton>
-                        <IconButton 
-                          size="small"
-                          onClick={() => handleDeleteClick(channel)}
-                          color="error"
-                          title="Удалить канал"
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </Box>
+                      <IconButton 
+                        size="small"
+                        onClick={() => handleEdit(channel)}
+                        color="primary"
+                        title="Редактировать канал"
+                      >
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton 
+                        size="small"
+                        onClick={() => handleDeleteClick(channel)}
+                        color="error"
+                        title="Удалить канал"
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
                     </Box>
                   </TableCell>
                 </TableRow>
-                              </Fragment>
+              </Fragment>
             ))}
           </TableBody>
         </Table>
@@ -856,14 +809,6 @@ export default function ChannelsPage() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      {/* Channel Categories Dialog */}
-      <ChannelCategoriesDialog
-        open={categoriesDialogOpen}
-        onClose={handleCategoriesDialogClose}
-        channel={channelForCategories}
-        onUpdate={handleCategoriesUpdate}
-      />
     </Box>
   );
 } 
