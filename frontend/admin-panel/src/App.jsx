@@ -7,6 +7,7 @@ import Layout from './components/Layout';
 import DashboardPage from './pages/DashboardPage';
 import CategoriesPage from './pages/CategoriesPage';
 import ChannelsPage from './pages/ChannelsPage';
+import PublicBotsPage from './pages/PublicBotsPage';
 import PostsCachePage from './pages/PostsCachePage';
 import LLMSettingsPage from './pages/LLMSettingsPage';
 import AIResultsPage from './pages/AIResultsPage';
@@ -34,6 +35,7 @@ function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/categories" element={<CategoriesPage />} />
             <Route path="/channels" element={<ChannelsPage />} />
+            <Route path="/public-bots" element={<PublicBotsPage />} />
             <Route path="/posts-cache" element={<PostsCachePage />} />
             <Route path="/ai-results" element={<AIResultsPage />} />
             <Route path="/settings" element={<LLMSettingsPage />} />

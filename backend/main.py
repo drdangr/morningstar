@@ -1,13 +1,13 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -166,6 +166,86 @@ class User(Base):
     
     # Связи
     # ВРЕМЕННО ОТКЛЮЧЕНО: subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
+
+class PublicBot(Base):
+    __tablename__ = "public_bots"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    status = Column(String, default="setup")  # setup, active, paused
+    
+    # Telegram Bot данные
+    bot_token = Column(String)
+    welcome_message = Column(Text)
+    default_language = Column(String, default="ru")
+    
+    # Digest Settings (базовые)
+    max_posts_per_digest = Column(Integer, default=10)
+    max_summary_length = Column(Integer, default=150)
+    
+    # AI Prompts (разделенные по функциям)
+    categorization_prompt = Column(Text)
+    summarization_prompt = Column(Text)
+    
+    # СЛОЖНОЕ РАСПИСАНИЕ ДОСТАВКИ
+    delivery_schedule = Column(JSONB if USE_POSTGRESQL else Text, default={} if USE_POSTGRESQL else "{}")
+    timezone = Column(String, default="Europe/Moscow")
+    
+    # Legacy поля для совместимости
+    digest_generation_time = Column(String, default="09:00")
+    digest_schedule = Column(String, default="daily")
+    
+    # Statistics
+    users_count = Column(Integer, default=0)
+    digests_count = Column(Integer, default=0)
+    channels_count = Column(Integer, default=0)
+    topics_count = Column(Integer, default=0)
+    
+    # Metadata
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Связи Many-to-Many
+    bot_channels = relationship("BotChannel", back_populates="public_bot", cascade="all, delete-orphan")
+    bot_categories = relationship("BotCategory", back_populates="public_bot", cascade="all, delete-orphan")
+
+class BotChannel(Base):
+    """Таблица связей бот-канал с дополнительными параметрами"""
+    __tablename__ = "bot_channels"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    public_bot_id = Column(Integer, ForeignKey("public_bots.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("channels.id", ondelete="CASCADE"), nullable=False)
+    weight = Column(Float, default=1.0)  # Приоритет канала для данного бота (0.1-2.0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    
+    # Связи
+    public_bot = relationship("PublicBot", back_populates="bot_channels")
+    channel = relationship("Channel")
+    
+    # Уникальность связи бот-канал
+    __table_args__ = (UniqueConstraint('public_bot_id', 'channel_id', name='uq_bot_channel'),)
+
+class BotCategory(Base):
+    """Таблица связей бот-категория с дополнительными параметрами"""
+    __tablename__ = "bot_categories"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    public_bot_id = Column(Integer, ForeignKey("public_bots.id", ondelete="CASCADE"), nullable=False)
+    category_id = Column(Integer, ForeignKey("categories.id", ondelete="CASCADE"), nullable=False)
+    custom_ai_instructions = Column(Text)  # Специфические AI инструкции для категории в этом боте
+    weight = Column(Float, default=1.0)  # Приоритет категории для данного бота
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    
+    # Связи
+    public_bot = relationship("PublicBot", back_populates="bot_categories")
+    category = relationship("Category")
+    
+    # Уникальность связи бот-категория
+    __table_args__ = (UniqueConstraint('public_bot_id', 'category_id', name='uq_bot_category'),)
 
 class PostCache(Base):
     __tablename__ = "posts_cache"
@@ -496,6 +576,127 @@ class PostsBatchCreate(BaseModel):
     collection_stats: Dict[str, Union[int, List[str]]]
     posts: List[PostCacheCreate]
     channels_metadata: Dict[str, Dict[str, Any]]
+
+class PublicBotBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: str = Field("setup", pattern="^(setup|active|paused)$")
+    
+    # Telegram Bot данные
+    bot_token: Optional[str] = None
+    welcome_message: Optional[str] = None
+    default_language: str = "ru"
+    
+    # Digest Settings (базовые)
+    max_posts_per_digest: int = Field(10, ge=1, le=100)
+    max_summary_length: int = Field(150, ge=50, le=500)
+    
+    # AI Prompts (разделенные по функциям)
+    categorization_prompt: Optional[str] = None
+    summarization_prompt: Optional[str] = None
+    
+    # СЛОЖНОЕ РАСПИСАНИЕ ДОСТАВКИ
+    delivery_schedule: Optional[Dict[str, Any]] = {}
+    timezone: str = "Europe/Moscow"
+    
+    # Legacy поля для совместимости
+    digest_generation_time: str = Field("09:00", pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")
+    digest_schedule: str = "daily"
+
+class PublicBotCreate(PublicBotBase):
+    pass
+
+class PublicBotUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: Optional[str] = Field(None, pattern="^(setup|active|paused)$")
+    
+    # Telegram Bot данные
+    bot_token: Optional[str] = None
+    welcome_message: Optional[str] = None
+    default_language: Optional[str] = None
+    
+    # Digest Settings (базовые)
+    max_posts_per_digest: Optional[int] = Field(None, ge=1, le=100)
+    max_summary_length: Optional[int] = Field(None, ge=50, le=500)
+    
+    # AI Prompts (разделенные по функциям)
+    categorization_prompt: Optional[str] = None
+    summarization_prompt: Optional[str] = None
+    
+    # СЛОЖНОЕ РАСПИСАНИЕ ДОСТАВКИ
+    delivery_schedule: Optional[Dict[str, Any]] = None
+    timezone: Optional[str] = None
+    
+    # Legacy поля для совместимости
+    digest_generation_time: Optional[str] = Field(None, pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")
+    digest_schedule: Optional[str] = None
+
+class PublicBotResponse(PublicBotBase):
+    id: int
+    users_count: int = 0
+    digests_count: int = 0
+    channels_count: int = 0
+    topics_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# Bot Templates Models
+class BotTemplateSettings(BaseModel):
+    """Настройки шаблона для новых ботов"""
+    # AI Settings
+    default_ai_model: str = "gpt-4o-mini"
+    default_max_tokens: int = 4000
+    default_temperature: float = 0.7
+    default_categorization_prompt: str = """Анализируй посты по следующим категориям:
+1. НОВОСТИ - политические события, экономика, общественные новости
+2. ТЕХНОЛОГИИ - IT, гаджеты, научные открытия  
+3. КУЛЬТУРА - искусство, развлечения, спорт
+4. ВОЙНА - военные действия, конфликты, оборона
+
+Определи наиболее подходящую категорию для каждого поста."""
+    
+    default_summarization_prompt: str = """Создавай краткие резюме постов:
+- Максимум 2-3 предложения
+- Фокус на ключевых фактах
+- Нейтральный тон без эмоций
+- Указывай источник если важно"""
+    
+    # Digest Settings
+    default_max_posts_per_digest: int = 10
+    default_max_summary_length: int = 150
+    default_digest_language: str = "ru"
+    default_welcome_message: str = "🤖 Добро пожаловать! Этот бот будет присылать вам персонализированные дайджесты новостей."
+    
+    # Delivery Settings
+    default_delivery_schedule: Dict[str, List[str]] = {
+        "monday": ["08:00", "19:00"],
+        "tuesday": ["08:00", "19:00"], 
+        "wednesday": ["08:00", "19:00"],
+        "thursday": ["08:00", "19:00"],
+        "friday": ["08:00", "19:00"],
+        "saturday": ["10:00"],
+        "sunday": ["10:00"]
+    }
+    default_timezone: str = "Europe/Moscow"
+
+class BotTemplateUpdate(BaseModel):
+    """Обновление настроек шаблона"""
+    # Все поля опциональные для частичного обновления
+    default_ai_model: Optional[str] = None
+    default_max_tokens: Optional[int] = None
+    default_temperature: Optional[float] = None
+    default_categorization_prompt: Optional[str] = None
+    default_summarization_prompt: Optional[str] = None
+    default_max_posts_per_digest: Optional[int] = None
+    default_max_summary_length: Optional[int] = None
+    default_digest_language: Optional[str] = None
+    default_welcome_message: Optional[str] = None
+    default_delivery_schedule: Optional[Dict[str, List[str]]] = None
+    default_timezone: Optional[str] = None
 
 # ConfigManager класс
 class ConfigManager:
@@ -1661,6 +1862,681 @@ def cleanup_orphan_posts(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка очистки orphan постов: {str(e)}"
         )
+
+# ==================== PUBLIC BOTS API ====================
+
+@app.get("/api/public-bots", response_model=List[PublicBotResponse])
+def get_public_bots(
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Получить список публичных ботов с фильтрацией"""
+    query = db.query(PublicBot)
+    
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            PublicBot.name.ilike(search_pattern) |
+            PublicBot.description.ilike(search_pattern)
+        )
+    
+    if status_filter:
+        query = query.filter(PublicBot.status == status_filter)
+    
+    bots = query.offset(skip).limit(limit).all()
+    return bots
+
+@app.post("/api/public-bots", response_model=PublicBotResponse, status_code=status.HTTP_201_CREATED)
+def create_public_bot(bot: PublicBotCreate, db: Session = Depends(get_db)):
+    """Создать нового публичного бота с автоприменением шаблонных настроек"""
+    try:
+        # Проверяем уникальность имени
+        existing_bot = db.query(PublicBot).filter(PublicBot.name == bot.name).first()
+        if existing_bot:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Бот с именем '{bot.name}' уже существует"
+            )
+        
+        # Получаем шаблонные настройки
+        template = get_bot_template_settings(db)
+        
+        # Создаем бота с данными из запроса
+        bot_data = bot.dict()
+        
+        # Применяем шаблонные значения для пустых полей
+        if not bot_data.get('categorization_prompt'):
+            bot_data['categorization_prompt'] = template.default_categorization_prompt
+        
+        if not bot_data.get('summarization_prompt'):
+            bot_data['summarization_prompt'] = template.default_summarization_prompt
+        
+        if not bot_data.get('welcome_message'):
+            bot_data['welcome_message'] = template.default_welcome_message
+        
+        if bot_data.get('max_posts_per_digest') == 10:  # значение по умолчанию
+            bot_data['max_posts_per_digest'] = template.default_max_posts_per_digest
+        
+        if bot_data.get('max_summary_length') == 150:  # значение по умолчанию
+            bot_data['max_summary_length'] = template.default_max_summary_length
+        
+        if not bot_data.get('delivery_schedule') or bot_data.get('delivery_schedule') == {}:
+            bot_data['delivery_schedule'] = template.default_delivery_schedule
+        
+        if bot_data.get('default_language') == 'ru' and template.default_digest_language != 'ru':
+            bot_data['default_language'] = template.default_digest_language
+        
+        if bot_data.get('timezone') == 'Europe/Moscow' and template.default_timezone != 'Europe/Moscow':
+            bot_data['timezone'] = template.default_timezone
+        
+        # Создаем нового бота
+        db_bot = PublicBot(**bot_data)
+        db.add(db_bot)
+        db.commit()
+        db.refresh(db_bot)
+        
+        return db_bot
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка создания бота: {str(e)}"
+        )
+
+@app.get("/api/public-bots/{bot_id}", response_model=PublicBotResponse)
+def get_public_bot(bot_id: int, db: Session = Depends(get_db)):
+    """Получить публичного бота по ID"""
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Бот не найден"
+        )
+    return bot
+
+@app.put("/api/public-bots/{bot_id}", response_model=PublicBotResponse)
+def update_public_bot(bot_id: int, bot_update: PublicBotUpdate, db: Session = Depends(get_db)):
+    """Обновить публичного бота"""
+    try:
+        db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not db_bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Бот не найден"
+            )
+        
+        # Проверяем уникальность имени при изменении
+        if bot_update.name and bot_update.name != db_bot.name:
+            existing_bot = db.query(PublicBot).filter(
+                PublicBot.name == bot_update.name,
+                PublicBot.id != bot_id
+            ).first()
+            if existing_bot:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Бот с именем '{bot_update.name}' уже существует"
+                )
+        
+        # Обновляем поля
+        update_data = bot_update.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_bot, field, value)
+        
+        db.commit()
+        db.refresh(db_bot)
+        
+        return db_bot
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка обновления бота: {str(e)}"
+        )
+
+@app.delete("/api/public-bots/{bot_id}")
+def delete_public_bot(bot_id: int, db: Session = Depends(get_db)):
+    """Удалить публичного бота"""
+    try:
+        db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not db_bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Бот не найден"
+            )
+        
+        bot_name = db_bot.name
+        db.delete(db_bot)
+        db.commit()
+        
+        return {
+            "message": f"Бот '{bot_name}' успешно удален",
+            "deleted_bot_id": bot_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления бота: {str(e)}"
+        )
+
+@app.post("/api/public-bots/{bot_id}/toggle-status")
+def toggle_bot_status(bot_id: int, db: Session = Depends(get_db)):
+    """Переключить статус бота (active ↔ paused)"""
+    try:
+        db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not db_bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Бот не найден"
+            )
+        
+        # Переключаем статус
+        if db_bot.status == "active":
+            db_bot.status = "paused"
+        elif db_bot.status == "paused":
+            db_bot.status = "active"
+        else:  # setup
+            db_bot.status = "active"
+        
+        db.commit()
+        db.refresh(db_bot)
+        
+        return {
+            "message": f"Статус бота '{db_bot.name}' изменен на '{db_bot.status}'",
+            "bot_id": bot_id,
+            "new_status": db_bot.status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка изменения статуса бота: {str(e)}"
+        )
+
+# Endpoints для связей Public Bot ↔ Channels
+@app.get("/api/public-bots/{bot_id}/channels", response_model=List[ChannelResponse])
+def get_bot_channels(bot_id: int, db: Session = Depends(get_db)):
+    """Получить все каналы, связанные с ботом"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    # Получаем каналы через связи bot_channels
+    bot_channels = db.query(BotChannel).filter(
+        BotChannel.public_bot_id == bot_id,
+        BotChannel.is_active == True
+    ).all()
+    
+    # Извлекаем каналы из связей
+    channels = []
+    for bot_channel in bot_channels:
+        channel = bot_channel.channel
+        if channel and channel.is_active:
+            channels.append(channel)
+    
+    return channels
+
+@app.post("/api/public-bots/{bot_id}/channels")
+def add_channels_to_bot(
+    bot_id: int, 
+    request: dict,  # {"channel_ids": [1, 2, 3]}
+    db: Session = Depends(get_db)
+):
+    """Добавить каналы к боту (bulk операция)"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    channel_ids = request.get("channel_ids", [])
+    if not channel_ids:
+        raise HTTPException(status_code=400, detail="channel_ids is required")
+    
+    # Проверяем существование каналов
+    channels = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+    if len(channels) != len(channel_ids):
+        found_ids = [ch.id for ch in channels]
+        missing_ids = [ch_id for ch_id in channel_ids if ch_id not in found_ids]
+        raise HTTPException(status_code=404, detail=f"Channels not found: {missing_ids}")
+    
+    # Добавляем связи в таблицу bot_channels
+    added_count = 0
+    for channel_id in channel_ids:
+        # Проверяем, не существует ли уже связь
+        existing = db.query(BotChannel).filter(
+            BotChannel.public_bot_id == bot_id,
+            BotChannel.channel_id == channel_id
+        ).first()
+        
+        if not existing:
+            # Создаем новую связь
+            bot_channel = BotChannel(
+                public_bot_id=bot_id,
+                channel_id=channel_id,
+                weight=1.0,
+                is_active=True
+            )
+            db.add(bot_channel)
+            added_count += 1
+        else:
+            # Если связь существует, но неактивна - активируем
+            if not existing.is_active:
+                existing.is_active = True
+                added_count += 1
+    
+    # Обновляем счетчик каналов в боте
+    channels_count = db.query(BotChannel).filter(
+        BotChannel.public_bot_id == bot_id,
+        BotChannel.is_active == True
+    ).count()
+    bot.channels_count = channels_count
+    
+    db.commit()
+    return {"message": f"Added {added_count} channels to bot {bot_id}", "channel_ids": channel_ids}
+
+@app.delete("/api/public-bots/{bot_id}/channels/{channel_id}")
+def remove_channel_from_bot(bot_id: int, channel_id: int, db: Session = Depends(get_db)):
+    """Удалить канал из бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    # Проверяем существование канала
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    
+    # Ищем связь bot_channel
+    bot_channel = db.query(BotChannel).filter(
+        BotChannel.public_bot_id == bot_id,
+        BotChannel.channel_id == channel_id
+    ).first()
+    
+    if not bot_channel:
+        raise HTTPException(status_code=404, detail="Channel is not associated with this bot")
+    
+    # Удаляем связь
+    db.delete(bot_channel)
+    
+    # Обновляем счетчик каналов в боте
+    channels_count = db.query(BotChannel).filter(
+        BotChannel.public_bot_id == bot_id,
+        BotChannel.is_active == True
+    ).count()
+    bot.channels_count = channels_count
+    
+    db.commit()
+    return {"message": f"Removed channel {channel_id} from bot {bot_id}"}
+
+# Endpoints для связей Public Bot ↔ Categories
+@app.get("/api/public-bots/{bot_id}/categories")
+def get_bot_categories(bot_id: int, db: Session = Depends(get_db)):
+    """Получить все категории, связанные с ботом, с приоритетами"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    # Получаем категории через связи bot_categories с приоритетами
+    bot_categories = db.query(BotCategory).filter(
+        BotCategory.public_bot_id == bot_id,
+        BotCategory.is_active == True
+    ).order_by(BotCategory.weight.desc()).all()
+    
+    # Формируем ответ с включением приоритетов
+    categories_with_priority = []
+    for bot_category in bot_categories:
+        category = bot_category.category
+        if category and category.is_active:
+            # Создаем словарь с данными категории + приоритет
+            category_dict = {
+                "id": category.id,
+                "category_name": category.category_name,
+                "description": category.description,
+                "is_active": category.is_active,
+                "created_at": category.created_at,
+                "updated_at": category.updated_at,
+                "weight": bot_category.weight,  # Добавляем приоритет из связи
+                "priority": bot_category.weight  # Дублируем для совместимости
+            }
+            categories_with_priority.append(category_dict)
+    
+    return categories_with_priority
+
+@app.post("/api/public-bots/{bot_id}/categories")
+def add_categories_to_bot(
+    bot_id: int, 
+    request: dict,  # {"category_ids": [1, 2, 3], "priorities": [1, 2, 3]}
+    db: Session = Depends(get_db)
+):
+    """Добавить категории к боту (bulk операция)"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    category_ids = request.get("category_ids", [])
+    priorities = request.get("priorities", [])
+    
+    if not category_ids:
+        raise HTTPException(status_code=400, detail="category_ids is required")
+    
+    # Если приоритеты не указаны, генерируем автоматически
+    if not priorities:
+        priorities = list(range(1, len(category_ids) + 1))
+    
+    if len(priorities) != len(category_ids):
+        raise HTTPException(status_code=400, detail="priorities length must match category_ids length")
+    
+    # Проверяем существование категорий
+    categories = db.query(Category).filter(Category.id.in_(category_ids)).all()
+    if len(categories) != len(category_ids):
+        found_ids = [cat.id for cat in categories]
+        missing_ids = [cat_id for cat_id in category_ids if cat_id not in found_ids]
+        raise HTTPException(status_code=404, detail=f"Categories not found: {missing_ids}")
+    
+    # Добавляем связи в таблицу bot_categories с приоритетами
+    added_count = 0
+    for i, category_id in enumerate(category_ids):
+        priority = priorities[i]
+        
+        # Проверяем, не существует ли уже связь
+        existing = db.query(BotCategory).filter(
+            BotCategory.public_bot_id == bot_id,
+            BotCategory.category_id == category_id
+        ).first()
+        
+        if not existing:
+            # Создаем новую связь
+            bot_category = BotCategory(
+                public_bot_id=bot_id,
+                category_id=category_id,
+                weight=float(priority),
+                is_active=True
+            )
+            db.add(bot_category)
+            added_count += 1
+        else:
+            # Если связь существует, обновляем приоритет и активируем
+            existing.weight = float(priority)
+            if not existing.is_active:
+                existing.is_active = True
+                added_count += 1
+    
+    # Обновляем счетчик категорий в боте
+    categories_count = db.query(BotCategory).filter(
+        BotCategory.public_bot_id == bot_id,
+        BotCategory.is_active == True
+    ).count()
+    bot.topics_count = categories_count
+    
+    db.commit()
+    return {
+        "message": f"Added {added_count} categories to bot {bot_id}", 
+        "category_ids": category_ids,
+        "priorities": priorities
+    }
+
+@app.delete("/api/public-bots/{bot_id}/categories/{category_id}")
+def remove_category_from_bot(bot_id: int, category_id: int, db: Session = Depends(get_db)):
+    """Удалить категорию из бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    # Проверяем существование категории
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    # Ищем связь bot_category
+    bot_category = db.query(BotCategory).filter(
+        BotCategory.public_bot_id == bot_id,
+        BotCategory.category_id == category_id
+    ).first()
+    
+    if not bot_category:
+        raise HTTPException(status_code=404, detail="Category is not associated with this bot")
+    
+    # Удаляем связь
+    db.delete(bot_category)
+    
+    # Обновляем счетчик категорий в боте
+    categories_count = db.query(BotCategory).filter(
+        BotCategory.public_bot_id == bot_id,
+        BotCategory.is_active == True
+    ).count()
+    bot.topics_count = categories_count
+    
+    db.commit()
+    return {"message": f"Removed category {category_id} from bot {bot_id}"}
+
+@app.put("/api/public-bots/{bot_id}/categories/{category_id}/priority")
+def update_category_priority(
+    bot_id: int, 
+    category_id: int, 
+    request: dict,  # {"priority": 5}
+    db: Session = Depends(get_db)
+):
+    """Обновить приоритет категории для бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Public bot not found")
+    
+    # Проверяем существование категории
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    priority = request.get("priority")
+    if priority is None or not isinstance(priority, (int, float)) or priority < 0.1 or priority > 10:
+        raise HTTPException(status_code=400, detail="priority must be a number between 0.1 and 10")
+    
+    # Ищем связь bot_category
+    bot_category = db.query(BotCategory).filter(
+        BotCategory.public_bot_id == bot_id,
+        BotCategory.category_id == category_id
+    ).first()
+    
+    if not bot_category:
+        raise HTTPException(status_code=404, detail="Category is not associated with this bot")
+    
+    # Обновляем приоритет
+    bot_category.weight = float(priority)
+    
+    db.commit()
+    return {"message": f"Updated priority for category {category_id} in bot {bot_id} to {priority}"}
+
+# Bot Templates API Endpoints
+@app.get("/api/bot-templates", response_model=BotTemplateSettings)
+def get_bot_template_settings(db: Session = Depends(get_db)):
+    """Получить все шаблонные настройки для новых ботов"""
+    config = ConfigManager(db)
+    
+    # Получаем все настройки с префиксом DEFAULT_
+    template_settings = {}
+    
+    # AI Settings
+    template_settings['default_ai_model'] = config.get('DEFAULT_AI_MODEL', 'gpt-4o-mini')
+    template_settings['default_max_tokens'] = int(config.get('DEFAULT_MAX_TOKENS', '4000'))
+    template_settings['default_temperature'] = float(config.get('DEFAULT_TEMPERATURE', '0.7'))
+    template_settings['default_categorization_prompt'] = config.get('DEFAULT_CATEGORIZATION_PROMPT', 
+        BotTemplateSettings().default_categorization_prompt)
+    template_settings['default_summarization_prompt'] = config.get('DEFAULT_SUMMARIZATION_PROMPT',
+        BotTemplateSettings().default_summarization_prompt)
+    
+    # Digest Settings  
+    template_settings['default_max_posts_per_digest'] = int(config.get('DEFAULT_MAX_POSTS_PER_DIGEST', '10'))
+    template_settings['default_max_summary_length'] = int(config.get('DEFAULT_MAX_SUMMARY_LENGTH', '150'))
+    template_settings['default_digest_language'] = config.get('DEFAULT_DIGEST_LANGUAGE', 'ru')
+    template_settings['default_welcome_message'] = config.get('DEFAULT_WELCOME_MESSAGE',
+        BotTemplateSettings().default_welcome_message)
+    
+    # Delivery Settings
+    schedule_json = config.get('DEFAULT_DELIVERY_SCHEDULE', '{}')
+    try:
+        template_settings['default_delivery_schedule'] = json.loads(schedule_json) if schedule_json != '{}' else BotTemplateSettings().default_delivery_schedule
+    except:
+        template_settings['default_delivery_schedule'] = BotTemplateSettings().default_delivery_schedule
+    
+    template_settings['default_timezone'] = config.get('DEFAULT_TIMEZONE', 'Europe/Moscow')
+    
+    return BotTemplateSettings(**template_settings)
+
+@app.put("/api/bot-templates", response_model=BotTemplateSettings)
+def update_bot_template_settings(
+    template_update: BotTemplateUpdate, 
+    db: Session = Depends(get_db)
+):
+    """Обновить шаблонные настройки для новых ботов (bulk update)"""
+    config = ConfigManager(db)
+    
+    # Обновляем только предоставленные поля
+    update_data = template_update.model_dump(exclude_unset=True)
+    
+    for key, value in update_data.items():
+        # Преобразуем в формат настроек БД
+        setting_key = key.upper()
+        
+        if key == 'default_delivery_schedule':
+            # Специальная обработка для JSON
+            config.set_db_setting(setting_key, json.dumps(value), 'json')
+        elif isinstance(value, bool):
+            config.set_db_setting(setting_key, str(value).lower(), 'boolean')
+        elif isinstance(value, int):
+            config.set_db_setting(setting_key, str(value), 'integer')
+        elif isinstance(value, float):
+            config.set_db_setting(setting_key, str(value), 'float')
+        else:
+            config.set_db_setting(setting_key, str(value), 'string')
+    
+    # Возвращаем обновленные настройки
+    return get_bot_template_settings(db)
+
+@app.get("/api/bot-templates/effective")
+def get_effective_bot_settings(bot_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """
+    Получить эффективные настройки с 3-уровневым fallback:
+    1. Индивидуальные настройки бота (если bot_id указан)
+    2. Шаблонные настройки (DEFAULT_*)
+    3. Глобальные настройки системы
+    """
+    config = ConfigManager(db)
+    effective_settings = {}
+    
+    # Получаем шаблонные настройки как базу
+    template_settings = get_bot_template_settings(db)
+    effective_settings.update(template_settings.model_dump())
+    
+    # Если указан bot_id, накладываем индивидуальные настройки
+    if bot_id:
+        bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if bot:
+            # Переопределяем настройки индивидуальными значениями бота
+            if bot.categorization_prompt:
+                effective_settings['categorization_prompt'] = bot.categorization_prompt
+            if bot.summarization_prompt:
+                effective_settings['summarization_prompt'] = bot.summarization_prompt
+            if bot.max_posts_per_digest:
+                effective_settings['max_posts_per_digest'] = bot.max_posts_per_digest
+            if bot.max_summary_length:
+                effective_settings['max_summary_length'] = bot.max_summary_length
+            if bot.welcome_message:
+                effective_settings['welcome_message'] = bot.welcome_message
+            if bot.default_language:
+                effective_settings['default_language'] = bot.default_language
+            if bot.delivery_schedule:
+                effective_settings['delivery_schedule'] = bot.delivery_schedule
+            if bot.timezone:
+                effective_settings['timezone'] = bot.timezone
+    
+    return {
+        "bot_id": bot_id,
+        "settings": effective_settings,
+        "fallback_levels": {
+            "individual": bot_id is not None,
+            "template": True,
+            "global": True
+        }
+    }
+
+@app.post("/api/bot-templates/apply/{bot_id}")
+def apply_template_to_bot(bot_id: int, db: Session = Depends(get_db)):
+    """Применить текущие шаблонные настройки к существующему боту"""
+    # Получаем бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Бот не найден"
+        )
+    
+    # Получаем шаблонные настройки
+    template = get_bot_template_settings(db)
+    
+    # Применяем шаблон к боту (только если поля пустые)
+    updated_fields = []
+    
+    if not bot.categorization_prompt:
+        bot.categorization_prompt = template.default_categorization_prompt
+        updated_fields.append("categorization_prompt")
+    
+    if not bot.summarization_prompt:
+        bot.summarization_prompt = template.default_summarization_prompt
+        updated_fields.append("summarization_prompt")
+    
+    if bot.max_posts_per_digest == 10:  # значение по умолчанию
+        bot.max_posts_per_digest = template.default_max_posts_per_digest
+        updated_fields.append("max_posts_per_digest")
+    
+    if bot.max_summary_length == 150:  # значение по умолчанию
+        bot.max_summary_length = template.default_max_summary_length
+        updated_fields.append("max_summary_length")
+    
+    if not bot.welcome_message:
+        bot.welcome_message = template.default_welcome_message
+        updated_fields.append("welcome_message")
+    
+    if bot.default_language == "ru" and template.default_digest_language != "ru":
+        bot.default_language = template.default_digest_language
+        updated_fields.append("default_language")
+    
+    if not bot.delivery_schedule or bot.delivery_schedule == {}:
+        bot.delivery_schedule = template.default_delivery_schedule
+        updated_fields.append("delivery_schedule")
+    
+    if bot.timezone == "Europe/Moscow" and template.default_timezone != "Europe/Moscow":
+        bot.timezone = template.default_timezone
+        updated_fields.append("timezone")
+    
+    db.commit()
+    db.refresh(bot)
+    
+    return {
+        "message": f"Шаблон применен к боту '{bot.name}'",
+        "bot_id": bot_id,
+        "updated_fields": updated_fields,
+        "updated_count": len(updated_fields)
+    }
 
 # Создание таблиц БД - выполняется в конце после всех определений
 print("🔧 Создание таблиц в базе данных...")

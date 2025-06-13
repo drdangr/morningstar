@@ -36,7 +36,8 @@ import {
   Article as DigestIcon,
   Info as InfoIcon,
   Public as GlobalIcon,
-  SmartToy as BotTemplateIcon
+  SmartToy as BotTemplateIcon,
+  Schedule as ScheduleIcon
 } from '@mui/icons-material';
 
 const API_BASE_URL = 'http://localhost:8000';
@@ -65,82 +66,24 @@ const SETTING_CATEGORIES = {
     color: 'primary',
     description: 'Управление искусственным интеллектом и языковыми моделями'
   },
-  system: {
-    title: 'Системные Настройки',
-    icon: <SystemIcon />,
-    color: 'secondary',
-    description: 'Общие настройки системы и производительности'
-  },
   digest: {
     title: 'Настройки Дайджестов',
     icon: <DigestIcon />,
     color: 'success',
     description: 'Параметры генерации и доставки дайджестов'
+  },
+  delivery: {
+    title: 'Настройки Доставки',
+    icon: <ScheduleIcon />,
+    color: 'info',
+    description: 'Расписание и параметры доставки дайджестов'
+  },
+  system: {
+    title: 'Системные Настройки',
+    icon: <SystemIcon />,
+    color: 'secondary',
+    description: 'Общие настройки системы и производительности'
   }
-};
-
-// Настройки шаблона бота (по умолчанию для новых ботов)
-const BOT_TEMPLATE_SETTINGS = {
-  ai: [
-    {
-      key: 'DEFAULT_AI_MODEL',
-      description: 'Модель AI по умолчанию для новых ботов',
-      value_type: 'string',
-      is_editable: true,
-      category: 'ai'
-    },
-    {
-      key: 'DEFAULT_MAX_TOKENS',
-      description: 'Максимальное количество токенов для новых ботов',
-      value_type: 'integer',
-      is_editable: true,
-      category: 'ai'
-    },
-    {
-      key: 'DEFAULT_TEMPERATURE',
-      description: 'Температура AI для новых ботов (0.0-2.0)',
-      value_type: 'float',
-      is_editable: true,
-      category: 'ai'
-    },
-    {
-      key: 'DEFAULT_CATEGORIZATION_PROMPT',
-      description: 'Промпт для категоризации постов по умолчанию',
-      value_type: 'string',
-      is_editable: true,
-      category: 'ai'
-    },
-    {
-      key: 'DEFAULT_SUMMARIZATION_PROMPT',
-      description: 'Промпт для суммаризации постов по умолчанию',
-      value_type: 'string',
-      is_editable: true,
-      category: 'ai'
-    }
-  ],
-  digest: [
-    {
-      key: 'DEFAULT_MAX_POSTS_PER_DIGEST',
-      description: 'Максимальное количество постов в дайджесте по умолчанию',
-      value_type: 'integer',
-      is_editable: true,
-      category: 'digest'
-    },
-    {
-      key: 'DEFAULT_MAX_SUMMARY_LENGTH',
-      description: 'Максимальная длина резюме по умолчанию',
-      value_type: 'integer',
-      is_editable: true,
-      category: 'digest'
-    },
-    {
-      key: 'DEFAULT_DIGEST_LANGUAGE',
-      description: 'Язык дайджестов по умолчанию',
-      value_type: 'string',
-      is_editable: true,  
-      category: 'digest'
-    }
-  ]
 };
 
 // Специальные компоненты для разных типов настроек
@@ -150,11 +93,55 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
   };
 
   const getLabel = (key) => {
-    if (isTemplate && key.startsWith('DEFAULT_')) {
-      return key.replace('DEFAULT_', '').replace(/_/g, ' ');
+    if (isTemplate && key.startsWith('default_')) {
+      return key.replace('default_', '').replace(/_/g, ' ');
     }
     return key.replace(/_/g, ' ');
   };
+
+  // Специальная обработка для delivery_schedule
+  if (setting.key === 'default_delivery_schedule' && isTemplate) {
+    return (
+      <Box>
+        <Typography variant="subtitle2" gutterBottom>
+          Расписание доставки по умолчанию
+        </Typography>
+        <TextField
+          fullWidth
+          multiline
+          rows={8}
+          label="JSON расписание"
+          value={typeof value === 'object' ? JSON.stringify(value, null, 2) : value || '{}'}
+          onChange={(e) => {
+            try {
+              const parsed = JSON.parse(e.target.value);
+              handleChange(parsed);
+            } catch {
+              handleChange(e.target.value);
+            }
+          }}
+          disabled={disabled || !setting.is_editable}
+          helperText="Формат: {'monday': ['08:00', '19:00'], 'tuesday': ['08:00', '19:00'], ...}"
+        />
+      </Box>
+    );
+  }
+
+  // Специальная обработка для промптов
+  if (setting.key.includes('prompt')) {
+    return (
+      <TextField
+        fullWidth
+        multiline
+        rows={6}
+        label={getLabel(setting.key)}
+        value={value || ''}
+        onChange={(e) => handleChange(e.target.value)}
+        disabled={disabled || !setting.is_editable}
+        helperText={setting.description}
+      />
+    );
+  }
 
   switch (setting.value_type) {
     case 'boolean':
@@ -200,60 +187,7 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
         />
       );
 
-    default: // string
-      if (setting.key === 'AI_MODEL' || setting.key === 'DEFAULT_AI_MODEL') {
-        return (
-          <FormControl fullWidth disabled={disabled || !setting.is_editable}>
-            <InputLabel>{getLabel(setting.key)}</InputLabel>
-            <Select
-              value={value || ''}
-              label={getLabel(setting.key)}
-              onChange={(e) => handleChange(e.target.value)}
-            >
-              <MenuItem value="gpt-4">GPT-4 (Рекомендуется)</MenuItem>
-              <MenuItem value="gpt-4-turbo">GPT-4 Turbo</MenuItem>
-              <MenuItem value="gpt-3.5-turbo">GPT-3.5 Turbo</MenuItem>
-              <MenuItem value="gpt-4o-mini">GPT-4o Mini</MenuItem>
-            </Select>
-          </FormControl>
-        );
-      }
-
-      if (setting.key === 'LOG_LEVEL') {
-        return (
-          <FormControl fullWidth disabled={disabled || !setting.is_editable}>
-            <InputLabel>Log Level</InputLabel>
-            <Select
-              value={value || ''}
-              label="Log Level"
-              onChange={(e) => handleChange(e.target.value)}
-            >
-              <MenuItem value="DEBUG">DEBUG</MenuItem>
-              <MenuItem value="INFO">INFO</MenuItem>
-              <MenuItem value="WARNING">WARNING</MenuItem>
-              <MenuItem value="ERROR">ERROR</MenuItem>
-            </Select>
-          </FormControl>
-        );
-      }
-
-      if (setting.key === 'DEFAULT_DIGEST_LANGUAGE') {
-        return (
-          <FormControl fullWidth disabled={disabled || !setting.is_editable}>
-            <InputLabel>Язык по умолчанию</InputLabel>
-            <Select
-              value={value || ''}
-              label="Язык по умолчанию"
-              onChange={(e) => handleChange(e.target.value)}
-            >
-              <MenuItem value="ru">Русский</MenuItem>
-              <MenuItem value="en">English</MenuItem>
-              <MenuItem value="uk">Українська</MenuItem>
-            </Select>
-          </FormControl>
-        );
-      }
-
+    default:
       return (
         <TextField
           fullWidth
@@ -262,8 +196,6 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
           onChange={(e) => handleChange(e.target.value)}
           disabled={disabled || !setting.is_editable}
           helperText={setting.description}
-          multiline={setting.description && setting.description.length > 50}
-          rows={setting.description && setting.description.length > 50 ? 3 : 1}
         />
       );
   }
@@ -272,14 +204,16 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
 function LLMSettingsPage() {
   const [activeTab, setActiveTab] = useState('global');
   const [settings, setSettings] = useState([]);
+  const [templateSettings, setTemplateSettings] = useState(null);
   const [changedSettings, setChangedSettings] = useState({});
+  const [changedTemplateSettings, setChangedTemplateSettings] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [expandedCategory, setExpandedCategory] = useState('ai');
 
-  // Загрузка настроек
+  // Загрузка глобальных настроек
   const loadSettings = async () => {
     setLoading(true);
     setError('');
@@ -295,9 +229,33 @@ function LLMSettingsPage() {
     }
   };
 
-  // Обработка изменения настройки
+  // Загрузка шаблонных настроек
+  const loadTemplateSettings = async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/bot-templates`);
+      const data = await response.json();
+      setTemplateSettings(data);
+    } catch (err) {
+      setError('Ошибка загрузки шаблонных настроек: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Обработка изменения глобальной настройки
   const handleSettingChange = (key, value, valueType) => {
     setChangedSettings(prev => ({
+      ...prev,
+      [key]: { value, value_type: valueType }
+    }));
+  };
+
+  // Обработка изменения шаблонной настройки
+  const handleTemplateSettingChange = (key, value, valueType) => {
+    setChangedTemplateSettings(prev => ({
       ...prev,
       [key]: { value, value_type: valueType }
     }));
@@ -306,36 +264,111 @@ function LLMSettingsPage() {
   // Получение настроек для текущего таба
   const getCurrentSettings = () => {
     if (activeTab === 'template') {
-      // Возвращаем настройки шаблона бота
-      const templateSettings = [];
-      Object.keys(BOT_TEMPLATE_SETTINGS).forEach(category => {
-        templateSettings.push(...BOT_TEMPLATE_SETTINGS[category]);
-      });
-      return templateSettings;
+      // Преобразуем шаблонные настройки в формат для отображения
+      if (!templateSettings) return [];
+      
+      return [
+        // AI Settings
+        {
+          key: 'default_ai_model',
+          description: 'Модель AI по умолчанию для новых ботов',
+          value: templateSettings.default_ai_model,
+          value_type: 'string',
+          is_editable: true,
+          category: 'ai'
+        },
+        {
+          key: 'default_max_tokens',
+          description: 'Максимальное количество токенов для новых ботов',
+          value: templateSettings.default_max_tokens,
+          value_type: 'integer',
+          is_editable: true,
+          category: 'ai'
+        },
+        {
+          key: 'default_temperature',
+          description: 'Температура AI для новых ботов (0.0-2.0)',
+          value: templateSettings.default_temperature,
+          value_type: 'float',
+          is_editable: true,
+          category: 'ai'
+        },
+        {
+          key: 'default_categorization_prompt',
+          description: 'Промпт для категоризации постов по умолчанию',
+          value: templateSettings.default_categorization_prompt,
+          value_type: 'string',
+          is_editable: true,
+          category: 'ai'
+        },
+        {
+          key: 'default_summarization_prompt',
+          description: 'Промпт для суммаризации постов по умолчанию',
+          value: templateSettings.default_summarization_prompt,
+          value_type: 'string',
+          is_editable: true,
+          category: 'ai'
+        },
+        // Digest Settings
+        {
+          key: 'default_max_posts_per_digest',
+          description: 'Максимальное количество постов в дайджесте по умолчанию',
+          value: templateSettings.default_max_posts_per_digest,
+          value_type: 'integer',
+          is_editable: true,
+          category: 'digest'
+        },
+        {
+          key: 'default_max_summary_length',
+          description: 'Максимальная длина резюме по умолчанию',
+          value: templateSettings.default_max_summary_length,
+          value_type: 'integer',
+          is_editable: true,
+          category: 'digest'
+        },
+        {
+          key: 'default_digest_language',
+          description: 'Язык дайджестов по умолчанию',
+          value: templateSettings.default_digest_language,
+          value_type: 'string',
+          is_editable: true,
+          category: 'digest'
+        },
+        {
+          key: 'default_welcome_message',
+          description: 'Приветственное сообщение по умолчанию',
+          value: templateSettings.default_welcome_message,
+          value_type: 'string',
+          is_editable: true,
+          category: 'digest'
+        },
+        // Delivery Settings
+        {
+          key: 'default_delivery_schedule',
+          description: 'Расписание доставки по умолчанию',
+          value: templateSettings.default_delivery_schedule,
+          value_type: 'json',
+          is_editable: true,
+          category: 'delivery'
+        },
+        {
+          key: 'default_timezone',
+          description: 'Часовой пояс по умолчанию',
+          value: templateSettings.default_timezone,
+          value_type: 'string',
+          is_editable: true,
+          category: 'delivery'
+        }
+      ];
     }
     return settings; // Глобальные настройки
   };
 
-  // Получение значения настройки для шаблона
-  const getTemplateValue = (key) => {
-    // Здесь будет логика получения значений шаблона из API
-    // Пока возвращаем пустые значения или значения по умолчанию
-    const templateDefaults = {
-      'DEFAULT_AI_MODEL': 'gpt-4o-mini',
-      'DEFAULT_MAX_TOKENS': '4000',
-      'DEFAULT_TEMPERATURE': '0.3',
-      'DEFAULT_MAX_POSTS_PER_DIGEST': '10',
-      'DEFAULT_MAX_SUMMARY_LENGTH': '150',
-      'DEFAULT_DIGEST_LANGUAGE': 'ru',
-      'DEFAULT_CATEGORIZATION_PROMPT': 'Проанализируй пост и определи наиболее подходящую категорию...',
-      'DEFAULT_SUMMARIZATION_PROMPT': 'Создай краткое резюме поста на русском языке...'
-    };
-    return templateDefaults[key] || '';
-  };
-
   // Сохранение всех изменений
   const handleSaveAll = async () => {
-    if (Object.keys(changedSettings).length === 0) {
+    const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
+    
+    if (Object.keys(currentChanges).length === 0) {
       setSuccessMessage('Нет изменений для сохранения');
       return;
     }
@@ -344,31 +377,55 @@ function LLMSettingsPage() {
     setError('');
 
     try {
-      // Сохраняем каждую измененную настройку
-      const savePromises = Object.entries(changedSettings).map(async ([key, { value }]) => {
-        const setting = settings.find(s => s.key === key);
-        if (!setting) return;
+      if (activeTab === 'template') {
+        // Сохраняем шаблонные настройки через Bot Templates API
+        const updateData = {};
+        Object.entries(changedTemplateSettings).forEach(([key, { value }]) => {
+          updateData[key] = value;
+        });
 
-        const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
+        const response = await fetch(`${API_BASE_URL}/api/bot-templates`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ value }),
+          body: JSON.stringify(updateData),
         });
 
         if (!response.ok) {
-          throw new Error(`Ошибка сохранения ${key}`);
+          throw new Error('Ошибка сохранения шаблонных настроек');
         }
 
-        return response.json();
-      });
+        setSuccessMessage(`Сохранено ${Object.keys(changedTemplateSettings).length} шаблонных настроек`);
+        setChangedTemplateSettings({});
+        await loadTemplateSettings();
+      } else {
+        // Сохраняем глобальные настройки
+        const savePromises = Object.entries(changedSettings).map(async ([key, { value }]) => {
+          const setting = settings.find(s => s.key === key);
+          if (!setting) return;
 
-      await Promise.all(savePromises);
-      
-      setSuccessMessage(`Сохранено ${Object.keys(changedSettings).length} настроек`);
-      setChangedSettings({});
-      await loadSettings(); // Перезагружаем настройки
+          const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ value }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Ошибка сохранения ${key}`);
+          }
+
+          return response.json();
+        });
+
+        await Promise.all(savePromises);
+        
+        setSuccessMessage(`Сохранено ${Object.keys(changedSettings).length} настроек`);
+        setChangedSettings({});
+        await loadSettings();
+      }
     } catch (err) {
       setError('Ошибка сохранения: ' + err.message);
     } finally {
@@ -378,17 +435,26 @@ function LLMSettingsPage() {
 
   // Сброс изменений
   const handleResetChanges = () => {
-    setChangedSettings({});
+    if (activeTab === 'template') {
+      setChangedTemplateSettings({});
+    } else {
+      setChangedSettings({});
+    }
     setSuccessMessage('Изменения сброшены');
   };
 
-  // Загрузка при монтировании
+  // Загрузка при монтировании и смене таба
   useEffect(() => {
-    loadSettings();
-  }, []);
+    if (activeTab === 'template') {
+      loadTemplateSettings();
+    } else {
+      loadSettings();
+    }
+  }, [activeTab]);
 
   // Группировка настроек по категориям
-  const groupedSettings = settings.reduce((acc, setting) => {
+  const currentSettings = getCurrentSettings();
+  const groupedSettings = currentSettings.reduce((acc, setting) => {
     const category = setting.category || 'system';
     if (!acc[category]) acc[category] = [];
     acc[category].push(setting);
@@ -397,16 +463,20 @@ function LLMSettingsPage() {
 
   // Получение текущего значения настройки (с учетом изменений)
   const getCurrentValue = (setting) => {
-    return changedSettings[setting.key]?.value ?? setting.value;
+    const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
+    return currentChanges[setting.key]?.value ?? setting.value;
   };
 
   // Подсчет изменений по категориям
   const getChangesCount = (category) => {
-    return Object.keys(changedSettings).filter(key => {
-      const setting = settings.find(s => s.key === key);
+    const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
+    return Object.keys(currentChanges).filter(key => {
+      const setting = currentSettings.find(s => s.key === key);
       return setting && setting.category === category;
     }).length;
   };
+
+  const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
 
   return (
     <Box sx={{ p: 3 }}>
@@ -417,14 +487,14 @@ function LLMSettingsPage() {
         
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Tooltip title="Перезагрузить настройки">
-            <IconButton onClick={loadSettings} disabled={loading}>
+            <IconButton onClick={activeTab === 'template' ? loadTemplateSettings : loadSettings} disabled={loading}>
               <RefreshIcon />
             </IconButton>
           </Tooltip>
           <Tooltip title="Сбросить изменения">
             <IconButton 
               onClick={handleResetChanges} 
-              disabled={Object.keys(changedSettings).length === 0}
+              disabled={Object.keys(currentChanges).length === 0}
             >
               <RestoreIcon />
             </IconButton>
@@ -433,13 +503,33 @@ function LLMSettingsPage() {
             variant="contained"
             startIcon={<SaveIcon />}
             onClick={handleSaveAll}
-            disabled={saving || Object.keys(changedSettings).length === 0}
+            disabled={saving || Object.keys(currentChanges).length === 0}
             sx={{ ml: 1 }}
           >
-            {saving ? 'Сохранение...' : `Сохранить (${Object.keys(changedSettings).length})`}
+            {saving ? 'Сохранение...' : `Сохранить (${Object.keys(currentChanges).length})`}
           </Button>
         </Box>
       </Box>
+
+      {/* Табы */}
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+        <Tabs value={activeTab} onChange={(e, newValue) => setActiveTab(newValue)}>
+          {Object.values(TABS_CONFIG).map((tab) => (
+            <Tab
+              key={tab.id}
+              value={tab.id}
+              label={tab.label}
+              icon={tab.icon}
+              iconPosition="start"
+            />
+          ))}
+        </Tabs>
+      </Box>
+
+      {/* Описание текущего таба */}
+      <Alert severity="info" sx={{ mb: 2 }}>
+        {TABS_CONFIG[activeTab].description}
+      </Alert>
 
       {/* Ошибки */}
       {error && (
@@ -449,12 +539,12 @@ function LLMSettingsPage() {
       )}
 
       {/* Информация об изменениях */}
-      {Object.keys(changedSettings).length > 0 && (
-        <Alert severity="info" sx={{ mb: 2 }}>
+      {Object.keys(currentChanges).length > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <InfoIcon />
             <Typography>
-              Изменено настроек: {Object.keys(changedSettings).length}. 
+              Изменено настроек: {Object.keys(currentChanges).length}. 
               Не забудьте сохранить изменения.
             </Typography>
           </Box>
@@ -505,8 +595,8 @@ function LLMSettingsPage() {
             </AccordionSummary>
             <AccordionDetails>
               <Grid container spacing={3}>
-                {categorySettings.map((setting) => (
-                  <Grid item xs={12} md={6} key={setting.id}>
+                {categorySettings.map((setting, index) => (
+                  <Grid item xs={12} md={6} key={setting.key || index}>
                     <Card variant="outlined">
                       <CardContent>
                         <Box sx={{ mb: 2 }}>
@@ -531,7 +621,7 @@ function LLMSettingsPage() {
                                 color="default"
                               />
                             )}
-                            {changedSettings[setting.key] && (
+                            {currentChanges[setting.key] && (
                               <Chip 
                                 label="Изменено" 
                                 size="small" 
@@ -544,14 +634,16 @@ function LLMSettingsPage() {
                         <SettingField
                           setting={setting}
                           value={getCurrentValue(setting)}
-                          onChange={handleSettingChange}
+                          onChange={activeTab === 'template' ? handleTemplateSettingChange : handleSettingChange}
                           disabled={loading || saving}
+                          isTemplate={activeTab === 'template'}
                         />
                         
                         {setting.value !== getCurrentValue(setting) && (
                           <Box sx={{ mt: 1, p: 1, bgcolor: 'warning.light', borderRadius: 1 }}>
                             <Typography variant="caption">
-                              Было: {setting.value} → Будет: {getCurrentValue(setting)}
+                              Было: {typeof setting.value === 'object' ? JSON.stringify(setting.value) : setting.value} → 
+                              Будет: {typeof getCurrentValue(setting) === 'object' ? JSON.stringify(getCurrentValue(setting)) : getCurrentValue(setting)}
                             </Typography>
                           </Box>
                         )}

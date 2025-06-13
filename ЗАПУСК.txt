@@ -18,11 +18,27 @@
 
 4. ADMIN PANEL (в четвертом терминале):
    cd C:\Work\MorningStarBot3\frontend\admin-panel
-   npm start
-
+   npm run dev
+     
 Проверка работы:
 - Backend: http://localhost:8000/api/channels
 - N8N: http://localhost:5678
 - Admin Panel: http://localhost:3000
 
 ОСТАНОВКА: Ctrl+C в каждом окне 
+
+ ПРАВИЛЬНЫЕ КОМАНДЫ ДЛЯ ВСЕХ КОМПОНЕНТОВ:
+1. Backend API:
+cd frontend/admin-panel
+npm run dev
+Порт: http://localhost:8000
+2. Frontend Admin Panel:
+cd frontend/admin-panel
+npm run dev
+Порт: http://localhost:5173 (Vite default)
+3. Userbot (когда понадобится):
+cd userbot
+python main.py
+4. AI Services (когда создадим):
+cd ai_services
+python main.py

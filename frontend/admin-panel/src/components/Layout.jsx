@@ -19,6 +19,7 @@ import {
   Dashboard as DashboardIcon,
   Topic as TopicIcon,
   Tv as ChannelsIcon,
+  SmartToy as PublicBotsIcon,
   Storage as PostsCacheIcon,
   Psychology as LLMSettingsIcon,
   SmartToy as AIResultsIcon,
@@ -32,7 +33,8 @@ const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
   { text: 'Categories', icon: <TopicIcon />, path: '/categories' },
   { text: 'Channels', icon: <ChannelsIcon />, path: '/channels' },
-  { text: 'Posts Cache', icon: <PostsCacheIcon />, path: '/posts-cache' },
+  { text: 'Public Bots', icon: <PublicBotsIcon />, path: '/public-bots' },
+  { text: 'Userbot', icon: <PostsCacheIcon />, path: '/posts-cache' },
   { text: 'Settings', icon: <LLMSettingsIcon />, path: '/settings' },
   { text: 'AI Results', icon: <AIResultsIcon />, path: '/ai-results' },
 ];

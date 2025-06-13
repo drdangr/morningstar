@@ -19,7 +19,6 @@ import {
   Chip,
   Card,
   CardContent,
-  Divider,
   IconButton,
   Tooltip,
   Snackbar,
@@ -219,24 +218,6 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
         );
       }
 
-      if (setting.key === 'LOG_LEVEL') {
-        return (
-          <FormControl fullWidth disabled={disabled || !setting.is_editable}>
-            <InputLabel>Log Level</InputLabel>
-            <Select
-              value={value || ''}
-              label="Log Level"
-              onChange={(e) => handleChange(e.target.value)}
-            >
-              <MenuItem value="DEBUG">DEBUG</MenuItem>
-              <MenuItem value="INFO">INFO</MenuItem>
-              <MenuItem value="WARNING">WARNING</MenuItem>
-              <MenuItem value="ERROR">ERROR</MenuItem>
-            </Select>
-          </FormControl>
-        );
-      }
-
       if (setting.key === 'DEFAULT_DIGEST_LANGUAGE') {
         return (
           <FormControl fullWidth disabled={disabled || !setting.is_editable}>
@@ -303,23 +284,10 @@ function LLMSettingsPage() {
     }));
   };
 
-  // Получение настроек для текущего таба
-  const getCurrentSettings = () => {
-    if (activeTab === 'template') {
-      // Возвращаем настройки шаблона бота
-      const templateSettings = [];
-      Object.keys(BOT_TEMPLATE_SETTINGS).forEach(category => {
-        templateSettings.push(...BOT_TEMPLATE_SETTINGS[category]);
-      });
-      return templateSettings;
-    }
-    return settings; // Глобальные настройки
-  };
-
   // Получение значения настройки для шаблона
   const getTemplateValue = (key) => {
     // Здесь будет логика получения значений шаблона из API
-    // Пока возвращаем пустые значения или значения по умолчанию
+    // Пока возвращаем значения по умолчанию
     const templateDefaults = {
       'DEFAULT_AI_MODEL': 'gpt-4o-mini',
       'DEFAULT_MAX_TOKENS': '4000',
@@ -327,8 +295,8 @@ function LLMSettingsPage() {
       'DEFAULT_MAX_POSTS_PER_DIGEST': '10',
       'DEFAULT_MAX_SUMMARY_LENGTH': '150',
       'DEFAULT_DIGEST_LANGUAGE': 'ru',
-      'DEFAULT_CATEGORIZATION_PROMPT': 'Проанализируй пост и определи наиболее подходящую категорию...',
-      'DEFAULT_SUMMARIZATION_PROMPT': 'Создай краткое резюме поста на русском языке...'
+      'DEFAULT_CATEGORIZATION_PROMPT': 'Проанализируй пост и определи наиболее подходящую категорию из предложенного списка. Учитывай контекст и семантическое значение.',
+      'DEFAULT_SUMMARIZATION_PROMPT': 'Создай краткое и информативное резюме поста на русском языке. Сохрани ключевые факты и важные детали.'
     };
     return templateDefaults[key] || '';
   };
@@ -344,31 +312,9 @@ function LLMSettingsPage() {
     setError('');
 
     try {
-      // Сохраняем каждую измененную настройку
-      const savePromises = Object.entries(changedSettings).map(async ([key, { value }]) => {
-        const setting = settings.find(s => s.key === key);
-        if (!setting) return;
-
-        const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ value }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Ошибка сохранения ${key}`);
-        }
-
-        return response.json();
-      });
-
-      await Promise.all(savePromises);
-      
+      // TODO: Здесь будет API для сохранения настроек шаблона
       setSuccessMessage(`Сохранено ${Object.keys(changedSettings).length} настроек`);
       setChangedSettings({});
-      await loadSettings(); // Перезагружаем настройки
     } catch (err) {
       setError('Ошибка сохранения: ' + err.message);
     } finally {
@@ -441,6 +387,34 @@ function LLMSettingsPage() {
         </Box>
       </Box>
 
+      {/* Табы для разделения глобальных настроек и шаблона */}
+      <Paper sx={{ mb: 3 }}>
+        <Tabs 
+          value={activeTab} 
+          onChange={(e, newValue) => setActiveTab(newValue)}
+          indicatorColor="primary"
+          textColor="primary"
+          variant="fullWidth"
+        >
+          {Object.values(TABS_CONFIG).map(tab => (
+            <Tab
+              key={tab.id}
+              value={tab.id}
+              icon={tab.icon}
+              label={tab.label}
+              iconPosition="start"
+            />
+          ))}
+        </Tabs>
+        
+        {/* Описание активного таба */}
+        <Box sx={{ p: 2, bgcolor: 'grey.50' }}>
+          <Typography variant="body2" color="textSecondary">
+            {TABS_CONFIG[activeTab]?.description}
+          </Typography>
+        </Box>
+      </Paper>
+
       {/* Ошибки */}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -461,109 +435,213 @@ function LLMSettingsPage() {
         </Alert>
       )}
 
-      {/* Настройки по категориям */}
-      {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
-        const categorySettings = groupedSettings[categoryKey] || [];
-        const changesCount = getChangesCount(categoryKey);
-        
-        if (categorySettings.length === 0) return null;
+      {/* Контент таба */}
+      {activeTab === 'global' && (
+        <Box>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <Typography variant="body2">
+              <strong>Глобальные настройки</strong> действуют для всей системы и наследуются всеми ботами.
+              Эти настройки можно переопределить в шаблоне бота или в настройках конкретного бота.
+            </Typography>
+          </Alert>
+          
+          {/* Глобальные настройки по категориям */}
+          {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
+            const categorySettings = groupedSettings[categoryKey] || [];
+            const changesCount = getChangesCount(categoryKey);
+            
+            if (categorySettings.length === 0) return null;
 
-        return (
-          <Accordion
-            key={categoryKey}
-            expanded={expandedCategory === categoryKey}
-            onChange={() => setExpandedCategory(expandedCategory === categoryKey ? '' : categoryKey)}
-            sx={{ mb: 2 }}
-          >
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
-                {categoryConfig.icon}
-                <Box sx={{ flexGrow: 1 }}>
-                  <Typography variant="h6">
-                    {categoryConfig.title}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    {categoryConfig.description}
-                  </Typography>
-                </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Chip 
-                    label={`${categorySettings.length} настроек`} 
-                    size="small" 
-                    color={categoryConfig.color}
-                    variant="outlined"
-                  />
-                  {changesCount > 0 && (
-                    <Chip 
-                      label={`${changesCount} изменений`} 
-                      size="small" 
-                      color="warning"
-                    />
-                  )}
-                </Box>
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails>
-              <Grid container spacing={3}>
-                {categorySettings.map((setting) => (
-                  <Grid item xs={12} md={6} key={setting.id}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ mb: 2 }}>
-                          <Typography variant="h6" gutterBottom>
-                            {setting.key.replace(/_/g, ' ')}
-                          </Typography>
-                          {setting.description && (
-                            <Typography variant="body2" color="textSecondary" gutterBottom>
-                              {setting.description}
-                            </Typography>
-                          )}
-                          <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-                            <Chip 
-                              label={setting.value_type} 
-                              size="small" 
-                              variant="outlined"
-                            />
-                            {!setting.is_editable && (
-                              <Chip 
-                                label="Только чтение" 
-                                size="small" 
-                                color="default"
-                              />
-                            )}
-                            {changedSettings[setting.key] && (
-                              <Chip 
-                                label="Изменено" 
-                                size="small" 
-                                color="warning"
-                              />
-                            )}
-                          </Box>
-                        </Box>
-                        
-                        <SettingField
-                          setting={setting}
-                          value={getCurrentValue(setting)}
-                          onChange={handleSettingChange}
-                          disabled={loading || saving}
+            return (
+              <Accordion
+                key={categoryKey}
+                expanded={expandedCategory === categoryKey}
+                onChange={() => setExpandedCategory(expandedCategory === categoryKey ? '' : categoryKey)}
+                sx={{ mb: 2 }}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                    {categoryConfig.icon}
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6">
+                        {categoryConfig.title}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        {categoryConfig.description}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Chip 
+                        label={`${categorySettings.length} настроек`} 
+                        size="small" 
+                        color={categoryConfig.color}
+                        variant="outlined"
+                      />
+                      {changesCount > 0 && (
+                        <Chip 
+                          label={`${changesCount} изменений`} 
+                          size="small" 
+                          color="warning"
                         />
-                        
-                        {setting.value !== getCurrentValue(setting) && (
-                          <Box sx={{ mt: 1, p: 1, bgcolor: 'warning.light', borderRadius: 1 }}>
-                            <Typography variant="caption">
-                              Было: {setting.value} → Будет: {getCurrentValue(setting)}
-                            </Typography>
-                          </Box>
-                        )}
-                      </CardContent>
-                    </Card>
+                      )}
+                    </Box>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Grid container spacing={3}>
+                    {categorySettings.map((setting) => (
+                      <Grid item xs={12} md={6} key={setting.id}>
+                        <Card variant="outlined">
+                          <CardContent>
+                            <Box sx={{ mb: 2 }}>
+                              <Typography variant="h6" gutterBottom>
+                                {setting.key.replace(/_/g, ' ')}
+                              </Typography>
+                              {setting.description && (
+                                <Typography variant="body2" color="textSecondary" gutterBottom>
+                                  {setting.description}
+                                </Typography>
+                              )}
+                              <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                                <Chip 
+                                  label={setting.value_type} 
+                                  size="small" 
+                                  variant="outlined"
+                                />
+                                {!setting.is_editable && (
+                                  <Chip 
+                                    label="Только чтение" 
+                                    size="small" 
+                                    color="default"
+                                  />
+                                )}
+                                {changedSettings[setting.key] && (
+                                  <Chip 
+                                    label="Изменено" 
+                                    size="small" 
+                                    color="warning"
+                                  />
+                                )}
+                              </Box>
+                            </Box>
+                            
+                            <SettingField
+                              setting={setting}
+                              value={getCurrentValue(setting)}
+                              onChange={handleSettingChange}
+                              disabled={loading || saving}
+                            />
+                            
+                            {setting.value !== getCurrentValue(setting) && (
+                              <Box sx={{ mt: 1, p: 1, bgcolor: 'warning.light', borderRadius: 1 }}>
+                                <Typography variant="caption">
+                                  Было: {setting.value} → Будет: {getCurrentValue(setting)}
+                                </Typography>
+                              </Box>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    ))}
                   </Grid>
-                ))}
-              </Grid>
-            </AccordionDetails>
-          </Accordion>
-        );
-      })}
+                </AccordionDetails>
+              </Accordion>
+            );
+          })}
+        </Box>
+      )}
+
+      {activeTab === 'template' && (
+        <Box>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <Typography variant="body2">
+              <strong>Шаблон Public Bot</strong> - это настройки по умолчанию для новых ботов.
+              При создании нового бота эти значения будут использованы как начальные.
+              Каждый бот может переопределить эти настройки индивидуально.
+            </Typography>
+          </Alert>
+          
+          {/* Настройки шаблона бота */}
+          {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
+            const categorySettings = BOT_TEMPLATE_SETTINGS[categoryKey] || [];
+            
+            if (categorySettings.length === 0) return null;
+
+            return (
+              <Accordion
+                key={`template-${categoryKey}`}
+                expanded={expandedCategory === `template-${categoryKey}`}
+                onChange={() => setExpandedCategory(expandedCategory === `template-${categoryKey}` ? '' : `template-${categoryKey}`)}
+                sx={{ mb: 2 }}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                    {categoryConfig.icon}
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6">
+                        {categoryConfig.title} (Шаблон)
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        Значения по умолчанию для новых ботов
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Chip 
+                        label={`${categorySettings.length} настроек`} 
+                        size="small" 
+                        color={categoryConfig.color}
+                        variant="outlined"
+                      />
+                    </Box>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Grid container spacing={3}>
+                    {categorySettings.map((setting) => (
+                      <Grid item xs={12} md={6} key={setting.key}>
+                        <Card variant="outlined">
+                          <CardContent>
+                            <Box sx={{ mb: 2 }}>
+                              <Typography variant="h6" gutterBottom>
+                                {setting.key.replace('DEFAULT_', '').replace(/_/g, ' ')}
+                              </Typography>
+                              {setting.description && (
+                                <Typography variant="body2" color="textSecondary" gutterBottom>
+                                  {setting.description}
+                                </Typography>
+                              )}
+                              <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                                <Chip 
+                                  label={setting.value_type} 
+                                  size="small" 
+                                  variant="outlined"
+                                />
+                                <Chip 
+                                  label="Шаблон" 
+                                  size="small" 
+                                  color="info"
+                                />
+                              </Box>
+                            </Box>
+                            
+                            <SettingField
+                              setting={setting}
+                              value={getTemplateValue(setting.key)}
+                              onChange={handleSettingChange}
+                              disabled={loading || saving}
+                              isTemplate={true}
+                            />
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    ))}
+                  </Grid>
+                </AccordionDetails>
+              </Accordion>
+            );
+          })}
+        </Box>
+      )}
 
       {/* Snackbar для успешных сообщений */}
       <Snackbar
