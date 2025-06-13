@@ -40,6 +40,8 @@ import {
   Schedule as ScheduleIcon
 } from '@mui/icons-material';
 
+import BotTemplateSettings from '../components/BotTemplateSettings';
+
 const API_BASE_URL = 'http://localhost:8000';
 
 // Конфигурация табов
@@ -551,8 +553,13 @@ function LLMSettingsPage() {
         </Alert>
       )}
 
-      {/* Настройки по категориям */}
-      {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
+      {/* Контент табов */}
+      {activeTab === 'template' ? (
+        <BotTemplateSettings />
+      ) : (
+        <>
+          {/* Настройки по категориям */}
+          {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
         const categorySettings = groupedSettings[categoryKey] || [];
         const changesCount = getChangesCount(categoryKey);
         
@@ -656,6 +663,8 @@ function LLMSettingsPage() {
           </Accordion>
         );
       })}
+        </>
+      )}
 
       {/* Snackbar для успешных сообщений */}
       <Snackbar

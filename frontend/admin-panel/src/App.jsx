@@ -9,7 +9,7 @@ import CategoriesPage from './pages/CategoriesPage';
 import ChannelsPage from './pages/ChannelsPage';
 import PublicBotsPage from './pages/PublicBotsPage';
 import PostsCachePage from './pages/PostsCachePage';
-import LLMSettingsPage from './pages/LLMSettingsPage';
+import LLMSettingsPage from './pages/LLMSettingsPage_v4';
 import AIResultsPage from './pages/AIResultsPage';
 import './App.css'
 
