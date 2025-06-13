@@ -10,13 +10,15 @@ import {
   Settings as SettingsIcon,
   Tv as ChannelsIcon,
   Category as CategoriesIcon,
-  Psychology as AIIcon
+  Psychology as AIIcon,
+  Schedule as ScheduleIcon
 } from '@mui/icons-material';
 
 import BotChannelsManager from './BotChannelsManager';
 import BotCategoriesManager from './BotCategoriesManager';
 import BotAISettings from './BotAISettings';
 import BotGeneralSettings from './BotGeneralSettings';
+import BotDeliverySettings from './BotDeliverySettings';
 
 function TabPanel({ children, value, index, ...other }) {
   return (
@@ -202,6 +204,11 @@ const BotConfigurationTabs = ({ bot, onBotUpdate, onClose }) => {
             label="AI настройки"
             iconPosition="start"
           />
+          <Tab 
+            icon={<ScheduleIcon />} 
+            label="Настройки доставки"
+            iconPosition="start"
+          />
         </Tabs>
       </Box>
 
@@ -251,6 +258,14 @@ const BotConfigurationTabs = ({ bot, onBotUpdate, onClose }) => {
       {/* AI настройки */}
       <TabPanel value={activeTab} index={3}>
         <BotAISettings 
+          bot={bot}
+          onBotUpdate={onBotUpdate}
+        />
+      </TabPanel>
+
+      {/* Настройки доставки */}
+      <TabPanel value={activeTab} index={4}>
+        <BotDeliverySettings 
           bot={bot}
           onBotUpdate={onBotUpdate}
         />
