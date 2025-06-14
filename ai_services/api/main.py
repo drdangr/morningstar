@@ -5,12 +5,13 @@ from typing import List, Optional, Dict, Any
 import uvicorn
 from loguru import logger
 from datetime import datetime, timedelta
+import os, openai
 
-from services.summarization import SummarizationService
-from services.categorization import CategorizationService
-from models.post import Post, ProcessedPost
-from models.bot import PublicBot
-from utils.metrics import ProcessingMetrics
+from ai_services.models.post import Post, ProcessedPost
+from ai_services.models.bot import PublicBot
+from ai_services.utils.metrics import ProcessingMetrics
+from ai_services.services.summarization import SummarizationService
+from ai_services.services.categorization import CategorizationService
 
 # Инициализация FastAPI
 app = FastAPI(
@@ -62,9 +63,16 @@ class ProcessingStatus(BaseModel):
     error: Optional[str] = None
     metrics: Optional[Dict[str, Any]] = None
 
+# Устанавливаем API-ключ для openai
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY не найден в переменных окружения или .env")
+
+openai.api_key = OPENAI_API_KEY
+
 # Инициализация сервисов
 summarization_service = SummarizationService()
-categorization_service = CategorizationService()
+categorization_service = CategorizationService(openai_api_key=OPENAI_API_KEY)
 
 # Роуты
 @app.post("/api/v1/summarize")
@@ -292,16 +300,17 @@ async def process_post_background(
         processed_post = ProcessedPost(
             post_id=post.id,
             public_bot_id=bot.id,
-            summary=summary_result["summary"],
+            summaries={bot.default_language: summary_result["summary"]},
             categories=category_result["categories"],
-            relevance_scores=category_result["relevance_scores"],
-            importance=category_result["importance"],
-            urgency=category_result["urgency"],
-            significance=category_result["significance"],
-            tokens_used=summary_result["tokens_used"] + category_result["tokens_used"],
-            processing_time=datetime.utcnow() - post.created_at
+            relevance_scores=category_result.get("relevance_scores", []),
+            importance=category_result.get("importance", 0.0),
+            urgency=category_result.get("urgency", 0.0),
+            significance=category_result.get("significance", 0.0),
+            tokens_used=summary_result.get("tokens_used", 0) + category_result.get("tokens_used", 0),
+            processing_time=(datetime.utcnow() - post.collected_at).total_seconds(),
+            processing_version="v1.0",
         )
-        await processed_post.save()
+        await processed_post.save_via_api()
         
         # Обновляем метрики
         await ProcessingMetrics.update_metrics(
@@ -317,7 +326,7 @@ async def process_post_background(
             1.0,
             metrics={
                 "tokens_used": processed_post.tokens_used,
-                "processing_time": processed_post.processing_time.total_seconds()
+                "processing_time": processed_post.processing_time
             }
         )
         

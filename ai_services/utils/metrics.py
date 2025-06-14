@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from loguru import logger
-from models.post import ProcessedPost
+from ai_services.models.post import ProcessedPost
 
 class ProcessingMetrics:
     """Утилита для работы с метриками обработки"""

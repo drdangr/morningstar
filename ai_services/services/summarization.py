@@ -1,7 +1,8 @@
 from typing import Dict, Any, Optional
 from .base import BaseAIService
-import openai
+from openai import AsyncOpenAI
 from loguru import logger
+import os
 
 class SummarizationService(BaseAIService):
     """Сервис для генерации краткого содержания постов"""
@@ -16,6 +17,12 @@ class SummarizationService(BaseAIService):
         super().__init__(model_name, max_tokens, temperature)
         self.max_summary_length = max_summary_length
         self.logger = logger.bind(service="SummarizationService")
+        
+        # Инициализируем клиент OpenAI
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        self.client = AsyncOpenAI(api_key=api_key)
     
     async def process(
         self,
@@ -33,8 +40,8 @@ class SummarizationService(BaseAIService):
             # Формируем промпт
             prompt = custom_prompt or self._get_default_prompt(language)
             
-            # Вызываем OpenAI API
-            response = await openai.ChatCompletion.acreate(
+            # Вызываем OpenAI API с новым синтаксисом
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": prompt},

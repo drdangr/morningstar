@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -1757,6 +1757,57 @@ def get_posts_cache_size(
             detail=f"Ошибка получения размера данных: {str(e)}"
         )
 
+@app.get("/api/posts/cache/{post_id}", response_model=PostCacheResponse)
+def get_post_by_id(post_id: int, db: Session = Depends(get_db)):
+    """Получить конкретный пост по ID"""
+    post = db.query(PostCache).filter(PostCache.id == post_id).first()
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Пост с ID {post_id} не найден"
+        )
+    return post
+
+@app.put("/api/posts/cache/{post_id}/status")
+def update_post_status(
+    post_id: int, 
+    request: dict,  # {"status": "processing"}
+    db: Session = Depends(get_db)
+):
+    """Обновить статус обработки поста"""
+    post = db.query(PostCache).filter(PostCache.id == post_id).first()
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Пост с ID {post_id} не найден"
+        )
+    
+    new_status = request.get("status")
+    if not new_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'status' обязательно"
+        )
+    
+    # Валидация статуса
+    valid_statuses = ["pending", "processing", "completed", "failed"]
+    if new_status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Недопустимый статус. Допустимые: {valid_statuses}"
+        )
+    
+    post.processing_status = new_status
+    db.commit()
+    db.refresh(post)
+    
+    return {
+        "message": f"Статус поста {post_id} обновлен на '{new_status}'",
+        "post_id": post_id,
+        "old_status": post.processing_status,
+        "new_status": new_status
+    }
+
 @app.delete("/api/database/clear")
 def clear_database(
     confirm: bool = False,
@@ -2538,6 +2589,19 @@ def apply_template_to_bot(bot_id: int, db: Session = Depends(get_db)):
         "updated_count": len(updated_fields)
     }
 
+# === AI PROCESSED DATA MODEL ===
+class ProcessedData(Base):
+    __tablename__ = "processed_data"
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(BigInteger, nullable=False)  # Изменено: BigInteger без FK
+    public_bot_id = Column(Integer, nullable=False)  # Убран FK из-за партиционирования
+    summaries = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
+    categories = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
+    metrics = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
+    processed_at = Column(DateTime, default=func.now())
+    processing_version = Column(String, default="v1.0")
+    __table_args__ = (UniqueConstraint('post_id', 'public_bot_id', name='uq_processed_post_bot'),)
+
 # Создание таблиц БД - выполняется в конце после всех определений
 print("🔧 Создание таблиц в базе данных...")
 try:
@@ -2545,6 +2609,74 @@ try:
     print("✅ Таблицы созданы успешно")
 except Exception as e:
     print(f"❌ Ошибка создания таблиц: {e}")
+
+
+# === Pydantic схемы ===
+class AIResultCreate(BaseModel):
+    post_id: int
+    public_bot_id: int
+    summaries: Dict[str, Any]
+    categories: Dict[str, Any]
+    metrics: Dict[str, Any]
+    processing_version: str = "v1.0"
+
+class AIResultResponse(AIResultCreate):
+    id: int
+    processed_at: datetime
+    class Config:
+        from_attributes = True
+
+# === API ENDPOINTS ДЛЯ AI SERVICE ===
+@app.post("/api/ai/results", response_model=AIResultResponse, status_code=status.HTTP_201_CREATED)
+def create_ai_result(result: AIResultCreate, db: Session = Depends(get_db)):
+    existing = db.query(ProcessedData).filter_by(post_id=result.post_id, public_bot_id=result.public_bot_id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Result already exists")
+    record = ProcessedData(
+        post_id=result.post_id,
+        public_bot_id=result.public_bot_id,
+        summaries=result.summaries if USE_POSTGRESQL else json.dumps(result.summaries, ensure_ascii=False),
+        categories=result.categories if USE_POSTGRESQL else json.dumps(result.categories, ensure_ascii=False),
+        metrics=result.metrics if USE_POSTGRESQL else json.dumps(result.metrics, ensure_ascii=False),
+        processing_version=result.processing_version,
+    )
+    db.add(record)
+    # Обновляем статус поста
+    post = db.query(PostCache).filter_by(id=result.post_id).first()
+    if post:
+        post.processing_status = "completed"
+    db.commit()
+    db.refresh(record)
+    return record
+
+@app.post("/api/ai/results/batch", response_model=List[AIResultResponse], status_code=status.HTTP_201_CREATED)
+def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends(get_db)):
+    created_records = []
+    for res in results:
+        if db.query(ProcessedData).filter_by(post_id=res.post_id, public_bot_id=res.public_bot_id).first():
+            continue
+        r = ProcessedData(
+            post_id=res.post_id,
+            public_bot_id=res.public_bot_id,
+            summaries=res.summaries if USE_POSTGRESQL else json.dumps(res.summaries, ensure_ascii=False),
+            categories=res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False),
+            metrics=res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False),
+            processing_version=res.processing_version,
+        )
+        db.add(r)
+        created_records.append(r)
+        # менять статус поста
+        post = db.query(PostCache).filter_by(id=res.post_id).first()
+        if post:
+            post.processing_status = "completed"
+    db.commit()
+    for r in created_records:
+        db.refresh(r)
+    return created_records
+
+@app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
+def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+    return db.query(PostCache).filter(PostCache.processing_status == "pending").order_by(PostCache.collected_at.asc()).limit(limit).all()
 
 if __name__ == "__main__":
     import uvicorn

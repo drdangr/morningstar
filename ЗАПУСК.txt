@@ -29,8 +29,9 @@
 
  ПРАВИЛЬНЫЕ КОМАНДЫ ДЛЯ ВСЕХ КОМПОНЕНТОВ:
 1. Backend API:
-cd frontend/admin-panel
-npm run dev
+cd backend
+python main.py
+
 Порт: http://localhost:8000
 2. Frontend Admin Panel:
 cd frontend/admin-panel
@@ -38,7 +39,7 @@ npm run dev
 Порт: http://localhost:5173 (Vite default)
 3. Userbot (когда понадобится):
 cd userbot
-python main.py
+python src/bot.py
 4. AI Services (когда создадим):
 cd ai_services
 python main.py

@@ -47,6 +47,8 @@ function PublicBotsPage() {
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [selectedBot, setSelectedBot] = useState(null);
+  const [originalBot, setOriginalBot] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -117,6 +119,59 @@ function PublicBotsPage() {
     }
   };
 
+  // Обновление настроек бота
+  const handleUpdateBot = async (updatedBot) => {
+    setSaving(true);
+    setError('');
+    
+    try {
+      console.log('🔄 Обновляем настройки бота:', updatedBot.id);
+      
+      const response = await fetch(`${API_BASE_URL}/api/public-bots/${updatedBot.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: updatedBot.name,
+          description: updatedBot.description,
+          bot_token: updatedBot.bot_token,
+          welcome_message: updatedBot.welcome_message,
+          default_language: updatedBot.default_language,
+          max_posts_per_digest: updatedBot.max_posts_per_digest,
+          max_summary_length: updatedBot.max_summary_length,
+          categorization_prompt: updatedBot.categorization_prompt,
+          summarization_prompt: updatedBot.summarization_prompt,
+          delivery_schedule: updatedBot.delivery_schedule,
+          timezone: updatedBot.timezone
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const updatedBotData = await response.json();
+      console.log('✅ Настройки бота обновлены:', updatedBotData);
+      
+      // Обновляем selectedBot для отображения изменений
+      setSelectedBot(updatedBotData);
+      
+      // Обновляем originalBot чтобы сбросить индикатор изменений
+      setOriginalBot(JSON.parse(JSON.stringify(updatedBotData)));
+      
+      // Перезагружаем список ботов
+      await loadBots();
+      
+    } catch (err) {
+      setError('Ошибка обновления настроек: ' + err.message);
+      console.error('Error updating bot:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Переключение статуса бота
   const toggleBotStatus = async (botId) => {
     try {
@@ -136,6 +191,12 @@ function PublicBotsPage() {
       setError('Ошибка изменения статуса: ' + err.message);
       console.error('Error toggling status:', err);
     }
+  };
+
+  // Проверка наличия изменений
+  const hasChanges = () => {
+    if (!selectedBot || !originalBot) return false;
+    return JSON.stringify(selectedBot) !== JSON.stringify(originalBot);
   };
 
   useEffect(() => {
@@ -297,6 +358,7 @@ function PublicBotsPage() {
                         size="small" 
                         onClick={() => {
                           setSelectedBot(bot);
+                          setOriginalBot(JSON.parse(JSON.stringify(bot))); // Глубокая копия
                           setSettingsDialogOpen(true);
                         }}
                       >
@@ -455,19 +517,60 @@ function PublicBotsPage() {
       {/* Settings Dialog */}
       <Dialog
         open={settingsDialogOpen}
-        onClose={() => setSettingsDialogOpen(false)}
+        onClose={() => {
+          if (hasChanges()) {
+            if (window.confirm('У вас есть несохраненные изменения. Закрыть без сохранения?')) {
+              setSelectedBot(originalBot); // Восстанавливаем оригинальные данные
+              setSettingsDialogOpen(false);
+            }
+          } else {
+            setSettingsDialogOpen(false);
+          }
+        }}
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>Настройки бота {selectedBot?.name}</DialogTitle>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            Настройки бота {selectedBot?.name}
+            {hasChanges() && (
+              <Chip 
+                label="Есть изменения" 
+                color="warning" 
+                size="small" 
+                variant="outlined"
+              />
+            )}
+          </Box>
+        </DialogTitle>
         <DialogContent>
           <BotConfigurationTabs 
             bot={selectedBot} 
+            onBotUpdate={(updatedBot) => setSelectedBot(updatedBot)}
             onClose={() => setSettingsDialogOpen(false)}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSettingsDialogOpen(false)}>Закрыть</Button>
+          <Button 
+            onClick={() => {
+              setSelectedBot(originalBot); // Восстанавливаем оригинальные данные
+              setSettingsDialogOpen(false);
+            }}
+          >
+            Отмена
+          </Button>
+          <Button 
+            variant="contained" 
+            disabled={!hasChanges() || saving}
+            onClick={() => {
+              if (selectedBot) {
+                handleUpdateBot(selectedBot);
+              }
+            }}
+            startIcon={saving ? <CircularProgress size={16} /> : null}
+          >
+            {saving ? 'Сохранение...' : 'Сохранить изменения'}
+          </Button>
         </DialogActions>
       </Dialog>
 

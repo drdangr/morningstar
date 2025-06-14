@@ -83,11 +83,29 @@ function PostsCachePage() {
   // Загрузка статистики
   const loadStats = async () => {
     try {
+      console.log('🔄 Загружаем статистику постов...');
       const response = await fetch(`${API_BASE_URL}/api/posts/stats`);
+      console.log('📊 Ответ API статистики:', response.status, response.statusText);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
       const data = await response.json();
+      console.log('✅ Данные статистики получены:', data);
+      console.log('📺 Каналы в статистике:', data.channels?.length || 0);
+      
+      if (data.channels) {
+        data.channels.forEach((channel, index) => {
+          console.log(`   Канал ${index + 1}: ${channel.telegram_id} - ${channel.title}`);
+        });
+      }
+      
       setStats(data);
+      console.log('💾 Статистика сохранена в состояние');
     } catch (err) {
-      console.error('Ошибка загрузки статистики:', err);
+      console.error('❌ Ошибка загрузки статистики:', err);
+      setError('Ошибка загрузки статистики: ' + err.message);
     }
   };
 
@@ -153,6 +171,7 @@ function PostsCachePage() {
 
   // Загрузка статистики при монтировании
   useEffect(() => {
+    console.log('🚀 Компонент PostsCachePage монтируется, загружаем статистику...');
     loadStats();
   }, []);
 
@@ -180,9 +199,30 @@ function PostsCachePage() {
 
   // Получение информации о канале из статистики
   const getChannelInfo = (telegramId) => {
-    if (!stats) return { title: `Channel ${telegramId}`, username: null };
-    const channel = stats.channels.find(ch => ch.telegram_id === telegramId);
-    return channel || { title: `Channel ${telegramId}`, username: null };
+    console.log(`🔍 Ищем информацию о канале ${telegramId}`);
+    console.log('📊 Состояние stats:', stats ? 'загружено' : 'null');
+    
+    if (!stats) {
+      console.log(`❌ Stats не загружены, возвращаем fallback для ${telegramId}`);
+      return { title: `Channel ${telegramId}`, username: null };
+    }
+    
+    console.log(`📺 Доступные каналы в stats: ${stats.channels?.length || 0}`);
+    if (stats.channels) {
+      stats.channels.forEach(ch => {
+        console.log(`   - ${ch.telegram_id}: ${ch.title}`);
+      });
+    }
+    
+    const channel = stats.channels?.find(ch => ch.telegram_id === telegramId);
+    
+    if (channel) {
+      console.log(`✅ Канал ${telegramId} найден: ${channel.title}`);
+      return channel;
+    } else {
+      console.log(`❌ Канал ${telegramId} НЕ найден в stats, возвращаем fallback`);
+      return { title: `Channel ${telegramId}`, username: null };
+    }
   };
 
   // Обрезка текста
