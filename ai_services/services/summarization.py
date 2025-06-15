@@ -31,12 +31,18 @@ class SummarizationService(BaseAIService):
         custom_prompt: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """Генерация краткого содержания для одного поста"""
-        
-        if not await self.validate_input(text):
-            return await self.handle_error(ValueError("Invalid input text"))
-        
+        """Создание краткого содержания текста"""
         try:
+            # Проверяем валидность входных данных
+            if not await self.validate_input(text):
+                return {
+                    "summary": "",
+                    "status": "skipped",
+                    "reason": "empty_text",
+                    "original_length": 0,
+                    "summary_length": 0
+                }
+            
             # Формируем промпт
             prompt = custom_prompt or self._get_default_prompt(language)
             

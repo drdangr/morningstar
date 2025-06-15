@@ -24,9 +24,14 @@ class BaseAIService(ABC):
     
     async def validate_input(self, text: str) -> bool:
         """Валидация входных данных"""
-        if not text or not isinstance(text, str):
-            self.logger.error(f"Invalid input text: {text}")
+        if not isinstance(text, str):
+            self.logger.error(f"Invalid input type: {type(text)}, expected str")
             return False
+        
+        if not text or text.strip() == "":
+            self.logger.warning(f"Empty input text - will skip processing")
+            return False
+        
         return True
     
     async def handle_error(self, error: Exception, context: Optional[Dict] = None) -> Dict[str, Any]:

@@ -16,6 +16,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  DialogContentText,
   DialogActions,
   Rating,
   Divider,
@@ -34,7 +35,14 @@ import {
   TableRow,
   Tooltip,
   Stack,
-  LinearProgress
+  LinearProgress,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Checkbox,
+  FormControlLabel,
+  FormGroup
 } from '@mui/material';
 import {
   SmartToy as SmartToyIcon,
@@ -54,9 +62,10 @@ import {
   Schedule as ScheduleIcon,
   CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
-  Pending as PendingIcon
+  Pending as PendingIcon,
+  RestartAlt as RestartAltIcon,
+  Tune as TuneIcon
 } from '@mui/icons-material';
-import apiService from '../services/api';
 
 // Mock data для демонстрации компонента
 const mockAIResults = {
@@ -114,14 +123,21 @@ function TabPanel({ children, value, index, ...other }) {
 }
 
 const AIResultsPage = () => {
+  const [loading, setLoading] = useState(true);
   const [aiStatus, setAiStatus] = useState(null);
   const [activeTasks, setActiveTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [channels, setChannels] = useState([]);
+  const [selectedChannels, setSelectedChannels] = useState([]);
   const [actionLoading, setActionLoading] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, title: '', message: '' });
   const [alert, setAlert] = useState({ show: false, type: 'info', message: '' });
+  const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, title: '', message: '' });
 
-  // Загрузка данных
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   const fetchAIStatus = async () => {
     try {
       const response = await fetch('http://localhost:8000/api/ai/status');
@@ -129,7 +145,6 @@ const AIResultsPage = () => {
       setAiStatus(data);
     } catch (error) {
       console.error('Ошибка загрузки статуса AI:', error);
-      showAlert('error', 'Ошибка загрузки статуса AI');
     }
   };
 
@@ -137,30 +152,36 @@ const AIResultsPage = () => {
     try {
       const response = await fetch('http://localhost:8000/api/ai/tasks');
       const data = await response.json();
-      setActiveTasks(data.tasks || []);
+      setActiveTasks(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Ошибка загрузки активных задач:', error);
-      showAlert('error', 'Ошибка загрузки активных задач');
+      setActiveTasks([]);
+    }
+  };
+
+  const fetchChannels = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/channels');
+      const data = await response.json();
+      setChannels(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Ошибка загрузки каналов:', error);
+      setChannels([]);
     }
   };
 
   const loadData = async () => {
     setLoading(true);
-    await Promise.all([fetchAIStatus(), fetchActiveTasks()]);
+    await Promise.all([
+      fetchAIStatus(),
+      fetchActiveTasks(),
+      fetchChannels()
+    ]);
     setLoading(false);
   };
 
-  useEffect(() => {
-    loadData();
-    // Автообновление каждые 30 секунд
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Утилиты
   const showAlert = (type, message) => {
     setAlert({ show: true, type, message });
-    setTimeout(() => setAlert({ show: false, type: 'info', message: '' }), 5000);
   };
 
   const formatDate = (dateString) => {
@@ -187,6 +208,23 @@ const AIResultsPage = () => {
     }
   };
 
+  // Обработчики каналов
+  const handleChannelSelect = (channelId) => {
+    setSelectedChannels(prev => 
+      prev.includes(channelId) 
+        ? prev.filter(id => id !== channelId)
+        : [...prev, channelId]
+    );
+  };
+
+  const handleSelectAllChannels = () => {
+    if (selectedChannels.length === channels.length) {
+      setSelectedChannels([]);
+    } else {
+      setSelectedChannels(channels.map(ch => ch.id));
+    }
+  };
+
   // Действия
   const handleReprocessAll = async () => {
     setActionLoading(true);
@@ -199,6 +237,54 @@ const AIResultsPage = () => {
         await loadData();
       } else {
         showAlert('error', data.message || 'Ошибка перезапуска AI обработки');
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка выполнения операции');
+    }
+    setActionLoading(false);
+    setConfirmDialog({ open: false, action: null, title: '', message: '' });
+  };
+
+  const handleReprocessSelectedChannels = async () => {
+    if (selectedChannels.length === 0) {
+      showAlert('warning', 'Выберите каналы для перезапуска');
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/reprocess-channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel_ids: selectedChannels })
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', `Перезапуск AI обработки инициирован для ${data.channels_processed} каналов. Сброшено ${data.total_posts_reset} постов, очищено ${data.total_ai_results_cleared} результатов.`);
+        setSelectedChannels([]);
+        await loadData();
+      } else {
+        showAlert('error', data.message || 'Ошибка перезапуска AI обработки для каналов');
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка выполнения операции');
+    }
+    setActionLoading(false);
+    setConfirmDialog({ open: false, action: null, title: '', message: '' });
+  };
+
+  const handleStopAI = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/stop', { method: 'POST' });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', `AI обработка остановлена. ${data.posts_stopped} постов переведено в статус 'pending'.`);
+        await loadData();
+      } else {
+        showAlert('error', data.message || 'Ошибка остановки AI обработки');
       }
     } catch (error) {
       showAlert('error', 'Ошибка выполнения операции');
@@ -262,6 +348,145 @@ const AIResultsPage = () => {
           {alert.message}
         </Alert>
       )}
+
+      {/* Панель управления каналами */}
+      <Accordion sx={{ mb: 3 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="h6">
+            <TuneIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+            Управление AI по каналам
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Grid container spacing={3}>
+            {/* Выбор каналов */}
+            <Grid item xs={12} md={8}>
+              <Card>
+                <CardContent>
+                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                    <Typography variant="h6">Выбор каналов</Typography>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={selectedChannels.length === channels.length && channels.length > 0}
+                          indeterminate={selectedChannels.length > 0 && selectedChannels.length < channels.length}
+                          onChange={handleSelectAllChannels}
+                        />
+                      }
+                      label="Выбрать все"
+                    />
+                  </Box>
+                  <FormGroup>
+                    <Grid container spacing={1}>
+                      {channels.map((channel) => (
+                        <Grid item xs={12} sm={6} md={4} key={channel.id}>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={selectedChannels.includes(channel.id)}
+                                onChange={() => handleChannelSelect(channel.id)}
+                              />
+                            }
+                            label={
+                              <Box>
+                                <Typography variant="body2" fontWeight="bold">
+                                  {channel.title || channel.channel_name}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {channel.username ? `@${channel.username}` : `ID: ${channel.telegram_id}`}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </FormGroup>
+                  {selectedChannels.length > 0 && (
+                    <Box mt={2}>
+                      <Typography variant="body2" color="primary">
+                        Выбрано каналов: {selectedChannels.length}
+                      </Typography>
+                    </Box>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Кнопки управления */}
+            <Grid item xs={12} md={4}>
+              <Card>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>Действия</Typography>
+                  <Stack spacing={2}>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      startIcon={<RestartAltIcon />}
+                      onClick={() => openConfirmDialog(
+                        handleReprocessSelectedChannels,
+                        'Перезапуск AI для выбранных каналов',
+                        `Вы уверены, что хотите перезапустить AI обработку для ${selectedChannels.length} выбранных каналов? Это сбросит статус всех постов этих каналов и удалит существующие AI результаты.`
+                      )}
+                      disabled={actionLoading || selectedChannels.length === 0}
+                      fullWidth
+                    >
+                      Перезапустить выбранные
+                    </Button>
+                    
+                    <Button
+                      variant="contained"
+                      color="warning"
+                      startIcon={<StopIcon />}
+                      onClick={() => openConfirmDialog(
+                        handleStopAI,
+                        'Остановка AI обработки',
+                        'Вы уверены, что хотите остановить AI обработку? Все посты в статусе "processing" будут переведены в "pending".'
+                      )}
+                      disabled={actionLoading}
+                      fullWidth
+                    >
+                      Остановить AI
+                    </Button>
+
+                    <Divider />
+
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      startIcon={<RestartAltIcon />}
+                      onClick={() => openConfirmDialog(
+                        handleReprocessAll,
+                        'Полный перезапуск AI',
+                        'Вы уверены, что хотите перезапустить AI обработку для ВСЕХ постов? Это сбросит статус всех постов и удалит все существующие AI результаты.'
+                      )}
+                      disabled={actionLoading}
+                      fullWidth
+                    >
+                      Перезапустить все
+                    </Button>
+
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      startIcon={<DeleteIcon />}
+                      onClick={() => openConfirmDialog(
+                        handleClearResults,
+                        'Очистка AI результатов',
+                        'Вы уверены, что хотите удалить ВСЕ AI результаты? Статус постов не изменится, но все AI анализы будут потеряны.'
+                      )}
+                      disabled={actionLoading}
+                      fullWidth
+                    >
+                      Очистить результаты
+                    </Button>
+                  </Stack>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </AccordionDetails>
+      </Accordion>
 
       {/* Статистика */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
@@ -395,97 +620,62 @@ const AIResultsPage = () => {
         </Grid>
       </Grid>
 
-      {/* Панель управления */}
-      <Card sx={{ mb: 4 }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Панель управления AI
-          </Typography>
-          <Stack direction="row" spacing={2} flexWrap="wrap">
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={<PlayIcon />}
-              onClick={() => openConfirmDialog(
-                handleReprocessAll,
-                'Перезапустить AI обработку',
-                'Это действие сбросит статус всех постов на "ожидание" и очистит все AI результаты. Обработка начнется заново. Продолжить?'
-              )}
-              disabled={actionLoading}
-            >
-              Перезапустить всё
-            </Button>
-            
-            <Button
-              variant="outlined"
-              color="error"
-              startIcon={<DeleteIcon />}
-              onClick={() => openConfirmDialog(
-                handleClearResults,
-                'Очистить AI результаты',
-                'Это действие удалит все AI результаты, но не изменит статус постов. Продолжить?'
-              )}
-              disabled={actionLoading}
-            >
-              Очистить результаты
-            </Button>
-          </Stack>
-        </CardContent>
-      </Card>
-
-      {/* Активные задачи */}
+      {/* Активные AI задачи */}
       <Card>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            <ScheduleIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+            <PendingIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
             Активные AI задачи ({activeTasks.length})
           </Typography>
           
           {activeTasks.length === 0 ? (
-            <Alert severity="info">
-              Нет активных AI задач
-            </Alert>
+            <Box textAlign="center" py={4}>
+              <Typography variant="body1" color="text.secondary">
+                Нет активных AI задач
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Все посты обработаны или ожидают запуска обработки
+              </Typography>
+            </Box>
           ) : (
             <TableContainer component={Paper} variant="outlined">
-              <Table>
+              <Table size="small">
                 <TableHead>
                   <TableRow>
                     <TableCell>ID поста</TableCell>
                     <TableCell>Канал</TableCell>
                     <TableCell>Содержание</TableCell>
-                    <TableCell>Дата поста</TableCell>
-                    <TableCell>Просмотры</TableCell>
-                    <TableCell>Собрано</TableCell>
+                    <TableCell>Статус</TableCell>
+                    <TableCell>Дата</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {activeTasks.map((task) => (
                     <TableRow key={task.post_id}>
+                      <TableCell>{task.post_id}</TableCell>
                       <TableCell>
-                        <Chip label={task.post_id} size="small" />
-                      </TableCell>
-                      <TableCell>
-                        <Tooltip title={`Telegram ID: ${task.channel_telegram_id}`}>
-                          <Typography variant="body2">
-                            {task.channel_name}
-                          </Typography>
-                        </Tooltip>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" sx={{ maxWidth: 300 }}>
-                          {task.content_preview || 'Нет содержания'}
+                        <Typography variant="body2" fontWeight="bold">
+                          {task.channel_name || 'Неизвестно'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          ID: {task.channel_telegram_id}
                         </Typography>
                       </TableCell>
                       <TableCell>
-                        <Typography variant="body2">
-                          {formatDate(task.post_date)}
+                        <Typography variant="body2" noWrap sx={{ maxWidth: 300 }}>
+                          {task.content ? task.content.substring(0, 100) + '...' : 'Нет содержания'}
                         </Typography>
                       </TableCell>
                       <TableCell>
-                        <Chip label={task.views} size="small" color="primary" />
+                        <Chip
+                          label={task.processing_status}
+                          color={getStatusColor(task.processing_status)}
+                          size="small"
+                          icon={getStatusIcon(task.processing_status)}
+                        />
                       </TableCell>
                       <TableCell>
-                        <Typography variant="body2">
+                        <Typography variant="caption">
                           {formatDate(task.collected_at)}
                         </Typography>
                       </TableCell>
@@ -498,71 +688,25 @@ const AIResultsPage = () => {
         </CardContent>
       </Card>
 
-      {/* Последняя активность */}
-      {aiStatus?.recent_activity && aiStatus.recent_activity.length > 0 && (
-        <Card sx={{ mt: 4 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Последняя активность
-            </Typography>
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>ID поста</TableCell>
-                    <TableCell>ID бота</TableCell>
-                    <TableCell>Обработано</TableCell>
-                    <TableCell>Версия</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {aiStatus.recent_activity.map((activity, index) => (
-                    <TableRow key={index}>
-                      <TableCell>
-                        <Chip label={activity.post_id} size="small" />
-                      </TableCell>
-                      <TableCell>
-                        <Chip label={activity.bot_id} size="small" color="primary" />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {formatDate(activity.processed_at)}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Chip label={activity.version} size="small" variant="outlined" />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Диалог подтверждения */}
       <Dialog
         open={confirmDialog.open}
         onClose={() => setConfirmDialog({ open: false, action: null, title: '', message: '' })}
-        maxWidth="sm"
-        fullWidth
       >
         <DialogTitle>{confirmDialog.title}</DialogTitle>
         <DialogContent>
-          <Typography>{confirmDialog.message}</Typography>
+          <DialogContentText>{confirmDialog.message}</DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button
+          <Button 
             onClick={() => setConfirmDialog({ open: false, action: null, title: '', message: '' })}
             disabled={actionLoading}
           >
             Отмена
           </Button>
-          <Button
-            onClick={confirmDialog.action}
-            color="primary"
-            variant="contained"
+          <Button 
+            onClick={confirmDialog.action} 
+            variant="contained" 
             disabled={actionLoading}
             startIcon={actionLoading ? <CircularProgress size={16} /> : null}
           >

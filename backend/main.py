@@ -2924,6 +2924,171 @@ def reprocess_bot_posts(bot_id: int, db: Session = Depends(get_db)):
             "message": f"Ошибка при перезапуске AI обработки для бота {bot_id}"
         }
 
+@app.post("/api/ai/reprocess-channel/{channel_id}")
+def reprocess_channel_posts(channel_id: int, db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для конкретного канала"""
+    try:
+        # Проверяем существование канала
+        channel = db.query(Channel).filter(Channel.id == channel_id).first()
+        if not channel:
+            raise HTTPException(status_code=404, detail="Канал не найден")
+        
+        # Сбрасываем статус постов из этого канала
+        updated_count = db.query(PostCache).filter(
+            PostCache.channel_telegram_id == channel.telegram_id
+        ).update(
+            {"processing_status": "pending"},
+            synchronize_session=False
+        )
+        
+        # Удаляем AI результаты для постов этого канала
+        # Получаем ID постов канала
+        post_ids = db.query(PostCache.id).filter(
+            PostCache.channel_telegram_id == channel.telegram_id
+        ).all()
+        post_ids_list = [pid[0] for pid in post_ids]
+        
+        deleted_results = 0
+        if post_ids_list:
+            deleted_results = db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_(post_ids_list)
+            ).count()
+            
+            db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_(post_ids_list)
+            ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Перезапуск AI обработки для канала '{channel.title or channel.channel_name}' инициирован",
+            "channel_name": channel.title or channel.channel_name,
+            "channel_username": channel.username,
+            "posts_reset": updated_count,
+            "ai_results_cleared": deleted_results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Ошибка при перезапуске AI обработки для канала {channel_id}"
+        }
+
+@app.post("/api/ai/reprocess-channels")
+def reprocess_multiple_channels(request: dict, db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для нескольких каналов"""
+    try:
+        channel_ids = request.get("channel_ids", [])
+        if not channel_ids:
+            return {
+                "success": False,
+                "error": "Не указаны каналы для перезапуска",
+                "channels_processed": 0,
+                "total_posts_reset": 0,
+                "total_ai_results_cleared": 0
+            }
+        
+        # Проверяем существование каналов
+        channels = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+        if not channels:
+            return {
+                "success": False,
+                "error": "Указанные каналы не найдены",
+                "channels_processed": 0,
+                "total_posts_reset": 0,
+                "total_ai_results_cleared": 0
+            }
+        
+        total_posts_reset = 0
+        total_ai_results_cleared = 0
+        processed_channels = []
+        
+        for channel in channels:
+            # Сбрасываем статус постов канала
+            updated_count = db.query(PostCache).filter(
+                PostCache.channel_telegram_id == channel.telegram_id
+            ).update(
+                {"processing_status": "pending"},
+                synchronize_session=False
+            )
+            
+            # Удаляем AI результаты для постов канала
+            post_ids = db.query(PostCache.id).filter(
+                PostCache.channel_telegram_id == channel.telegram_id
+            ).all()
+            post_ids_list = [pid[0] for pid in post_ids]
+            
+            deleted_results = 0
+            if post_ids_list:
+                deleted_results = db.query(ProcessedData).filter(
+                    ProcessedData.post_id.in_(post_ids_list)
+                ).count()
+                
+                db.query(ProcessedData).filter(
+                    ProcessedData.post_id.in_(post_ids_list)
+                ).delete(synchronize_session=False)
+            
+            total_posts_reset += updated_count
+            total_ai_results_cleared += deleted_results
+            
+            processed_channels.append({
+                "id": channel.id,
+                "name": channel.title or channel.channel_name,
+                "username": channel.username,
+                "posts_reset": updated_count,
+                "ai_results_cleared": deleted_results
+            })
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Перезапуск AI обработки инициирован для {len(processed_channels)} каналов",
+            "channels_processed": len(processed_channels),
+            "total_posts_reset": total_posts_reset,
+            "total_ai_results_cleared": total_ai_results_cleared,
+            "processed_channels": processed_channels
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при перезапуске AI обработки для каналов"
+        }
+
+@app.post("/api/ai/stop")
+def stop_ai_processing(db: Session = Depends(get_db)):
+    """Остановить AI обработку - сбросить все посты в статус 'pending'"""
+    try:
+        # Сбрасываем все посты со статусом 'processing' в 'pending'
+        updated_count = db.query(PostCache).filter(
+            PostCache.processing_status == "processing"
+        ).update(
+            {"processing_status": "pending"},
+            synchronize_session=False
+        )
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "AI обработка остановлена",
+            "posts_stopped": updated_count,
+            "note": "Посты в статусе 'processing' переведены в 'pending'"
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при остановке AI обработки"
+        }
+
 @app.delete("/api/ai/clear-results")
 def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
     """Очистить все AI результаты (без сброса статуса постов)"""
