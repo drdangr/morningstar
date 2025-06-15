@@ -26,9 +26,18 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Tooltip,
+  Stack,
+  LinearProgress
 } from '@mui/material';
 import {
-  SmartToy as AIIcon,
+  SmartToy as SmartToyIcon,
   Preview as PreviewIcon,
   Analytics as AnalyticsIcon,
   Speed as ProcessingIcon,
@@ -37,6 +46,15 @@ import {
   ThumbUp as ThumbUpIcon,
   ThumbDown as ThumbDownIcon,
   Refresh as RefreshIcon,
+  PlayArrow as PlayIcon,
+  Stop as StopIcon,
+  Delete as DeleteIcon,
+  Assessment as AssessmentIcon,
+  Psychology as PsychologyIcon,
+  Schedule as ScheduleIcon,
+  CheckCircle as CheckCircleIcon,
+  Error as ErrorIcon,
+  Pending as PendingIcon
 } from '@mui/icons-material';
 import apiService from '../services/api';
 
@@ -95,326 +113,465 @@ function TabPanel({ children, value, index, ...other }) {
   );
 }
 
-export default function AIResultsPage() {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [tabValue, setTabValue] = useState(0);
-  const [aiResults, setAIResults] = useState(mockAIResults);
-  const [selectedPost, setSelectedPost] = useState(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [qualityRating, setQualityRating] = useState(0);
+const AIResultsPage = () => {
+  const [aiStatus, setAiStatus] = useState(null);
+  const [activeTasks, setActiveTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, title: '', message: '' });
+  const [alert, setAlert] = useState({ show: false, type: 'info', message: '' });
 
-  const handleTabChange = (event, newValue) => {
-    setTabValue(newValue);
+  // Загрузка данных
+  const fetchAIStatus = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/status');
+      const data = await response.json();
+      setAiStatus(data);
+    } catch (error) {
+      console.error('Ошибка загрузки статуса AI:', error);
+      showAlert('error', 'Ошибка загрузки статуса AI');
+    }
   };
 
-  const handleViewPost = (post) => {
-    setSelectedPost(post);
-    setQualityRating(post.qualityRating || 0);
-    setDialogOpen(true);
+  const fetchActiveTasks = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/tasks');
+      const data = await response.json();
+      setActiveTasks(data.tasks || []);
+    } catch (error) {
+      console.error('Ошибка загрузки активных задач:', error);
+      showAlert('error', 'Ошибка загрузки активных задач');
+    }
   };
 
-  const handleRateQuality = async (rating) => {
-    setQualityRating(rating);
-    // TODO: Отправить рейтинг в API
-    console.log(`Rating post ${selectedPost?.id} with ${rating} stars`);
+  const loadData = async () => {
+    setLoading(true);
+    await Promise.all([fetchAIStatus(), fetchActiveTasks()]);
+    setLoading(false);
   };
 
-  const handleDialogClose = () => {
-    setDialogOpen(false);
-    setSelectedPost(null);
-    setQualityRating(0);
+  useEffect(() => {
+    loadData();
+    // Автообновление каждые 30 секунд
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Утилиты
+  const showAlert = (type, message) => {
+    setAlert({ show: true, type, message });
+    setTimeout(() => setAlert({ show: false, type: 'info', message: '' }), 5000);
   };
 
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString('ru-RU');
   };
 
-  const formatScore = (score) => {
-    return typeof score === 'number' ? score.toFixed(1) : 'N/A';
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'completed': return 'success';
+      case 'processing': return 'warning';
+      case 'failed': return 'error';
+      case 'pending': return 'default';
+      default: return 'default';
+    }
   };
 
-  // Статистические карточки
-  const StatCard = ({ title, value, icon, color = 'primary' }) => (
-    <Card>
-      <CardContent>
-        <Box display="flex" justifyContent="space-between" alignItems="center">
-          <Box>
-            <Typography color="textSecondary" gutterBottom>
-              {title}
-            </Typography>
-            <Typography variant="h4">
-              {value}
-            </Typography>
-          </Box>
-          <Box color={`${color}.main`}>
-            {icon}
-          </Box>
-        </Box>
-      </CardContent>
-    </Card>
-  );
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'completed': return <CheckCircleIcon />;
+      case 'processing': return <CircularProgress size={16} />;
+      case 'failed': return <ErrorIcon />;
+      case 'pending': return <PendingIcon />;
+      default: return <PendingIcon />;
+    }
+  };
+
+  // Действия
+  const handleReprocessAll = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/reprocess-all', { method: 'POST' });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', `Перезапуск AI обработки инициирован. Сброшено ${data.posts_reset} постов, очищено ${data.ai_results_cleared} результатов.`);
+        await loadData();
+      } else {
+        showAlert('error', data.message || 'Ошибка перезапуска AI обработки');
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка выполнения операции');
+    }
+    setActionLoading(false);
+    setConfirmDialog({ open: false, action: null, title: '', message: '' });
+  };
+
+  const handleClearResults = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/clear-results?confirm=true', { method: 'DELETE' });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', `Удалено ${data.deleted_results} AI результатов`);
+        await loadData();
+      } else {
+        showAlert('error', data.message || 'Ошибка очистки результатов');
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка выполнения операции');
+    }
+    setActionLoading(false);
+    setConfirmDialog({ open: false, action: null, title: '', message: '' });
+  };
+
+  const openConfirmDialog = (action, title, message) => {
+    setConfirmDialog({ open: true, action, title, message });
+  };
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
-    <Box>
+    <Box sx={{ p: 3 }}>
+      {/* Заголовок */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <div>
-          <Typography variant="h4" gutterBottom>
-            AI Results Viewer
-          </Typography>
-          <Typography variant="body1" color="textSecondary">
-            Просмотр и анализ результатов AI обработки постов
-          </Typography>
-        </div>
+        <Typography variant="h4" component="h1">
+          <SmartToyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+          AI Results Management
+        </Typography>
         <Button
           variant="outlined"
           startIcon={<RefreshIcon />}
-          onClick={() => {
-            setLoading(true);
-            // TODO: Обновить данные с сервера
-            setTimeout(() => setLoading(false), 1000);
-          }}
+          onClick={loadData}
           disabled={loading}
         >
-          {loading ? 'Обновление...' : 'Обновить'}
+          Обновить
         </Button>
       </Box>
 
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
+      {/* Алерты */}
+      {alert.show && (
+        <Alert severity={alert.type} sx={{ mb: 3 }} onClose={() => setAlert({ show: false, type: 'info', message: '' })}>
+          {alert.message}
         </Alert>
       )}
 
-      {/* Статистические карточки */}
-      <Grid container spacing={3} mb={3}>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Обработано постов"
-            value={aiResults.totalProcessed}
-            icon={<AIIcon fontSize="large" />}
-            color="success"
-          />
+      {/* Статистика */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        {/* Статистика постов */}
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <AssessmentIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Статистика постов
+              </Typography>
+              {aiStatus?.posts_stats && (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="body2" color="text.secondary">
+                      Всего постов: {aiStatus.posts_stats.total}
+                    </Typography>
+                    <LinearProgress
+                      variant="determinate"
+                      value={aiStatus.posts_stats.completion_rate}
+                      sx={{ mt: 1 }}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      Обработано: {aiStatus.posts_stats.completion_rate}%
+                    </Typography>
+                  </Box>
+                  <Divider />
+                  <Grid container spacing={1}>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Ожидают: ${aiStatus.posts_stats.pending}`}
+                        color="default"
+                        size="small"
+                        icon={<PendingIcon />}
+                      />
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Обработка: ${aiStatus.posts_stats.processing}`}
+                        color="warning"
+                        size="small"
+                        icon={<CircularProgress size={16} />}
+                      />
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Готово: ${aiStatus.posts_stats.completed}`}
+                        color="success"
+                        size="small"
+                        icon={<CheckCircleIcon />}
+                      />
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Ошибки: ${aiStatus.posts_stats.failed}`}
+                        color="error"
+                        size="small"
+                        icon={<ErrorIcon />}
+                      />
+                    </Grid>
+                  </Grid>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
         </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="В очереди"
-            value={aiResults.totalPending}
-            icon={<ProcessingIcon fontSize="large" />}
-            color="warning"
-          />
+
+        {/* Статистика AI результатов */}
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <PsychologyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                AI Результаты
+              </Typography>
+              {aiStatus?.ai_results_stats && (
+                <Stack spacing={2}>
+                  <Typography variant="h4" color="primary">
+                    {aiStatus.ai_results_stats.total_results}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Всего AI результатов
+                  </Typography>
+                  <Divider />
+                  <Typography variant="body2">
+                    Результатов на пост: {aiStatus.ai_results_stats.results_per_post}
+                  </Typography>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
         </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Средняя оценка"
-            value={formatScore(aiResults.averageQuality)}
-            icon={<AnalyticsIcon fontSize="large" />}
-            color="info"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Время обработки"
-            value={aiResults.processingTime}
-            icon={<PreviewIcon fontSize="large" />}
-            color="secondary"
-          />
+
+        {/* Статистика ботов */}
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <SmartToyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Активные боты
+              </Typography>
+              {aiStatus?.bots_stats && (
+                <Stack spacing={2}>
+                  <Typography variant="h4" color="primary">
+                    {aiStatus.bots_stats.total_processing_bots}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Ботов в обработке
+                  </Typography>
+                  <Divider />
+                  <Grid container spacing={1}>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Активные: ${aiStatus.bots_stats.active_bots}`}
+                        color="success"
+                        size="small"
+                      />
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Chip
+                        label={`Разработка: ${aiStatus.bots_stats.development_bots}`}
+                        color="info"
+                        size="small"
+                      />
+                    </Grid>
+                  </Grid>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
         </Grid>
       </Grid>
 
-      {/* Вкладки */}
-      <Paper sx={{ width: '100%' }}>
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs value={tabValue} onChange={handleTabChange}>
-            <Tab label="Результаты обработки" />
-            <Tab label="Batch мониторинг" />
-            <Tab label="Метрики качества" />
-          </Tabs>
-        </Box>
-
-        {/* Вкладка 1: Результаты обработки */}
-        <TabPanel value={tabValue} index={0}>
+      {/* Панель управления */}
+      <Card sx={{ mb: 4 }}>
+        <CardContent>
           <Typography variant="h6" gutterBottom>
-            Последние обработанные посты
+            Панель управления AI
+          </Typography>
+          <Stack direction="row" spacing={2} flexWrap="wrap">
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<PlayIcon />}
+              onClick={() => openConfirmDialog(
+                handleReprocessAll,
+                'Перезапустить AI обработку',
+                'Это действие сбросит статус всех постов на "ожидание" и очистит все AI результаты. Обработка начнется заново. Продолжить?'
+              )}
+              disabled={actionLoading}
+            >
+              Перезапустить всё
+            </Button>
+            
+            <Button
+              variant="outlined"
+              color="error"
+              startIcon={<DeleteIcon />}
+              onClick={() => openConfirmDialog(
+                handleClearResults,
+                'Очистить AI результаты',
+                'Это действие удалит все AI результаты, но не изменит статус постов. Продолжить?'
+              )}
+              disabled={actionLoading}
+            >
+              Очистить результаты
+            </Button>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* Активные задачи */}
+      <Card>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            <ScheduleIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+            Активные AI задачи ({activeTasks.length})
           </Typography>
           
-          {aiResults.recentResults.map((result) => (
-            <Accordion key={result.id} sx={{ mb: 1 }}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', pr: 2 }}>
-                  <Box sx={{ flexGrow: 1 }}>
-                    <Typography variant="subtitle1" noWrap>
-                      {result.postTitle}
-                    </Typography>
-                    <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-                      <Chip size="small" label={result.channel} color="primary" variant="outlined" />
-                      <Chip size="small" label={result.aiCategory} color="secondary" />
-                      <Chip 
-                        size="small" 
-                        label={`Важность: ${formatScore(result.importanceScore)}`} 
-                        color={result.importanceScore > 7 ? 'error' : 'default'}
-                      />
-                    </Box>
-                  </Box>
-                  <Box sx={{ textAlign: 'right' }}>
-                    <Typography variant="body2" color="textSecondary">
-                      {formatDate(result.processedAt)}
-                    </Typography>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleViewPost(result);
-                      }}
-                    >
-                      <ViewIcon />
-                    </IconButton>
-                  </Box>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      Оригинальный контент:
-                    </Typography>
-                    <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-                      {result.originalContent}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      AI резюме:
-                    </Typography>
-                    <Typography variant="body2" sx={{ mb: 2 }}>
-                      {result.aiSummary}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                      <Typography variant="body2">
-                        Релевантность: {formatScore(result.relevanceScore)}
-                      </Typography>
-                      <Typography variant="body2">
-                        Срочность: {formatScore(result.urgencyScore)}
-                      </Typography>
-                      {result.qualityRating && (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Typography variant="body2">Оценка:</Typography>
-                          <Rating value={result.qualityRating} readOnly size="small" />
-                        </Box>
-                      )}
-                    </Box>
-                  </Grid>
-                </Grid>
-              </AccordionDetails>
-            </Accordion>
-          ))}
-        </TabPanel>
-
-        {/* Вкладка 2: Batch мониторинг */}
-        <TabPanel value={tabValue} index={1}>
-          <Typography variant="h6" gutterBottom>
-            Мониторинг batch обработки
-          </Typography>
-          <Alert severity="info">
-            <Typography variant="body2">
-              Эта функция будет реализована на этапе STAGE 2: Python AI Services.
-              Здесь будет отображаться статус batch обработки, очереди задач и конфликты приоритетов.
-            </Typography>
-          </Alert>
-        </TabPanel>
-
-        {/* Вкладка 3: Метрики качества */}
-        <TabPanel value={tabValue} index={2}>
-          <Typography variant="h6" gutterBottom>
-            Метрики качества AI
-          </Typography>
-          <Alert severity="info">
-            <Typography variant="body2">
-              Эта функция будет реализована после внедрения Python AI Services.
-              Здесь будут отображаться аналитические метрики качества AI обработки:
-              точность категоризации, качество резюме, пользовательские оценки.
-            </Typography>
-          </Alert>
-        </TabPanel>
-      </Paper>
-
-      {/* Диалог детального просмотра поста */}
-      <Dialog open={dialogOpen} onClose={handleDialogClose} maxWidth="md" fullWidth>
-        <DialogTitle>
-          Детальный просмотр AI обработки
-        </DialogTitle>
-        <DialogContent>
-          {selectedPost && (
-            <Box>
-              <Typography variant="h6" gutterBottom>
-                {selectedPost.postTitle}
-              </Typography>
-              
-              <Divider sx={{ my: 2 }} />
-              
-              <Grid container spacing={3}>
-                <Grid item xs={12} md={6}>
-                  <Typography variant="subtitle1" gutterBottom>
-                    📝 Оригинальный контент
-                  </Typography>
-                  <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
-                    <Typography variant="body2">
-                      {selectedPost.originalContent}
-                    </Typography>
-                  </Paper>
-                </Grid>
-                
-                <Grid item xs={12} md={6}>
-                  <Typography variant="subtitle1" gutterBottom>
-                    🤖 AI резюме
-                  </Typography>
-                  <Paper sx={{ p: 2, bgcolor: 'primary.50' }}>
-                    <Typography variant="body2">
-                      {selectedPost.aiSummary}
-                    </Typography>
-                  </Paper>
-                </Grid>
-                
-                <Grid item xs={12}>
-                  <Typography variant="subtitle1" gutterBottom>
-                    📊 AI метрики
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                    <Chip label={`Категория: ${selectedPost.aiCategory}`} color="secondary" />
-                    <Chip label={`Релевантность: ${formatScore(selectedPost.relevanceScore)}`} />
-                    <Chip label={`Важность: ${formatScore(selectedPost.importanceScore)}`} />
-                    <Chip label={`Срочность: ${formatScore(selectedPost.urgencyScore)}`} />
-                  </Box>
-                </Grid>
-                
-                <Grid item xs={12}>
-                  <Typography variant="subtitle1" gutterBottom>
-                    ⭐ Оценка качества AI обработки
-                  </Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Rating
-                      value={qualityRating}
-                      onChange={(event, newValue) => handleRateQuality(newValue)}
-                      size="large"
-                    />
-                    <Typography variant="body2" color="textSecondary">
-                      {qualityRating > 0 ? `${qualityRating} из 5` : 'Не оценено'}
-                    </Typography>
-                  </Box>
-                </Grid>
-              </Grid>
-            </Box>
+          {activeTasks.length === 0 ? (
+            <Alert severity="info">
+              Нет активных AI задач
+            </Alert>
+          ) : (
+            <TableContainer component={Paper} variant="outlined">
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>ID поста</TableCell>
+                    <TableCell>Канал</TableCell>
+                    <TableCell>Содержание</TableCell>
+                    <TableCell>Дата поста</TableCell>
+                    <TableCell>Просмотры</TableCell>
+                    <TableCell>Собрано</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {activeTasks.map((task) => (
+                    <TableRow key={task.post_id}>
+                      <TableCell>
+                        <Chip label={task.post_id} size="small" />
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title={`Telegram ID: ${task.channel_telegram_id}`}>
+                          <Typography variant="body2">
+                            {task.channel_name}
+                          </Typography>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ maxWidth: 300 }}>
+                          {task.content_preview || 'Нет содержания'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(task.post_date)}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={task.views} size="small" color="primary" />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(task.collected_at)}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Последняя активность */}
+      {aiStatus?.recent_activity && aiStatus.recent_activity.length > 0 && (
+        <Card sx={{ mt: 4 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Последняя активность
+            </Typography>
+            <TableContainer component={Paper} variant="outlined">
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>ID поста</TableCell>
+                    <TableCell>ID бота</TableCell>
+                    <TableCell>Обработано</TableCell>
+                    <TableCell>Версия</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {aiStatus.recent_activity.map((activity, index) => (
+                    <TableRow key={index}>
+                      <TableCell>
+                        <Chip label={activity.post_id} size="small" />
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={activity.bot_id} size="small" color="primary" />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(activity.processed_at)}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={activity.version} size="small" variant="outlined" />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Диалог подтверждения */}
+      <Dialog
+        open={confirmDialog.open}
+        onClose={() => setConfirmDialog({ open: false, action: null, title: '', message: '' })}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>{confirmDialog.title}</DialogTitle>
+        <DialogContent>
+          <Typography>{confirmDialog.message}</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleDialogClose}>Закрыть</Button>
-          <Button variant="contained" onClick={handleDialogClose}>
-            Сохранить оценку
+          <Button
+            onClick={() => setConfirmDialog({ open: false, action: null, title: '', message: '' })}
+            disabled={actionLoading}
+          >
+            Отмена
+          </Button>
+          <Button
+            onClick={confirmDialog.action}
+            color="primary"
+            variant="contained"
+            disabled={actionLoading}
+            startIcon={actionLoading ? <CircularProgress size={16} /> : null}
+          >
+            {actionLoading ? 'Выполняется...' : 'Подтвердить'}
           </Button>
         </DialogActions>
       </Dialog>
     </Box>
   );
-} 
+};
+
+export default AIResultsPage; 

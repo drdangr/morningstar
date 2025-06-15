@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-AI Orchestrator v2.1 - Координатор AI обработки постов
-Автоматическая обработка постов через CategorizationService и SummarizationService
+AI Orchestrator - Центральный координатор AI сервисов
+Автоматически обрабатывает посты через CategorizationService и SummarizationService
 """
 
 import asyncio
 import aiohttp
 import json
+import logging
 import os
+import sys
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from loguru import logger
+
+# Добавляем корневую папку в путь для импортов
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Импорт сервисов
 from ai_services.services.categorization import CategorizationService
@@ -112,17 +117,21 @@ class AIOrchestrator:
             return []
     
     async def get_public_bots(self) -> List[Dict[str, Any]]:
-        """Получить список активных публичных ботов"""
+        """Получить список активных публичных ботов (включая development)"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{self.backend_url}/api/public-bots?status_filter=active"
+                    f"{self.backend_url}/api/public-bots"  # Убираем фильтр, получаем всех
                 ) as response:
                     if response.status == 200:
                         bots = await response.json()
-                        active_bots = [bot for bot in bots if bot.get('status') == 'active']
-                        logger.info(f"🤖 Получено {len(active_bots)} активных ботов")
-                        return active_bots
+                        # Фильтруем активных и development ботов
+                        processing_bots = [bot for bot in bots if bot.get('status') in ['active', 'development']]
+                        active_bots = [bot for bot in processing_bots if bot.get('status') == 'active']
+                        dev_bots = [bot for bot in processing_bots if bot.get('status') == 'development']
+                        
+                        logger.info(f"🤖 Получено {len(active_bots)} активных ботов, {len(dev_bots)} в разработке")
+                        return processing_bots
                     else:
                         logger.error(f"❌ Ошибка получения ботов: HTTP {response.status}")
                         return []
@@ -228,7 +237,7 @@ class AIOrchestrator:
                     "post_id": post_id,
                     "public_bot_id": bot.id,
                     "summaries": {"ru": summarization_result.get("summary", "")},
-                    "categories": [categorization_result.get("category_name", "NULL")],
+                    "categories": {"ru": categorization_result.get("category_name", "NULL")},
                     "metrics": {
                         "importance": categorization_result.get("importance", 7),
                         "urgency": categorization_result.get("urgency", 6),
@@ -301,13 +310,28 @@ class AIOrchestrator:
         posts = self.convert_to_post_objects(posts_data)
         bots = self.convert_to_bot_objects(bots_data)
         
-        # 4. Обработка постов для каждого бота
+        # 4. Обработка постов для каждого бота с разделением по статусам
         all_results = []
-        for bot in bots:
-            bot_results = await self.process_posts_for_bot(posts, bot)
-            all_results.extend(bot_results)
+        dev_results = []  # Результаты для development ботов (только логирование)
         
-        # 5. Сохранение результатов
+        for bot_data in bots_data:
+            bot = next((b for b in bots if b.id == bot_data['id']), None)
+            if not bot:
+                continue
+                
+            bot_results = await self.process_posts_for_bot(posts, bot)
+            
+            # Разделяем результаты по статусу бота
+            if bot_data.get('status') == 'development':
+                dev_results.extend(bot_results)
+                logger.info(f"🧪 DEVELOPMENT MODE: Бот '{bot.name}' обработал {len(bot_results)} постов (результаты НЕ сохраняются)")
+                # Детальное логирование для development ботов
+                for result in bot_results:
+                    logger.info(f"   📝 Пост {result['post_id']}: {result['categories']['ru']} (важность: {result['metrics']['importance']})")
+            else:  # active статус
+                all_results.extend(bot_results)
+        
+        # 5. Сохранение результатов (только для активных ботов)
         if all_results:
             success = await self.save_ai_results(all_results)
             if not success:

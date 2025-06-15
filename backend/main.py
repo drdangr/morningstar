@@ -580,7 +580,7 @@ class PostsBatchCreate(BaseModel):
 class PublicBotBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    status: str = Field("setup", pattern="^(setup|active|paused)$")
+    status: str = Field("setup", pattern="^(setup|active|paused|development)$")  # Добавлен development
     
     # Telegram Bot данные
     bot_token: Optional[str] = None
@@ -609,7 +609,7 @@ class PublicBotCreate(PublicBotBase):
 class PublicBotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
-    status: Optional[str] = Field(None, pattern="^(setup|active|paused)$")
+    status: Optional[str] = Field(None, pattern="^(setup|active|paused|development)$")
     
     # Telegram Bot данные
     bot_token: Optional[str] = None
@@ -2084,7 +2084,7 @@ def delete_public_bot(bot_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/public-bots/{bot_id}/toggle-status")
 def toggle_bot_status(bot_id: int, db: Session = Depends(get_db)):
-    """Переключить статус бота (active ↔ paused)"""
+    """Переключить статус бота (active ↔ paused ↔ development)"""
     try:
         db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
         if not db_bot:
@@ -2093,12 +2093,16 @@ def toggle_bot_status(bot_id: int, db: Session = Depends(get_db)):
                 detail="Бот не найден"
             )
         
-        # Переключаем статус
-        if db_bot.status == "active":
+        # Циклическое переключение статусов: setup → active → paused → development → active
+        if db_bot.status == "setup":
+            db_bot.status = "active"
+        elif db_bot.status == "active":
             db_bot.status = "paused"
         elif db_bot.status == "paused":
+            db_bot.status = "development"
+        elif db_bot.status == "development":
             db_bot.status = "active"
-        else:  # setup
+        else:  # fallback для неизвестных статусов
             db_bot.status = "active"
         
         db.commit()
@@ -2117,6 +2121,54 @@ def toggle_bot_status(bot_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка изменения статуса бота: {str(e)}"
+        )
+
+@app.post("/api/public-bots/{bot_id}/set-status")
+def set_bot_status(bot_id: int, request: dict, db: Session = Depends(get_db)):
+    """Установить конкретный статус бота"""
+    try:
+        new_status = request.get("status")
+        if not new_status:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Поле 'status' обязательно"
+            )
+        
+        # Валидация статуса
+        valid_statuses = ["setup", "active", "paused", "development"]
+        if new_status not in valid_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Недопустимый статус. Допустимые: {', '.join(valid_statuses)}"
+            )
+        
+        db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not db_bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Бот не найден"
+            )
+        
+        old_status = db_bot.status
+        db_bot.status = new_status
+        
+        db.commit()
+        db.refresh(db_bot)
+        
+        return {
+            "message": f"Статус бота '{db_bot.name}' изменен с '{old_status}' на '{new_status}'",
+            "bot_id": bot_id,
+            "old_status": old_status,
+            "new_status": new_status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка установки статуса бота: {str(e)}"
         )
 
 # Endpoints для связей Public Bot ↔ Channels
@@ -2677,6 +2729,436 @@ def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends
 @app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
 def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     return db.query(PostCache).filter(PostCache.processing_status == "pending").order_by(PostCache.collected_at.asc()).limit(limit).all()
+
+# === AI MANAGEMENT ENDPOINTS ===
+@app.get("/api/ai/status")
+def get_ai_status(db: Session = Depends(get_db)):
+    """Получить статус AI обработки"""
+    try:
+        # Статистика постов
+        total_posts = db.query(PostCache).count()
+        pending_posts = db.query(PostCache).filter(PostCache.processing_status == "pending").count()
+        processing_posts = db.query(PostCache).filter(PostCache.processing_status == "processing").count()
+        completed_posts = db.query(PostCache).filter(PostCache.processing_status == "completed").count()
+        failed_posts = db.query(PostCache).filter(PostCache.processing_status == "failed").count()
+        
+        # Статистика AI результатов
+        total_ai_results = db.query(ProcessedData).count()
+        
+        # Статистика по ботам
+        active_bots = db.query(PublicBot).filter(PublicBot.status == "active").count()
+        development_bots = db.query(PublicBot).filter(PublicBot.status == "development").count()
+        
+        # Последние обработанные посты
+        recent_processed = db.query(ProcessedData).order_by(ProcessedData.processed_at.desc()).limit(5).all()
+        
+        return {
+            "success": True,
+            "posts_stats": {
+                "total": total_posts,
+                "pending": pending_posts,
+                "processing": processing_posts,
+                "completed": completed_posts,
+                "failed": failed_posts,
+                "completion_rate": round((completed_posts / total_posts * 100) if total_posts > 0 else 0, 2)
+            },
+            "ai_results_stats": {
+                "total_results": total_ai_results,
+                "results_per_post": round((total_ai_results / completed_posts) if completed_posts > 0 else 0, 2)
+            },
+            "bots_stats": {
+                "active_bots": active_bots,
+                "development_bots": development_bots,
+                "total_processing_bots": active_bots + development_bots
+            },
+            "recent_activity": [
+                {
+                    "post_id": r.post_id,
+                    "bot_id": r.public_bot_id,
+                    "processed_at": r.processed_at,
+                    "version": r.processing_version
+                } for r in recent_processed
+            ]
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "posts_stats": {"total": 0, "pending": 0, "processing": 0, "completed": 0, "failed": 0, "completion_rate": 0},
+            "ai_results_stats": {"total_results": 0, "results_per_post": 0},
+            "bots_stats": {"active_bots": 0, "development_bots": 0, "total_processing_bots": 0},
+            "recent_activity": []
+        }
+
+@app.get("/api/ai/tasks")
+def get_ai_tasks(db: Session = Depends(get_db)):
+    """Получить список активных AI задач"""
+    try:
+        # Получаем посты в статусе "processing"
+        processing_posts = db.query(PostCache).filter(
+            PostCache.processing_status == "processing"
+        ).order_by(PostCache.collected_at.desc()).all()
+        
+        # Получаем информацию о каналах для контекста
+        channel_ids = list(set([post.channel_telegram_id for post in processing_posts]))
+        channels_info = db.query(Channel).filter(Channel.telegram_id.in_(channel_ids)).all()
+        channels_map = {ch.telegram_id: ch.channel_name for ch in channels_info}
+        
+        tasks = []
+        for post in processing_posts:
+            tasks.append({
+                "post_id": post.id,
+                "channel_name": channels_map.get(post.channel_telegram_id, f"Channel {post.channel_telegram_id}"),
+                "channel_telegram_id": post.channel_telegram_id,
+                "content_preview": (post.content[:100] + "...") if post.content and len(post.content) > 100 else post.content,
+                "post_date": post.post_date,
+                "collected_at": post.collected_at,
+                "views": post.views
+            })
+        
+        return {
+            "success": True,
+            "active_tasks": len(tasks),
+            "tasks": tasks
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "active_tasks": 0,
+            "tasks": []
+        }
+
+@app.post("/api/ai/reprocess-all")
+def reprocess_all_posts(db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для всех постов"""
+    try:
+        # Сбрасываем статус всех постов на "pending"
+        updated_count = db.query(PostCache).update(
+            {"processing_status": "pending"},
+            synchronize_session=False
+        )
+        
+        # Очищаем все AI результаты
+        deleted_results = db.query(ProcessedData).count()
+        db.query(ProcessedData).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Перезапуск AI обработки инициирован",
+            "posts_reset": updated_count,
+            "ai_results_cleared": deleted_results
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при перезапуске AI обработки"
+        }
+
+@app.post("/api/ai/reprocess-bot/{bot_id}")
+def reprocess_bot_posts(bot_id: int, db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для конкретного бота"""
+    try:
+        # Проверяем существование бота
+        bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(status_code=404, detail="Бот не найден")
+        
+        # Получаем каналы бота
+        bot_channels = db.query(BotChannel).filter(
+            BotChannel.public_bot_id == bot_id,
+            BotChannel.is_active == True
+        ).all()
+        
+        if not bot_channels:
+            return {
+                "success": False,
+                "error": "У бота нет настроенных каналов",
+                "posts_reset": 0,
+                "ai_results_cleared": 0
+            }
+        
+        # Получаем telegram_id каналов
+        channel_ids = [bc.channel_id for bc in bot_channels]
+        channels_info = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+        channel_telegram_ids = [ch.telegram_id for ch in channels_info]
+        
+        # Сбрасываем статус постов из каналов бота
+        updated_count = db.query(PostCache).filter(
+            PostCache.channel_telegram_id.in_(channel_telegram_ids)
+        ).update(
+            {"processing_status": "pending"},
+            synchronize_session=False
+        )
+        
+        # Удаляем AI результаты для этого бота
+        deleted_results = db.query(ProcessedData).filter(
+            ProcessedData.public_bot_id == bot_id
+        ).count()
+        
+        db.query(ProcessedData).filter(
+            ProcessedData.public_bot_id == bot_id
+        ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Перезапуск AI обработки для бота '{bot.name}' инициирован",
+            "bot_name": bot.name,
+            "posts_reset": updated_count,
+            "ai_results_cleared": deleted_results,
+            "channels_affected": len(channel_telegram_ids)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Ошибка при перезапуске AI обработки для бота {bot_id}"
+        }
+
+@app.delete("/api/ai/clear-results")
+def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
+    """Очистить все AI результаты (без сброса статуса постов)"""
+    if not confirm:
+        return {
+            "success": False,
+            "error": "Требуется подтверждение",
+            "message": "Добавьте параметр ?confirm=true для подтверждения операции"
+        }
+    
+    try:
+        # Подсчитываем количество записей для удаления
+        total_results = db.query(ProcessedData).count()
+        
+        # Удаляем все AI результаты
+        db.query(ProcessedData).delete(synchronize_session=False)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Все AI результаты успешно удалены",
+            "deleted_results": total_results
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при удалении AI результатов"
+        }
+
+# Digest Preview API Endpoint
+@app.post("/api/public-bots/{bot_id}/preview-digest")
+async def generate_digest_preview(bot_id: int, db: Session = Depends(get_db)):
+    """
+    Генерация РЕАЛЬНОГО превью дайджеста для бота с использованием AI сервисов
+    
+    Алгоритм:
+    1. Получить каналы, на которые подписан бот
+    2. Найти 5 постов с ненулевым содержанием из этих каналов
+    3. Проверить AI обработку, запустить если нужно
+    4. Создать реальный дайджест используя логику Telegram бота
+    5. Вернуть превью с настоящими AI резюме и категориями
+    """
+    try:
+        # 1. Проверяем существование бота
+        bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Бот не найден"
+            )
+        
+        # 2. Получаем каналы бота
+        bot_channels = db.query(BotChannel).filter(
+            BotChannel.public_bot_id == bot_id,
+            BotChannel.is_active == True
+        ).all()
+        
+        if not bot_channels:
+            return {
+                "success": False,
+                "error": "У бота нет настроенных каналов",
+                "fallback_data": {
+                    "bot_name": bot.name,
+                    "message": "Для генерации превью дайджеста необходимо настроить каналы бота"
+                }
+            }
+        
+        # 3. Получаем категории бота
+        bot_categories = db.query(BotCategory).filter(
+            BotCategory.public_bot_id == bot_id,
+            BotCategory.is_active == True
+        ).all()
+        
+        if not bot_categories:
+            return {
+                "success": False,
+                "error": "У бота нет настроенных категорий",
+                "fallback_data": {
+                    "bot_name": bot.name,
+                    "message": "Для генерации превью дайджеста необходимо настроить категории бота"
+                }
+            }
+        
+        # 4. Получаем telegram_id каналов бота
+        channel_ids = [bc.channel_id for bc in bot_channels]
+        channels_info = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+        channel_telegram_ids = [ch.telegram_id for ch in channels_info]
+        
+        # 5. Получаем 5 постов с ненулевым содержанием из каналов бота
+        posts_query = db.query(PostCache).filter(
+            PostCache.channel_telegram_id.in_(channel_telegram_ids),
+            PostCache.content.isnot(None),
+            PostCache.content != "",
+            func.length(PostCache.content) > 50  # Минимум 50 символов
+        ).order_by(PostCache.collected_at.desc()).limit(5)
+        
+        posts = posts_query.all()
+        
+        if not posts:
+            return {
+                "success": False,
+                "error": "Нет подходящих постов для превью",
+                "fallback_data": {
+                    "bot_name": bot.name,
+                    "message": f"В каналах бота нет постов с достаточным содержанием для генерации превью"
+                }
+            }
+        
+        # 6. Проверяем, есть ли уже AI обработка для этих постов
+        post_ids = [post.id for post in posts]
+        existing_ai_results = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids),
+            ProcessedData.public_bot_id == bot_id
+        ).all()
+        
+        existing_post_ids = {result.post_id for result in existing_ai_results}
+        unprocessed_posts = [post for post in posts if post.id not in existing_post_ids]
+        
+        # 7. Если есть необработанные посты - запускаем AI Orchestrator
+        if unprocessed_posts:
+            print(f"🧠 Запускаем AI обработку для {len(unprocessed_posts)} постов...")
+            
+            # Импортируем AI Orchestrator
+            import sys
+            import os
+            sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+            
+            from ai_services.orchestrator import AIOrchestrator, Post as AIPost, Bot as AIBot
+            
+            # Создаем AI Orchestrator
+            orchestrator = AIOrchestrator(backend_url="http://localhost:8000")
+            
+            # Конвертируем посты в формат AI Orchestrator
+            ai_posts = []
+            for post in unprocessed_posts:
+                ai_post = AIPost(
+                    id=post.id,
+                    text=post.content,
+                    caption=post.title or "",
+                    views=post.views,
+                    date=post.post_date,
+                    channel_id=post.channel_telegram_id,
+                    message_id=post.telegram_message_id
+                )
+                ai_posts.append(ai_post)
+            
+            # Создаем объект бота для AI Orchestrator
+            ai_bot = AIBot(
+                id=bot.id,
+                name=bot.name,
+                categorization_prompt=bot.categorization_prompt or "",
+                summarization_prompt=bot.summarization_prompt or "",
+                max_posts_per_digest=bot.max_posts_per_digest,
+                max_summary_length=bot.max_summary_length
+            )
+            
+            # Запускаем AI обработку
+            try:
+                ai_results = await orchestrator.process_posts_for_bot(ai_posts, ai_bot)
+                if ai_results:
+                    # Сохраняем результаты
+                    await orchestrator.save_ai_results(ai_results)
+                    print(f"✅ AI обработка завершена: {len(ai_results)} результатов сохранено")
+                else:
+                    print("⚠️ AI обработка не дала результатов")
+            except Exception as e:
+                print(f"❌ Ошибка AI обработки: {str(e)}")
+                # Продолжаем с существующими данными
+        
+        # 8. Получаем все AI результаты (существующие + новые)
+        all_ai_results = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids),
+            ProcessedData.public_bot_id == bot_id
+        ).all()
+        
+        # 9. Формируем превью дайджеста
+        digest_posts = []
+        for result in all_ai_results:
+            # Находим соответствующий пост
+            post = next((p for p in posts if p.id == result.post_id), None)
+            if not post:
+                continue
+            
+            # Парсим AI данные
+            try:
+                summaries = result.summaries if USE_POSTGRESQL else json.loads(result.summaries)
+                categories = result.categories if USE_POSTGRESQL else json.loads(result.categories)
+                metrics = result.metrics if USE_POSTGRESQL else json.loads(result.metrics)
+            except:
+                continue
+            
+            digest_posts.append({
+                "post_id": post.id,
+                "title": post.title,
+                "content_preview": (post.content[:200] + "...") if post.content and len(post.content) > 200 else post.content,
+                "channel_telegram_id": post.channel_telegram_id,
+                "post_date": post.post_date,
+                "views": post.views,
+                "ai_summary": summaries.get("summary", "Резюме недоступно"),
+                "ai_category": categories.get("category", "Без категории"),
+                "ai_metrics": {
+                    "importance": metrics.get("importance", 0),
+                    "urgency": metrics.get("urgency", 0),
+                    "significance": metrics.get("significance", 0)
+                }
+            })
+        
+        # 10. Сортируем по важности
+        digest_posts.sort(key=lambda x: x["ai_metrics"]["importance"], reverse=True)
+        
+        return {
+            "success": True,
+            "bot_name": bot.name,
+            "bot_id": bot.id,
+            "preview_generated_at": datetime.now(),
+            "total_posts_analyzed": len(posts),
+            "ai_processed_posts": len(all_ai_results),
+            "digest_posts": digest_posts[:bot.max_posts_per_digest],
+            "channels_included": len(channel_telegram_ids),
+            "categories_configured": len(bot_categories)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "fallback_data": {
+                "bot_name": "Неизвестный бот",
+                "message": f"Ошибка генерации превью: {str(e)}"
+            }
+        }
 
 if __name__ == "__main__":
     import uvicorn
