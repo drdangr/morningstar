@@ -96,6 +96,38 @@ class AIOrchestrator:
         logger.info(f"⏱️ Интервал обработки: {self.processing_interval}с")
         logger.info(f"📦 Размер батча: {self.batch_size}")
     
+    async def get_max_posts_needed(self, bots_data: List[Dict[str, Any]]) -> int:
+        """Определить максимальное количество постов, необходимое для всех ботов"""
+        if not bots_data:
+            return self.batch_size  # fallback
+        
+        max_needed = max(bot.get('max_posts_per_digest', 10) for bot in bots_data)
+        logger.info(f"📊 Максимальное количество постов для обработки: {max_needed}")
+        return max_needed
+
+    async def get_unprocessed_posts_for_channels(self, channel_ids: List[int], limit: int) -> List[Dict[str, Any]]:
+        """Получить необработанные посты для конкретных каналов с лимитом"""
+        if not channel_ids:
+            return []
+            
+        try:
+            # Формируем запрос с фильтрацией по каналам
+            channel_filter = "&".join([f"channel_telegram_id={cid}" for cid in channel_ids])
+            url = f"{self.backend_url}/api/posts/cache?processing_status=pending&{channel_filter}&limit={limit}&sort_by=post_date&sort_order=desc"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        posts = await response.json()
+                        logger.info(f"📥 Получено {len(posts)} необработанных постов для каналов {channel_ids}")
+                        return posts
+                    else:
+                        logger.error(f"❌ Ошибка получения постов для каналов: HTTP {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"❌ Исключение при получении постов для каналов: {str(e)}")
+            return []
+
     async def get_unprocessed_posts(self, limit: int = None) -> List[Dict[str, Any]]:
         """Получить необработанные посты из Backend API"""
         limit = limit or self.batch_size
@@ -290,61 +322,172 @@ class AIOrchestrator:
             logger.error(f"❌ Исключение при сохранении: {str(e)}")
             return False
     
+    async def report_orchestrator_status(self, status: str, details: Dict[str, Any] = None):
+        """Отчет о статусе AI Orchestrator в Backend API"""
+        try:
+            status_data = {
+                "orchestrator_status": status,
+                "timestamp": datetime.now().isoformat(),
+                "stats": self.stats.copy(),
+                "details": details or {}
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.backend_url}/api/ai/orchestrator-status",
+                    json=status_data,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status in [200, 201]:
+                        logger.debug(f"📡 Статус '{status}' отправлен в Backend API")
+                    else:
+                        logger.warning(f"⚠️ Не удалось отправить статус: HTTP {response.status}")
+                        
+        except Exception as e:
+            logger.debug(f"🔇 Не удалось отправить статус в Backend API: {str(e)}")
+            # Не критично, продолжаем работу
+    
+    async def report_processing_start(self, posts_count: int, bots_count: int):
+        """Отчет о начале обработки"""
+        await self.report_orchestrator_status("PROCESSING_STARTED", {
+            "posts_to_process": posts_count,
+            "active_bots": bots_count,
+            "batch_size": self.batch_size
+        })
+    
+    async def report_processing_complete(self, success: bool, processing_time: float, posts_processed: int):
+        """Отчет о завершении обработки"""
+        status = "PROCESSING_COMPLETED" if success else "PROCESSING_FAILED"
+        await self.report_orchestrator_status(status, {
+            "processing_time": processing_time,
+            "posts_processed": posts_processed,
+            "success": success
+        })
+    
+    async def report_idle_status(self):
+        """Отчет о состоянии ожидания"""
+        await self.report_orchestrator_status("IDLE", {
+            "message": "Нет необработанных постов"
+        })
+    
+    async def get_bot_channels(self, bot_id: int) -> List[int]:
+        """Получить список telegram_id каналов, на которые подписан бот"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.backend_url}/api/public-bots/{bot_id}/channels"
+                ) as response:
+                    if response.status == 200:
+                        channels = await response.json()
+                        channel_ids = [channel['telegram_id'] for channel in channels]
+                        logger.info(f"📺 Бот {bot_id} подписан на {len(channel_ids)} каналов: {channel_ids}")
+                        return channel_ids
+                    else:
+                        logger.error(f"❌ Ошибка получения каналов бота {bot_id}: HTTP {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"❌ Исключение при получении каналов бота {bot_id}: {str(e)}")
+            return []
+
+    def filter_posts_for_bot(self, posts: List[Post], bot_channel_ids: List[int]) -> List[Post]:
+        """Фильтрация постов по каналам, на которые подписан бот"""
+        if not bot_channel_ids:
+            logger.warning("⚠️ Бот не подписан ни на один канал, пропускаем обработку")
+            return []
+        
+        filtered_posts = [post for post in posts if post.channel_id in bot_channel_ids]
+        logger.info(f"🔍 Отфильтровано {len(filtered_posts)} из {len(posts)} постов для бота (каналы: {bot_channel_ids})")
+        return filtered_posts
+
     async def process_batch(self) -> bool:
         """Обработка одного батча постов"""
         start_time = datetime.now()
         
-        # 1. Получение необработанных постов
-        posts_data = await self.get_unprocessed_posts()
-        if not posts_data:
-            logger.info("📭 Нет необработанных постов")
-            return True
-        
-        # 2. Получение активных ботов
+        # 1. Получение активных ботов
         bots_data = await self.get_public_bots()
         if not bots_data:
             logger.warning("⚠️ Нет активных ботов для обработки")
+            await self.report_orchestrator_status("ERROR", {"message": "Нет активных ботов"})  # 🚀 ОТЧЕТ: ошибка
             return False
+
+        # 🚀 ОТЧЕТ: начало обработки
+        await self.report_processing_start(0, len(bots_data))  # Пока не знаем количество постов
         
-        # 3. Конвертация в объекты
-        posts = self.convert_to_post_objects(posts_data)
-        bots = self.convert_to_bot_objects(bots_data)
-        
-        # 4. Обработка постов для каждого бота с разделением по статусам
+        # 2. Обработка постов для каждого бота индивидуально
         all_results = []
         dev_results = []  # Результаты для development ботов (только логирование)
+        total_posts_processed = 0
         
         for bot_data in bots_data:
-            bot = next((b for b in bots if b.id == bot_data['id']), None)
-            if not bot:
-                continue
+            try:
+                bot = Bot(
+                    id=bot_data['id'],
+                    name=bot_data['name'],
+                    categorization_prompt=bot_data.get('categorization_prompt'),
+                    summarization_prompt=bot_data.get('summarization_prompt'),
+                    max_posts_per_digest=bot_data.get('max_posts_per_digest', 10),
+                    max_summary_length=bot_data.get('max_summary_length', 150)
+                )
                 
-            bot_results = await self.process_posts_for_bot(posts, bot)
-            
-            # Разделяем результаты по статусу бота
-            if bot_data.get('status') == 'development':
-                dev_results.extend(bot_results)
-                logger.info(f"🧪 DEVELOPMENT MODE: Бот '{bot.name}' обработал {len(bot_results)} постов (результаты НЕ сохраняются)")
-                # Детальное логирование для development ботов
-                for result in bot_results:
-                    logger.info(f"   📝 Пост {result['post_id']}: {result['categories']['ru']} (важность: {result['metrics']['importance']})")
-            else:  # active статус
-                all_results.extend(bot_results)
+                # 🚀 НОВОЕ: Получаем каналы бота
+                bot_channel_ids = await self.get_bot_channels(bot.id)
+                if not bot_channel_ids:
+                    logger.info(f"⏭️ Бот '{bot.name}' (ID: {bot.id}) - не подписан на каналы")
+                    continue
+                
+                # 🚀 НОВОЕ: Получаем посты для конкретного бота с его лимитом
+                posts_data = await self.get_unprocessed_posts_for_channels(
+                    bot_channel_ids, 
+                    bot.max_posts_per_digest
+                )
+                
+                if not posts_data:
+                    logger.info(f"⏭️ Бот '{bot.name}' (ID: {bot.id}) - нет постов для обработки")
+                    continue
+                
+                # Конвертация в объекты
+                posts = self.convert_to_post_objects(posts_data)
+                total_posts_processed += len(posts)
+                
+                logger.info(f"🎯 Обрабатываем {len(posts)} постов для бота '{bot.name}' (лимит: {bot.max_posts_per_digest})")
+                
+                bot_results = await self.process_posts_for_bot(posts, bot)
+                
+                # Разделяем результаты по статусу бота
+                if bot_data.get('status') == 'development':
+                    dev_results.extend(bot_results)
+                    logger.info(f"🧪 DEVELOPMENT MODE: Бот '{bot.name}' обработал {len(bot_results)} постов (результаты НЕ сохраняются)")
+                    # Детальное логирование для development ботов
+                    for result in bot_results:
+                        logger.info(f"   📝 Пост {result['post_id']}: {result['categories']['ru']} (важность: {result['metrics']['importance']})")
+                else:  # active статус
+                    all_results.extend(bot_results)
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки бота {bot_data.get('id', 'unknown')}: {str(e)}")
+                continue
         
-        # 5. Сохранение результатов (только для активных ботов)
+        # 3. Сохранение результатов (только для активных ботов)
+        success = True
         if all_results:
             success = await self.save_ai_results(all_results)
-            if not success:
-                return False
+        elif total_posts_processed == 0:
+            logger.info("📭 Нет постов для обработки")
+            await self.report_idle_status()  # 🚀 ОТЧЕТ: состояние ожидания
+            return True
         
-        # 6. Обновление статистики
+        # 4. Обновление статистики
         processing_time = (datetime.now() - start_time).total_seconds()
         self.stats["last_run"] = datetime.now()
         self.stats["processing_time"] = processing_time
-        self.stats["total_processed"] += len(posts)
+        self.stats["total_processed"] += total_posts_processed
+        
+        # 🚀 ОТЧЕТ: завершение обработки
+        await self.report_processing_complete(success, processing_time, total_posts_processed)
         
         logger.info(f"⏱️ Батч обработан за {processing_time:.2f}с")
-        return True
+        logger.info(f"📊 Итого обработано постов: {total_posts_processed}")
+        return success
     
     async def process_single_batch(self) -> Dict[str, Any]:
         """Обработка одного батча с возвратом статистики (для тестирования)"""
@@ -383,6 +526,65 @@ class AIOrchestrator:
         """Запуск одного батча обработки (для тестирования)"""
         stats = await self.process_single_batch()
         return stats["success"]
+    
+    async def startup_initialization(self):
+        """Инициализация при запуске системы - проверка необработанных данных"""
+        logger.info("🚀 Startup Initialization - проверка необработанных данных")
+        
+        # Проверяем наличие необработанных данных
+        posts_data = await self.get_unprocessed_posts(limit=1)  # Проверяем есть ли хотя бы 1 пост
+        
+        if posts_data:
+            logger.info(f"📋 Найдено необработанных постов, запускаем автоматическую обработку")
+            # Автоматически запускаем обработку
+            await self.process_single_batch()
+        else:
+            logger.info("✅ Нет необработанных данных при запуске")
+    
+    async def run_continuous(self):
+        """Непрерывная обработка с интервалами"""
+        logger.info(f"🔄 Запуск непрерывной обработки (интервал: {self.processing_interval}с)")
+        
+        # Startup initialization
+        await self.startup_initialization()
+        
+        # Основной цикл
+        while True:
+            try:
+                logger.info("🔍 Проверка необработанных постов...")
+                success = await self.process_batch()
+                
+                if success:
+                    logger.info(f"✅ Батч обработан успешно, ожидание {self.processing_interval}с")
+                else:
+                    logger.warning(f"⚠️ Проблемы при обработке, ожидание {self.processing_interval}с")
+                
+                # Ожидание перед следующей итерацией
+                await asyncio.sleep(self.processing_interval)
+                
+            except KeyboardInterrupt:
+                logger.info("🛑 Получен сигнал остановки, завершение работы")
+                break
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка в непрерывном режиме: {str(e)}")
+                logger.info(f"⏳ Ожидание {self.processing_interval}с перед повтором")
+                await asyncio.sleep(self.processing_interval)
+    
+    async def trigger_processing(self):
+        """Реактивный запуск обработки (для вызова из Backend API)"""
+        logger.info("⚡ Trigger Processing - реактивный запуск обработки")
+        
+        try:
+            success = await self.process_single_batch()
+            if success:
+                logger.info("✅ Реактивная обработка завершена успешно")
+                return {"success": True, "message": "AI обработка запущена успешно"}
+            else:
+                logger.error("❌ Ошибки при реактивной обработке")
+                return {"success": False, "message": "Ошибки при AI обработке"}
+        except Exception as e:
+            logger.error(f"❌ Исключение при реактивной обработке: {str(e)}")
+            return {"success": False, "message": f"Исключение: {str(e)}"}
 
 async def main():
     """Главная функция для запуска AI Orchestrator"""

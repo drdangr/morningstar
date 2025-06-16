@@ -64,7 +64,8 @@ import {
   Error as ErrorIcon,
   Pending as PendingIcon,
   RestartAlt as RestartAltIcon,
-  Tune as TuneIcon
+  Tune as TuneIcon,
+  Pause as PauseIcon
 } from '@mui/icons-material';
 
 // Mock data для демонстрации компонента
@@ -126,25 +127,109 @@ const AIResultsPage = () => {
   const [loading, setLoading] = useState(true);
   const [aiStatus, setAiStatus] = useState(null);
   const [activeTasks, setActiveTasks] = useState([]);
+  const [detailedStatus, setDetailedStatus] = useState(null);
+  const [detailedTabValue, setDetailedTabValue] = useState(0);
   const [channels, setChannels] = useState([]);
   const [selectedChannels, setSelectedChannels] = useState([]);
   const [actionLoading, setActionLoading] = useState(false);
   const [alert, setAlert] = useState({ show: false, type: 'info', message: '' });
   const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, title: '', message: '' });
+  const [detailedStats, setDetailedStats] = useState(null);
+  const [orchestratorLiveStatus, setOrchestratorLiveStatus] = useState(null);
 
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 30000);
+    const fetchAllData = async () => {
+      setLoading(true);
+      try {
+        await Promise.all([
+          fetchAIStatus(),
+          fetchDetailedStatus(),
+          fetchActiveTasks(),
+          fetchChannels(),
+          fetchOrchestratorLiveStatus()
+        ]);
+      } catch (error) {
+        console.error('Ошибка загрузки данных:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAllData();
+    
+    // Автообновление каждые 5 секунд
+    const interval = setInterval(async () => {
+      try {
+        await Promise.all([
+          fetchAIStatus(),
+          fetchDetailedStatus(),
+          fetchActiveTasks(),
+          fetchChannels(),
+          fetchOrchestratorLiveStatus()
+        ]);
+      } catch (error) {
+        console.error('Ошибка автообновления:', error);
+      }
+    }, 5000);
+    
     return () => clearInterval(interval);
   }, []);
 
   const fetchAIStatus = async () => {
     try {
       const response = await fetch('http://localhost:8000/api/ai/status');
-      const data = await response.json();
-      setAiStatus(data);
+      if (response.ok) {
+        const data = await response.json();
+        setAiStatus(data);
+      } else {
+        console.warn('Не удалось получить статус AI:', response.status);
+        // Устанавливаем fallback данные
+        setAiStatus({
+          posts_stats: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0 },
+          ai_results_stats: { total_results: 0, results_per_post: 0 },
+          bots_stats: { total_processing_bots: 0, active_bots: 0, development_bots: 0 }
+        });
+      }
     } catch (error) {
       console.error('Ошибка загрузки статуса AI:', error);
+      // Устанавливаем fallback данные
+      setAiStatus({
+        posts_stats: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0 },
+        ai_results_stats: { total_results: 0, results_per_post: 0 },
+        bots_stats: { total_processing_bots: 0, active_bots: 0, development_bots: 0 }
+      });
+    }
+  };
+
+  const fetchDetailedStatus = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/detailed-status');
+      if (response.ok) {
+        const data = await response.json();
+        setDetailedStatus(data);
+      } else {
+        console.warn('Не удалось получить детальную статистику AI:', response.status);
+        // Устанавливаем fallback данные
+        setDetailedStatus({
+          total_channels: 0,
+          total_active_bots: 0,
+          channels_detailed: [],
+          bots_detailed: [],
+          recent_processed: [],
+          last_updated: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки детальной статистики AI:', error);
+      // Устанавливаем fallback данные
+      setDetailedStatus({
+        total_channels: 0,
+        total_active_bots: 0,
+        channels_detailed: [],
+        bots_detailed: [],
+        recent_processed: [],
+        last_updated: new Date().toISOString()
+      });
     }
   };
 
@@ -170,14 +255,29 @@ const AIResultsPage = () => {
     }
   };
 
-  const loadData = async () => {
-    setLoading(true);
-    await Promise.all([
-      fetchAIStatus(),
-      fetchActiveTasks(),
-      fetchChannels()
-    ]);
-    setLoading(false);
+  const fetchOrchestratorLiveStatus = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/orchestrator-live-status');
+      if (response.ok) {
+        const data = await response.json();
+        setOrchestratorLiveStatus(data);
+      } else {
+        console.warn('Не удалось получить live статус AI Orchestrator:', response.status);
+        setOrchestratorLiveStatus({
+          orchestrator_active: false,
+          status: 'UNAVAILABLE',
+          error: `HTTP ${response.status}`
+        });
+      }
+    } catch (error) {
+      console.error('Ошибка получения live статуса AI Orchestrator:', error);
+      // Устанавливаем fallback статус при ошибке
+      setOrchestratorLiveStatus({
+        orchestrator_active: false,
+        status: 'ERROR',
+        error: error.message
+      });
+    }
   };
 
   const showAlert = (type, message) => {
@@ -253,7 +353,8 @@ const AIResultsPage = () => {
 
     setActionLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/ai/reprocess-channels', {
+      // 🚀 ИСПОЛЬЗУЕМ НОВЫЙ ENDPOINT С АВТОЗАПУСКОМ
+      const response = await fetch('http://localhost:8000/api/ai/reprocess-channels-auto', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel_ids: selectedChannels })
@@ -261,7 +362,16 @@ const AIResultsPage = () => {
       const data = await response.json();
       
       if (data.success) {
-        showAlert('success', `Перезапуск AI обработки инициирован для ${data.channels_processed} каналов. Сброшено ${data.total_posts_reset} постов, очищено ${data.total_ai_results_cleared} результатов.`);
+        // Формируем сообщение с информацией об автозапуске
+        let message = `Перезапуск AI обработки инициирован для ${data.channels_processed} каналов. Сброшено ${data.total_posts_reset} постов, очищено ${data.total_ai_results_cleared} результатов.`;
+        
+        if (data.ai_auto_start) {
+          message += ` 🚀 ${data.ai_message}`;
+        } else {
+          message += ` ⚠️ ${data.ai_message}`;
+        }
+        
+        showAlert('success', message);
         setSelectedChannels([]);
         await loadData();
       } else {
@@ -314,6 +424,48 @@ const AIResultsPage = () => {
 
   const openConfirmDialog = (action, title, message) => {
     setConfirmDialog({ open: true, action, title, message });
+  };
+
+  const getOrchestratorStatus = () => {
+    if (!orchestratorLiveStatus) {
+      return { text: 'НЕИЗВЕСТНО', color: 'default', icon: '❓' };
+    }
+
+    if (orchestratorLiveStatus.orchestrator_active) {
+      const status = orchestratorLiveStatus.status;
+      switch (status) {
+        case 'PROCESSING_STARTED':
+          return { text: 'ОБРАБОТКА ЗАПУЩЕНА', color: 'info', icon: '🚀' };
+        case 'PROCESSING_COMPLETED':
+          return { text: 'ОБРАБОТКА ЗАВЕРШЕНА', color: 'success', icon: '✅' };
+        case 'PROCESSING_FAILED':
+          return { text: 'ОШИБКА ОБРАБОТКИ', color: 'error', icon: '❌' };
+        case 'IDLE':
+          return { text: 'ОЖИДАНИЕ', color: 'warning', icon: '⏳' };
+        default:
+          return { text: 'АКТИВЕН', color: 'success', icon: '🟢' };
+      }
+    } else {
+      return { text: 'НЕ АКТИВЕН', color: 'error', icon: '🔴' };
+    }
+  };
+
+  // Функция для ручного обновления данных
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      await Promise.all([
+        fetchAIStatus(),
+        fetchDetailedStatus(),
+        fetchActiveTasks(),
+        fetchChannels(),
+        fetchOrchestratorLiveStatus()
+      ]);
+    } catch (error) {
+      console.error('Ошибка загрузки данных:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (loading) {
@@ -393,7 +545,7 @@ const AIResultsPage = () => {
                                   {channel.title || channel.channel_name}
                                 </Typography>
                                 <Typography variant="caption" color="text.secondary">
-                                  {channel.username ? `@${channel.username}` : `ID: ${channel.telegram_id}`}
+                                  {channel.username ? (channel.username.startsWith('@') ? channel.username : `@${channel.username}`) : `ID: ${channel.telegram_id}`}
                                 </Typography>
                               </Box>
                             }
@@ -506,11 +658,11 @@ const AIResultsPage = () => {
                     </Typography>
                     <LinearProgress
                       variant="determinate"
-                      value={aiStatus.posts_stats.completion_rate}
+                      value={aiStatus.posts_stats.total > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.posts_stats.total) * 100) : 0}
                       sx={{ mt: 1 }}
                     />
                     <Typography variant="caption" color="text.secondary">
-                      Обработано: {aiStatus.posts_stats.completion_rate}%
+                      Обработано: {aiStatus.posts_stats.total > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.posts_stats.total) * 100) : 0}%
                     </Typography>
                   </Box>
                   <Divider />
@@ -619,6 +771,233 @@ const AIResultsPage = () => {
           </Card>
         </Grid>
       </Grid>
+
+      {/* 🚀 РАСШИРЕННАЯ ДЕТАЛЬНАЯ СТАТИСТИКА AI СЕРВИСОВ */}
+      {detailedStatus && (
+        <Card sx={{ mb: 3 }}>
+          <CardContent>
+            <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+              <Typography variant="h6">
+                <AnalyticsIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Детальная статистика AI сервисов
+              </Typography>
+              <Box display="flex" alignItems="center" gap={2}>
+                <Chip
+                  label={`AI Orchestrator: ${getOrchestratorStatus().text}`}
+                  color={getOrchestratorStatus().color}
+                  icon={<span>{getOrchestratorStatus().icon}</span>}
+                />
+                {orchestratorLiveStatus && orchestratorLiveStatus.orchestrator_active && (
+                  <Tooltip title={`Детали: ${JSON.stringify(orchestratorLiveStatus.details, null, 2)}`}>
+                    <Chip
+                      label={`Последнее обновление: ${orchestratorLiveStatus.time_since_update}с назад`}
+                      size="small"
+                      variant="outlined"
+                    />
+                  </Tooltip>
+                )}
+                {orchestratorLiveStatus && orchestratorLiveStatus.stats && (
+                  <Tooltip title={`Статистика: Обработано ${orchestratorLiveStatus.stats.total_processed || 0}, Успешно ${orchestratorLiveStatus.stats.successful_processed || 0}`}>
+                    <Chip
+                      label={`Статистика AI`}
+                      size="small"
+                      variant="outlined"
+                      color="info"
+                    />
+                  </Tooltip>
+                )}
+                <Typography variant="caption" color="text.secondary">
+                  Обновлено: {formatDate(detailedStatus.last_updated)}
+                </Typography>
+              </Box>
+            </Box>
+
+            <Tabs value={detailedTabValue} onChange={(e, newValue) => setDetailedTabValue(newValue)} sx={{ mb: 2 }}>
+              <Tab label={`Каналы (${detailedStatus.total_channels})`} />
+              <Tab label={`Боты (${detailedStatus.total_active_bots})`} />
+              <Tab label="Последние обработанные" />
+            </Tabs>
+
+            <TabPanel value={detailedTabValue} index={0}>
+              {/* Статистика по каналам */}
+              {detailedStatus.channels_detailed && detailedStatus.channels_detailed.length > 0 ? (
+                <TableContainer component={Paper} variant="outlined">
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Канал</TableCell>
+                        <TableCell align="center">Всего постов</TableCell>
+                        <TableCell align="center">Ожидают</TableCell>
+                        <TableCell align="center">Обработка</TableCell>
+                        <TableCell align="center">Готово</TableCell>
+                        <TableCell align="center">Ошибки</TableCell>
+                        <TableCell align="center">Прогресс</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {detailedStatus.channels_detailed.map((channel) => (
+                        <TableRow key={channel.telegram_id}>
+                          <TableCell>
+                            <Box>
+                              <Typography variant="body2" fontWeight="bold">
+                                {channel.name}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {channel.username ? (channel.username.startsWith('@') ? channel.username : `@${channel.username}`) : `ID: ${channel.telegram_id}`}
+                              </Typography>
+                            </Box>
+                          </TableCell>
+                          <TableCell align="center">
+                            <Typography variant="body2" fontWeight="bold">
+                              {channel.total_posts}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip label={channel.pending} color="default" size="small" />
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip 
+                              label={channel.processing} 
+                              color={channel.processing > 0 ? "warning" : "default"} 
+                              size="small" 
+                            />
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip label={channel.completed} color="success" size="small" />
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip 
+                              label={channel.failed} 
+                              color={channel.failed > 0 ? "error" : "default"} 
+                              size="small" 
+                            />
+                          </TableCell>
+                          <TableCell align="center">
+                            <Box display="flex" alignItems="center" gap={1}>
+                              <LinearProgress 
+                                variant="determinate" 
+                                value={channel.progress || 0} 
+                                sx={{ width: 60, height: 6 }}
+                                color={channel.progress === 100 ? "success" : "primary"}
+                              />
+                              <Typography variant="caption">
+                                {channel.progress || 0}%
+                              </Typography>
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              ) : (
+                <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
+                  Нет данных по каналам
+                </Typography>
+              )}
+            </TabPanel>
+
+            <TabPanel value={detailedTabValue} index={1}>
+              {/* Статистика по ботам */}
+              {detailedStatus.bots_detailed && detailedStatus.bots_detailed.length > 0 ? (
+                <Grid container spacing={2}>
+                  {detailedStatus.bots_detailed.map((bot) => (
+                    <Grid item xs={12} md={6} key={bot.bot_id}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                            <Typography variant="h6" noWrap>
+                              {bot.name}
+                            </Typography>
+                            <Chip 
+                              label={bot.status} 
+                              color={bot.status === 'active' ? 'success' : 'info'} 
+                              size="small" 
+                            />
+                          </Box>
+                          <Typography variant="h4" color="primary" gutterBottom>
+                            {bot.results_count}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" gutterBottom>
+                            AI результатов обработано
+                          </Typography>
+                          {bot.last_processed && (
+                            <Typography variant="caption" color="text.secondary">
+                              Последняя обработка: {formatDate(bot.last_processed)}
+                            </Typography>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  ))}
+                </Grid>
+              ) : (
+                <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
+                  Нет данных по ботам
+                </Typography>
+              )}
+            </TabPanel>
+
+            <TabPanel value={detailedTabValue} index={2}>
+              {/* Последние обработанные посты */}
+              {detailedStatus.recent_processed && detailedStatus.recent_processed.length > 0 ? (
+                <TableContainer component={Paper} variant="outlined">
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Пост ID</TableCell>
+                        <TableCell>Бот</TableCell>
+                        <TableCell>Канал</TableCell>
+                        <TableCell>Содержание</TableCell>
+                        <TableCell>Обработано</TableCell>
+                        <TableCell>Версия</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {detailedStatus.recent_processed.map((item, index) => (
+                        <TableRow key={`${item.post_id}-${item.bot_id}-${index}`}>
+                          <TableCell>
+                            <Typography variant="body2" fontWeight="bold">
+                              {item.post_id}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2">
+                              {item.bot_name}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2">
+                              {item.channel_name}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" noWrap sx={{ maxWidth: 200 }}>
+                              {item.content_preview}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="caption">
+                              {formatDate(item.processed_at)}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Chip label={item.processing_version} size="small" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              ) : (
+                <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
+                  Нет недавно обработанных постов
+                </Typography>
+              )}
+            </TabPanel>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Активные AI задачи */}
       <Card>

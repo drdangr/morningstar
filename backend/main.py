@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 from typing import Dict, Any, Union
 import json
 from urllib.parse import quote_plus
+import subprocess
+import logging
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2735,59 +2737,56 @@ def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = D
 def get_ai_status(db: Session = Depends(get_db)):
     """Получить статус AI обработки"""
     try:
-        # Статистика постов
+        # Статистика постов по статусам
+        posts_stats = {}
+        for status in ['pending', 'processing', 'completed', 'failed']:
+            count = db.query(PostCache).filter(PostCache.processing_status == status).count()
+            posts_stats[status] = count
+        
+        # Общая статистика постов
         total_posts = db.query(PostCache).count()
-        pending_posts = db.query(PostCache).filter(PostCache.processing_status == "pending").count()
-        processing_posts = db.query(PostCache).filter(PostCache.processing_status == "processing").count()
-        completed_posts = db.query(PostCache).filter(PostCache.processing_status == "completed").count()
-        failed_posts = db.query(PostCache).filter(PostCache.processing_status == "failed").count()
+        progress_percentage = 0
+        if total_posts > 0:
+            completed_posts = posts_stats.get('completed', 0)
+            progress_percentage = round((completed_posts / total_posts) * 100, 2)
         
         # Статистика AI результатов
         total_ai_results = db.query(ProcessedData).count()
+        results_per_post = round(total_ai_results / max(total_posts, 1), 2)
         
-        # Статистика по ботам
-        active_bots = db.query(PublicBot).filter(PublicBot.status == "active").count()
-        development_bots = db.query(PublicBot).filter(PublicBot.status == "development").count()
-        
-        # Последние обработанные посты
-        recent_processed = db.query(ProcessedData).order_by(ProcessedData.processed_at.desc()).limit(5).all()
+        # Статистика ботов
+        total_bots = db.query(PublicBot).count()
+        active_bots = db.query(PublicBot).filter(PublicBot.status == 'active').count()
+        development_bots = db.query(PublicBot).filter(PublicBot.status == 'development').count()
+        processing_bots = active_bots + development_bots
         
         return {
-            "success": True,
-            "posts_stats": {
-                "total": total_posts,
-                "pending": pending_posts,
-                "processing": processing_posts,
-                "completed": completed_posts,
-                "failed": failed_posts,
-                "completion_rate": round((completed_posts / total_posts * 100) if total_posts > 0 else 0, 2)
-            },
+            "posts_stats": posts_stats,
+            "total_posts": total_posts,
+            "progress_percentage": progress_percentage,
             "ai_results_stats": {
                 "total_results": total_ai_results,
-                "results_per_post": round((total_ai_results / completed_posts) if completed_posts > 0 else 0, 2)
+                "results_per_post": results_per_post
             },
             "bots_stats": {
+                "total_bots": total_bots,
                 "active_bots": active_bots,
                 "development_bots": development_bots,
-                "total_processing_bots": active_bots + development_bots
+                "total_processing_bots": processing_bots
             },
-            "recent_activity": [
-                {
-                    "post_id": r.post_id,
-                    "bot_id": r.public_bot_id,
-                    "processed_at": r.processed_at,
-                    "version": r.processing_version
-                } for r in recent_processed
-            ]
+            "is_processing": posts_stats.get('processing', 0) > 0,
+            "last_updated": datetime.now().isoformat()
         }
     except Exception as e:
         return {
-            "success": False,
             "error": str(e),
-            "posts_stats": {"total": 0, "pending": 0, "processing": 0, "completed": 0, "failed": 0, "completion_rate": 0},
+            "posts_stats": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+            "total_posts": 0,
+            "progress_percentage": 0,
             "ai_results_stats": {"total_results": 0, "results_per_post": 0},
-            "bots_stats": {"active_bots": 0, "development_bots": 0, "total_processing_bots": 0},
-            "recent_activity": []
+            "bots_stats": {"total_bots": 0, "active_bots": 0, "development_bots": 0, "total_processing_bots": 0},
+            "is_processing": False,
+            "last_updated": datetime.now().isoformat()
         }
 
 @app.get("/api/ai/tasks")
@@ -3323,6 +3322,381 @@ async def generate_digest_preview(bot_id: int, db: Session = Depends(get_db)):
                 "bot_name": "Неизвестный бот",
                 "message": f"Ошибка генерации превью: {str(e)}"
             }
+        }
+
+# 🚀 НОВЫЙ ENDPOINT: Автозапуск AI Orchestrator
+@app.post("/api/ai/trigger-processing")
+async def trigger_ai_processing():
+    """Реактивный запуск AI Orchestrator для обработки необработанных постов"""
+    import subprocess
+    import os
+    import sys
+    
+    try:
+        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
+        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
+        
+        # Проверяем существование файла
+        if not os.path.exists(orchestrator_path):
+            return {
+                "success": False,
+                "error": "AI Orchestrator не найден",
+                "path": orchestrator_path
+            }
+        
+        # Запускаем AI Orchestrator в фоне без ожидания
+        process = subprocess.Popen([
+            sys.executable, orchestrator_path, "--mode", "single"
+        ], cwd=project_root,  # Меняем рабочую директорию на корень проекта
+           stdout=subprocess.DEVNULL, 
+           stderr=subprocess.DEVNULL)
+        
+        return {
+            "success": True,
+            "message": "AI Orchestrator запущен в фоне",
+            "process_id": process.pid
+        }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при запуске AI Orchestrator"
+        }
+
+# 🔄 ОБНОВЛЕННЫЕ ENDPOINTS с автозапуском
+@app.post("/api/ai/reprocess-channels-auto")
+def reprocess_multiple_channels_with_auto_start(request: dict, db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для нескольких каналов + автозапуск AI Orchestrator"""
+    try:
+        # 1. Выполняем стандартный reprocess
+        channel_ids = request.get("channel_ids", [])
+        if not channel_ids:
+            return {
+                "success": False,
+                "error": "Не указаны каналы для перезапуска"
+            }
+        
+        # Проверяем существование каналов
+        channels = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+        if not channels:
+            return {
+                "success": False,
+                "error": "Указанные каналы не найдены"
+            }
+        
+        total_posts_reset = 0
+        total_ai_results_cleared = 0
+        processed_channels = []
+        
+        for channel in channels:
+            # Сбрасываем статус постов канала
+            updated_count = db.query(PostCache).filter(
+                PostCache.channel_telegram_id == channel.telegram_id
+            ).update(
+                {"processing_status": "pending"},
+                synchronize_session=False
+            )
+            
+            # Удаляем AI результаты для постов канала
+            post_ids = db.query(PostCache.id).filter(
+                PostCache.channel_telegram_id == channel.telegram_id
+            ).all()
+            post_ids_list = [pid[0] for pid in post_ids]
+            
+            deleted_results = 0
+            if post_ids_list:
+                deleted_results = db.query(ProcessedData).filter(
+                    ProcessedData.post_id.in_(post_ids_list)
+                ).count()
+                
+                db.query(ProcessedData).filter(
+                    ProcessedData.post_id.in_(post_ids_list)
+                ).delete(synchronize_session=False)
+            
+            total_posts_reset += updated_count
+            total_ai_results_cleared += deleted_results
+            
+            processed_channels.append({
+                "id": channel.id,
+                "name": channel.title or channel.channel_name,
+                "username": channel.username,
+                "posts_reset": updated_count,
+                "ai_results_cleared": deleted_results
+            })
+        
+        db.commit()
+        
+        # 2. Автозапуск AI Orchestrator
+        import subprocess
+        import os
+        import sys
+        
+        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
+        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
+        
+        ai_start_success = False
+        ai_message = ""
+        
+        try:
+            if os.path.exists(orchestrator_path):
+                # Запускаем в фоне без ожидания (Popen без communicate)
+                process = subprocess.Popen([
+                    sys.executable, orchestrator_path, "--mode", "single"
+                ], cwd=project_root,  # Меняем рабочую директорию на корень проекта
+                   stdout=subprocess.DEVNULL, 
+                   stderr=subprocess.DEVNULL)
+                
+                ai_start_success = True
+                ai_message = "AI Orchestrator запущен автоматически"
+            else:
+                ai_message = f"AI Orchestrator не найден: {orchestrator_path}"
+        except Exception as e:
+            ai_message = f"Ошибка автозапуска AI: {str(e)}"
+        
+        return {
+            "success": True,
+            "message": f"Перезапуск AI обработки инициирован для {len(processed_channels)} каналов",
+            "channels_processed": len(processed_channels),
+            "total_posts_reset": total_posts_reset,
+            "total_ai_results_cleared": total_ai_results_cleared,
+            "processed_channels": processed_channels,
+            "ai_auto_start": ai_start_success,
+            "ai_message": ai_message
+        }
+        
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Ошибка при перезапуске AI обработки для каналов"
+        }
+
+# 🚀 НОВЫЙ ENDPOINT: Детальная статистика AI сервисов
+@app.get("/api/ai/detailed-status")
+def get_detailed_ai_status(db: Session = Depends(get_db)):
+    """Получить детальную статистику AI сервисов как в мониторинге"""
+    try:
+        # 1. Базовая статистика постов
+        posts_stats = {}
+        for status in ['pending', 'processing', 'completed', 'failed']:
+            count = db.query(PostCache).filter(PostCache.processing_status == status).count()
+            posts_stats[status] = count
+        
+        total_posts = db.query(PostCache).count()
+        progress_percentage = 0
+        if total_posts > 0:
+            completed_posts = posts_stats.get('completed', 0)
+            progress_percentage = round((completed_posts / total_posts) * 100, 2)
+        
+        # 2. Статистика по каналам (упрощенный подход)
+        # Получаем все каналы с постами
+        channels_with_posts = db.query(PostCache.channel_telegram_id).distinct().all()
+        
+        channels_detailed = []
+        for channel_row in channels_with_posts:
+            channel_id = channel_row.channel_telegram_id
+            
+            # Считаем статистику для каждого канала отдельно
+            total_posts = db.query(PostCache).filter(PostCache.channel_telegram_id == channel_id).count()
+            pending = db.query(PostCache).filter(PostCache.channel_telegram_id == channel_id, PostCache.processing_status == 'pending').count()
+            processing = db.query(PostCache).filter(PostCache.channel_telegram_id == channel_id, PostCache.processing_status == 'processing').count()
+            completed = db.query(PostCache).filter(PostCache.channel_telegram_id == channel_id, PostCache.processing_status == 'completed').count()
+            failed = db.query(PostCache).filter(PostCache.channel_telegram_id == channel_id, PostCache.processing_status == 'failed').count()
+            
+            # Получаем информацию о канале
+            channel = db.query(Channel).filter(Channel.telegram_id == channel_id).first()
+            channel_name = channel.title or channel.channel_name if channel else f'Channel {channel_id}'
+            channel_username = channel.username if channel else None
+            
+            channels_detailed.append({
+                'telegram_id': channel_id,
+                'name': channel_name,
+                'username': channel_username,
+                'total_posts': total_posts,
+                'pending': pending,
+                'processing': processing,
+                'completed': completed,
+                'failed': failed,
+                'progress': round(completed / max(total_posts, 1) * 100, 1)
+            })
+        
+        # 3. Статистика AI результатов по ботам
+        ai_results_by_bot = db.query(
+            ProcessedData.public_bot_id,
+            func.count(ProcessedData.id).label('results_count'),
+            func.max(ProcessedData.processed_at).label('last_processed')
+        ).group_by(ProcessedData.public_bot_id).all()
+        
+        # Получаем названия ботов
+        bot_names = {}
+        bots = db.query(PublicBot).all()
+        for bot in bots:
+            bot_names[bot.id] = {
+                'name': bot.name,
+                'status': bot.status
+            }
+        
+        bots_detailed = []
+        for stat in ai_results_by_bot:
+            bot_info = bot_names.get(stat.public_bot_id, {})
+            bots_detailed.append({
+                'bot_id': stat.public_bot_id,
+                'name': bot_info.get('name', f'Bot {stat.public_bot_id}'),
+                'status': bot_info.get('status', 'unknown'),
+                'results_count': stat.results_count,
+                'last_processed': stat.last_processed.isoformat() if stat.last_processed else None
+            })
+        
+        # 4. Последние обработанные посты
+        recent_processed = db.query(ProcessedData).order_by(ProcessedData.processed_at.desc()).limit(10).all()
+        
+        # Создаем словарь названий каналов для последних постов
+        channel_names = {}
+        for channel_row in channels_with_posts:
+            channel_id = channel_row.channel_telegram_id
+            channel = db.query(Channel).filter(Channel.telegram_id == channel_id).first()
+            if channel:
+                channel_names[channel_id] = {
+                    'name': channel.title or channel.channel_name,
+                    'username': channel.username
+                }
+        
+        recent_posts = []
+        for result in recent_processed:
+            # Получаем информацию о посте
+            post = db.query(PostCache).filter(PostCache.id == result.post_id).first()
+            if post:
+                recent_posts.append({
+                    'post_id': result.post_id,
+                    'bot_id': result.public_bot_id,
+                    'bot_name': bot_names.get(result.public_bot_id, {}).get('name', f'Bot {result.public_bot_id}'),
+                    'channel_id': post.channel_telegram_id,
+                    'channel_name': channel_names.get(post.channel_telegram_id, {}).get('name', f'Channel {post.channel_telegram_id}'),
+                    'processed_at': result.processed_at.isoformat(),
+                    'processing_version': result.processing_version,
+                    'content_preview': (post.content or '')[:100] + '...' if post.content else 'Нет содержания'
+                })
+        
+        # 5. Определение статуса AI Orchestrator
+        is_processing = posts_stats.get('processing', 0) > 0
+        orchestrator_status = "АКТИВЕН" if is_processing else "НЕ АКТИВЕН"
+        
+        # 6. Время последней активности
+        last_activity = None
+        if recent_processed:
+            last_activity = recent_processed[0].processed_at.isoformat()
+        
+        return {
+            # Базовая статистика
+            "posts_stats": posts_stats,
+            "total_posts": total_posts,
+            "progress_percentage": progress_percentage,
+            
+            # Статус AI Orchestrator
+            "orchestrator_status": orchestrator_status,
+            "is_processing": is_processing,
+            "last_activity": last_activity,
+            
+            # Детальная статистика по каналам
+            "channels_detailed": channels_detailed,
+            
+            # Детальная статистика по ботам
+            "bots_detailed": bots_detailed,
+            
+            # Последние обработанные посты
+            "recent_processed": recent_posts,
+            
+            # Метаданные
+            "last_updated": datetime.now().isoformat(),
+            "total_channels": len(channels_detailed),
+            "total_active_bots": len([b for b in bots_detailed if bot_names.get(b['bot_id'], {}).get('status') == 'active'])
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "posts_stats": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+            "total_posts": 0,
+            "progress_percentage": 0,
+            "orchestrator_status": "ОШИБКА",
+            "is_processing": False,
+            "channels_detailed": [],
+            "bots_detailed": [],
+            "recent_processed": [],
+            "last_updated": datetime.now().isoformat()
+        }
+
+# Глобальная переменная для хранения последнего статуса AI Orchestrator
+orchestrator_status_cache = {
+    "status": "UNKNOWN",
+    "timestamp": None,
+    "stats": {},
+    "details": {}
+}
+
+@app.post("/api/ai/orchestrator-status")
+async def receive_orchestrator_status(status_data: dict):
+    """Получение отчетов о статусе AI Orchestrator"""
+    global orchestrator_status_cache
+    
+    try:
+        # Обновляем кэш статуса
+        orchestrator_status_cache.update({
+            "status": status_data.get("orchestrator_status", "UNKNOWN"),
+            "timestamp": status_data.get("timestamp"),
+            "stats": status_data.get("stats", {}),
+            "details": status_data.get("details", {})
+        })
+        
+        print(f"📡 Получен статус AI Orchestrator: {orchestrator_status_cache['status']}")
+        
+        return {"success": True, "message": "Статус получен"}
+        
+    except Exception as e:
+        print(f"❌ Ошибка при получении статуса AI Orchestrator: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/orchestrator-live-status")
+async def get_orchestrator_live_status():
+    """Получение текущего статуса AI Orchestrator"""
+    global orchestrator_status_cache
+    
+    try:
+        # Проверяем актуальность статуса (если старше 2 минут - считаем неактивным)
+        current_time = datetime.now()
+        is_active = False
+        
+        if orchestrator_status_cache["timestamp"]:
+            try:
+                status_time = datetime.fromisoformat(orchestrator_status_cache["timestamp"].replace('Z', '+00:00'))
+                # Убираем timezone info для сравнения
+                if status_time.tzinfo:
+                    status_time = status_time.replace(tzinfo=None)
+                
+                time_diff = (current_time - status_time).total_seconds()
+                is_active = time_diff < 120  # 2 минуты
+            except Exception as e:
+                print(f"⚠️ Ошибка парсинга времени статуса: {e}")
+        
+        return {
+            "orchestrator_active": is_active,
+            "status": orchestrator_status_cache["status"] if is_active else "INACTIVE",
+            "last_update": orchestrator_status_cache["timestamp"],
+            "stats": orchestrator_status_cache["stats"],
+            "details": orchestrator_status_cache["details"],
+            "time_since_update": int((current_time - datetime.fromisoformat(orchestrator_status_cache["timestamp"].replace('Z', '+00:00')).replace(tzinfo=None)).total_seconds()) if orchestrator_status_cache["timestamp"] else None
+        }
+        
+    except Exception as e:
+        print(f"❌ Ошибка при получении live статуса: {str(e)}")
+        return {
+            "orchestrator_active": False,
+            "status": "ERROR",
+            "error": str(e)
         }
 
 if __name__ == "__main__":
