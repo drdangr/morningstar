@@ -876,38 +876,38 @@ function PublicBotsPage() {
                     </Typography>
                     <Grid container spacing={2}>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Проанализировано:</Typography>
-                        <Typography variant="h6">{previewData.preview_data.total_posts_analyzed}</Typography>
+                        <Typography variant="body2" component="div">Проанализировано:</Typography>
+                        <Typography variant="h6" component="div">{previewData.preview_data.total_posts_analyzed}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">В превью:</Typography>
-                        <Typography variant="h6">{previewData.preview_data.posts_in_preview}</Typography>
+                        <Typography variant="body2" component="div">В превью:</Typography>
+                        <Typography variant="h6" component="div">{previewData.preview_data.posts_in_preview}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">AI обработано:</Typography>
-                        <Typography variant="h6" color={previewData.preview_data.ai_processed_posts > 0 ? 'success.main' : 'warning.main'}>
+                        <Typography variant="body2" component="div">AI обработано:</Typography>
+                        <Typography variant="h6" component="div" color={previewData.preview_data.ai_processed_posts > 0 ? 'success.main' : 'warning.main'}>
                           {previewData.preview_data.ai_processed_posts}/{previewData.preview_data.posts_in_preview}
                         </Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Каналов:</Typography>
-                        <Typography variant="h6">{previewData.preview_data.channels_count}</Typography>
+                        <Typography variant="body2" component="div">Каналов:</Typography>
+                        <Typography variant="h6" component="div">{previewData.preview_data.channels_count}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Важность:</Typography>
-                        <Typography variant="h6">{previewData.digest_stats.avg_importance.toFixed(1)}</Typography>
+                        <Typography variant="body2" component="div">Важность:</Typography>
+                        <Typography variant="h6" component="div">{previewData.digest_stats.avg_importance.toFixed(1)}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Срочность:</Typography>
-                        <Typography variant="h6">{previewData.digest_stats.avg_urgency.toFixed(1)}</Typography>
+                        <Typography variant="body2" component="div">Срочность:</Typography>
+                        <Typography variant="h6" component="div">{previewData.digest_stats.avg_urgency.toFixed(1)}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Значимость:</Typography>
-                        <Typography variant="h6">{previewData.digest_stats.avg_significance.toFixed(1)}</Typography>
+                        <Typography variant="body2" component="div">Значимость:</Typography>
+                        <Typography variant="h6" component="div">{previewData.digest_stats.avg_significance.toFixed(1)}</Typography>
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <Typography variant="body2">Просмотры:</Typography>
-                        <Typography variant="h6">{previewData.digest_stats.total_views}</Typography>
+                        <Typography variant="body2" component="div">Просмотры:</Typography>
+                        <Typography variant="h6" component="div">{previewData.digest_stats.total_views}</Typography>
                       </Grid>
                     </Grid>
                   </CardContent>
@@ -1021,16 +1021,16 @@ function PublicBotsPage() {
                     
                     {previewData.ai_processing.categorization_prompt && (
                       <Box sx={{ mb: 1 }}>
-                        <Typography variant="subtitle2">Промпт категоризации:</Typography>
-                        <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                        <Typography variant="subtitle2" component="div">Промпт категоризации:</Typography>
+                        <Typography variant="body2" component="div" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
                           {previewData.ai_processing.categorization_prompt}
                         </Typography>
                       </Box>
                     )}
                     {previewData.ai_processing.summarization_prompt && (
                       <Box>
-                        <Typography variant="subtitle2">Промпт суммаризации:</Typography>
-                        <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                        <Typography variant="subtitle2" component="div">Промпт суммаризации:</Typography>
+                        <Typography variant="body2" component="div" sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
                           {previewData.ai_processing.summarization_prompt}
                         </Typography>
                       </Box>

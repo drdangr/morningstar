@@ -230,10 +230,10 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="primary">
+              <Typography variant="h6" color="primary" component="div">
                 {(botChannels || []).length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Добавленные каналы
               </Typography>
             </CardContent>
@@ -242,10 +242,10 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="secondary">
+              <Typography variant="h6" color="secondary" component="div">
                 {availableChannels.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Доступные каналы
               </Typography>
             </CardContent>
@@ -254,10 +254,10 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="info.main">
+              <Typography variant="h6" color="info.main" component="div">
                 {selectedChannels.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Выбрано
               </Typography>
             </CardContent>
@@ -266,10 +266,10 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="text.secondary">
+              <Typography variant="h6" color="text.secondary" component="div">
                 {filteredChannels.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 По фильтру
               </Typography>
             </CardContent>
@@ -339,21 +339,19 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
                   onChange={(e) => handleChannelSelect(channel.id, e.target.checked)}
                 />
               </ListItemIcon>
-              <ListItemText
-                primary={channel.title || channel.channel_name}
-                secondary={
-                  <Box>
-                    <Typography variant="body2" color="text.secondary">
-                      @{channel.username || 'Нет username'} • ID: {channel.telegram_id}
-                    </Typography>
-                    {channel.description && (
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                        {channel.description}
-                      </Typography>
-                    )}
-                  </Box>
-                }
-              />
+              <Box sx={{ flex: 1, ml: 2 }}>
+                <Typography variant="body1" component="div">
+                  {channel.title || channel.channel_name}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" component="div">
+                  @{channel.username || 'Нет username'} • ID: {channel.telegram_id}
+                </Typography>
+                {channel.description && (
+                  <Typography variant="body2" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
+                    {channel.description}
+                  </Typography>
+                )}
+              </Box>
               <ListItemSecondaryAction>
                 <IconButton
                   edge="end"

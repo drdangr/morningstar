@@ -272,10 +272,10 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="primary">
+              <Typography variant="h6" color="primary" component="div">
                 {(botCategories || []).length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Добавленные категории
               </Typography>
             </CardContent>
@@ -284,10 +284,10 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="secondary">
+              <Typography variant="h6" color="secondary" component="div">
                 {availableCategories.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Доступные категории
               </Typography>
             </CardContent>
@@ -296,10 +296,10 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="info.main">
+              <Typography variant="h6" color="info.main" component="div">
                 {selectedCategories.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 Выбрано
               </Typography>
             </CardContent>
@@ -308,10 +308,10 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
         <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Typography variant="h6" color="text.secondary">
+              <Typography variant="h6" color="text.secondary" component="div">
                 {filteredCategories.length}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" component="div">
                 По фильтру
               </Typography>
             </CardContent>
@@ -426,10 +426,16 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
                   onChange={(e) => handleCategorySelect(category.id, e.target.checked)}
                 />
               </ListItemIcon>
-              <ListItemText
-                primary={category.name || `[ID: ${category.id}]`}
-                secondary={category.description}
-              />
+              <Box sx={{ flex: 1, ml: 2 }}>
+                <Typography variant="body1" component="div">
+                  {category.name || `[ID: ${category.id}]`}
+                </Typography>
+                {category.description && (
+                  <Typography variant="body2" color="text.secondary" component="div">
+                    {category.description}
+                  </Typography>
+                )}
+              </Box>
               <ListItemSecondaryAction>
                 <IconButton
                   edge="end"
