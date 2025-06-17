@@ -572,6 +572,24 @@ class PostCacheResponse(PostCacheBase):
     class Config:
         from_attributes = True
 
+# Новая модель для Posts Cache Monitor с AI результатами
+class PostCacheWithAIResponse(PostCacheBase):
+    id: int
+    collected_at: datetime
+    
+    # AI результаты (опциональные, если пост не обработан)
+    ai_summary: Optional[str] = None
+    ai_category: Optional[str] = None
+    ai_relevance_score: Optional[float] = None
+    ai_importance: Optional[float] = None
+    ai_urgency: Optional[float] = None
+    ai_significance: Optional[float] = None
+    ai_processed_at: Optional[datetime] = None
+    ai_processing_version: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
 class PostsBatchCreate(BaseModel):
     """Модель для batch создания posts от userbot"""
     timestamp: datetime
@@ -1625,6 +1643,179 @@ def get_posts_cache(
     
     posts = query.offset(skip).limit(limit).all()
     return posts
+
+@app.get("/api/posts/cache-with-ai")
+def get_posts_cache_with_ai(
+    skip: int = 0,
+    limit: int = 100,
+    channel_telegram_id: Optional[int] = None,
+    processing_status: Optional[str] = None,
+    ai_status: Optional[str] = None,  # all, processed, unprocessed
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "collected_at",
+    sort_order: str = "desc",
+    db: Session = Depends(get_db)
+):
+    """Получить список постов из cache с AI результатами (LEFT JOIN с processed_data)"""
+    from datetime import datetime
+    from sqlalchemy import func as sql_func
+    
+    # Базовый запрос с LEFT JOIN к processed_data
+    query = db.query(
+        PostCache.id,
+        PostCache.channel_telegram_id,
+        PostCache.telegram_message_id,
+        PostCache.title,
+        PostCache.content,
+        PostCache.media_urls,
+        PostCache.views,
+        PostCache.post_date,
+        PostCache.collected_at,
+        PostCache.userbot_metadata,
+        PostCache.processing_status,
+        # AI результаты из processed_data (могут быть NULL)
+        ProcessedData.summaries.label('ai_summaries'),
+        ProcessedData.categories.label('ai_categories'),
+        ProcessedData.metrics.label('ai_metrics'),
+        ProcessedData.processed_at.label('ai_processed_at'),
+        ProcessedData.processing_version.label('ai_processing_version')
+    ).outerjoin(
+        ProcessedData, 
+        PostCache.id == ProcessedData.post_id
+    )
+    
+    # Фильтр по каналу
+    if channel_telegram_id:
+        query = query.filter(PostCache.channel_telegram_id == channel_telegram_id)
+    
+    # Фильтр по статусу обработки постов
+    if processing_status:
+        query = query.filter(PostCache.processing_status == processing_status)
+    
+    # Фильтр по статусу AI обработки
+    if ai_status == "processed":
+        query = query.filter(ProcessedData.id.isnot(None))
+    elif ai_status == "unprocessed":
+        query = query.filter(ProcessedData.id.is_(None))
+    # ai_status == "all" - без дополнительного фильтра
+    
+    # Поиск по содержимому
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            PostCache.content.ilike(search_pattern) |
+            PostCache.title.ilike(search_pattern)
+        )
+    
+    # Фильтр по дате
+    if date_from:
+        try:
+            date_from_obj = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date >= date_from_obj)
+        except ValueError:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            query = query.filter(PostCache.post_date <= date_to_obj)
+        except ValueError:
+            pass
+    
+    # Сортировка
+    if sort_by == "ai_processed_at":
+        sort_column = ProcessedData.processed_at
+    elif sort_by == "ai_importance":
+        # Извлекаем importance из JSONB поля metrics
+        if USE_POSTGRESQL:
+            sort_column = ProcessedData.metrics['importance'].astext.cast(Float)
+        else:
+            sort_column = PostCache.collected_at  # fallback для SQLite
+    else:
+        sort_column = getattr(PostCache, sort_by, PostCache.collected_at)
+    
+    if sort_order.lower() == "desc":
+        query = query.order_by(sort_column.desc())
+    else:
+        query = query.order_by(sort_column.asc())
+    
+    # Выполняем запрос
+    results = query.offset(skip).limit(limit).all()
+    
+    # Преобразуем результаты в удобный формат
+    posts_with_ai = []
+    for row in results:
+        # Парсим AI результаты из JSONB
+        ai_summary = None
+        ai_category = None
+        ai_importance = None
+        ai_urgency = None
+        ai_significance = None
+        
+        if row.ai_summaries:
+            try:
+                if USE_POSTGRESQL:
+                    summaries = row.ai_summaries if isinstance(row.ai_summaries, dict) else json.loads(row.ai_summaries)
+                else:
+                    summaries = json.loads(row.ai_summaries)
+                # Исправленный парсинг: сначала пробуем ru, потом старые форматы
+                ai_summary = summaries.get('ru') or summaries.get('summary') or summaries.get('text')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
+        if row.ai_categories:
+            try:
+                if USE_POSTGRESQL:
+                    categories = row.ai_categories if isinstance(row.ai_categories, dict) else json.loads(row.ai_categories)
+                else:
+                    categories = json.loads(row.ai_categories)
+                # Исправленный парсинг: сначала пробуем ru, потом старые форматы
+                ai_category = categories.get('ru') or categories.get('category') or categories.get('primary_category')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
+        if row.ai_metrics:
+            try:
+                if USE_POSTGRESQL:
+                    metrics = row.ai_metrics if isinstance(row.ai_metrics, dict) else json.loads(row.ai_metrics)
+                else:
+                    metrics = json.loads(row.ai_metrics)
+                ai_importance = metrics.get('importance')
+                ai_urgency = metrics.get('urgency')
+                ai_significance = metrics.get('significance')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
+        post_data = {
+            "id": row.id,
+            "channel_telegram_id": row.channel_telegram_id,
+            "telegram_message_id": row.telegram_message_id,
+            "title": row.title,
+            "content": row.content,
+            "media_urls": row.media_urls if USE_POSTGRESQL else (json.loads(row.media_urls) if row.media_urls else []),
+            "views": row.views,
+            "post_date": row.post_date,
+            "collected_at": row.collected_at,
+            "userbot_metadata": row.userbot_metadata if USE_POSTGRESQL else (json.loads(row.userbot_metadata) if row.userbot_metadata else {}),
+            "processing_status": row.processing_status,
+            # AI результаты
+            "ai_summary": ai_summary,
+            "ai_category": ai_category,
+            "ai_importance": ai_importance,
+            "ai_urgency": ai_urgency,
+            "ai_significance": ai_significance,
+            "ai_processed_at": row.ai_processed_at,
+            "ai_processing_version": row.ai_processing_version
+        }
+        posts_with_ai.append(post_data)
+    
+    return {
+        "posts": posts_with_ai,
+        "total_count": len(posts_with_ai),  # Для простоты, в реальности нужен отдельный count запрос
+        "has_ai_results": any(post["ai_summary"] is not None for post in posts_with_ai)
+    }
 
 @app.get("/api/posts/stats")
 def get_posts_stats(db: Session = Depends(get_db)):

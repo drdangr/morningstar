@@ -29,7 +29,10 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
-  Snackbar
+  Snackbar,
+  Collapse,
+  Switch,
+  FormControlLabel
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -39,7 +42,12 @@ import {
   Link as LinkIcon,
   Schedule as ScheduleIcon,
   Delete as DeleteIcon,
-  Warning as WarningIcon
+  Warning as WarningIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
+  Psychology as PsychologyIcon,
+  Category as CategoryIcon,
+  TrendingUp as TrendingUpIcon
 } from '@mui/icons-material';
 // Временно закомментируем DateTimePicker до установки правильных зависимостей
 // import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
@@ -58,6 +66,10 @@ function PostsCachePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Новые состояния для AI функциональности
+  const [showAIResults, setShowAIResults] = useState(true);
+  const [expandedPosts, setExpandedPosts] = useState(new Set());
+
   // Состояние для диалогов очистки базы
   const [firstWarningDialog, setFirstWarningDialog] = useState(false);
   const [finalConfirmDialog, setFinalConfirmDialog] = useState(false);
@@ -75,6 +87,7 @@ function PostsCachePage() {
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [aiStatusFilter, setAiStatusFilter] = useState('all'); // all, processed, unprocessed
   const [dateFrom, setDateFrom] = useState(null);
   const [dateTo, setDateTo] = useState(null);
   const [sortBy, setSortBy] = useState('collected_at');
@@ -129,6 +142,9 @@ function PostsCachePage() {
     setError('');
 
     try {
+      // Выбираем API endpoint в зависимости от настройки showAIResults
+      const endpoint = showAIResults ? '/api/posts/cache-with-ai' : '/api/posts/cache';
+      
       // Параметры запроса
       const params = new URLSearchParams({
         skip: page * rowsPerPage,
@@ -140,20 +156,30 @@ function PostsCachePage() {
       if (search) params.append('search', search);
       if (channelFilter) params.append('channel_telegram_id', channelFilter);
       if (statusFilter) params.append('processing_status', statusFilter);
+      if (showAIResults && aiStatusFilter !== 'all') params.append('ai_status', aiStatusFilter);
       if (dateFrom) params.append('date_from', dateFrom.toISOString());
       if (dateTo) params.append('date_to', dateTo.toISOString());
 
-      // Загружаем посты и количество параллельно
-      const [postsResponse, countResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/posts/cache?${params}`),
-        fetch(`${API_BASE_URL}/api/posts/cache/count?${params}`)
-      ]);
+      if (showAIResults) {
+        // Новый API с AI результатами
+        const response = await fetch(`${API_BASE_URL}${endpoint}?${params}`);
+        const data = await response.json();
+        
+        setPosts(data.posts || []);
+        setTotalCount(data.total_count || 0);
+      } else {
+        // Старый API без AI результатов
+        const [postsResponse, countResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}${endpoint}?${params}`),
+          fetch(`${API_BASE_URL}/api/posts/cache/count?${params}`)
+        ]);
 
-      const postsData = await postsResponse.json();
-      const countData = await countResponse.json();
+        const postsData = await postsResponse.json();
+        const countData = await countResponse.json();
 
-      setPosts(postsData);
-      setTotalCount(countData.total_count);
+        setPosts(postsData);
+        setTotalCount(countData.total_count);
+      }
       
       // Загружаем размер данных для текущих фильтров
       loadDataSize();
@@ -167,7 +193,7 @@ function PostsCachePage() {
   // Загрузка данных при изменении фильтров
   useEffect(() => {
     loadPosts();
-  }, [page, rowsPerPage, search, channelFilter, statusFilter, dateFrom, dateTo, sortBy, sortOrder]);
+  }, [page, rowsPerPage, search, channelFilter, statusFilter, aiStatusFilter, dateFrom, dateTo, sortBy, sortOrder, showAIResults]);
 
   // Загрузка статистики при монтировании
   useEffect(() => {
@@ -180,6 +206,7 @@ function PostsCachePage() {
     setSearch('');
     setChannelFilter('');
     setStatusFilter('');
+    setAiStatusFilter('all');
     setDateFrom(null);
     setDateTo(null);
     setPage(0);
@@ -229,6 +256,30 @@ function PostsCachePage() {
   const truncateText = (text, maxLength = 100) => {
     if (!text) return '';
     return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+  };
+
+  // Переключение развернутого состояния поста
+  const togglePostExpansion = (postId) => {
+    const newExpanded = new Set(expandedPosts);
+    if (newExpanded.has(postId)) {
+      newExpanded.delete(postId);
+    } else {
+      newExpanded.add(postId);
+    }
+    setExpandedPosts(newExpanded);
+  };
+
+  // Форматирование AI метрик
+  const formatAIMetric = (value) => {
+    if (value === null || value === undefined) return 'N/A';
+    return typeof value === 'number' ? value.toFixed(1) : value;
+  };
+
+  // Получение цвета для AI статуса
+  const getAIStatusColor = (post) => {
+    if (post.ai_summary) return 'success';
+    if (post.processing_status === 'completed') return 'warning';
+    return 'default';
   };
 
   // Обработка очистки orphan постов
@@ -387,8 +438,32 @@ function PostsCachePage() {
 
         {/* Фильтры */}
         <Paper sx={{ p: 2, mb: 2 }}>
+          {/* Переключатель AI результатов */}
+          <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={showAIResults}
+                  onChange={(e) => setShowAIResults(e.target.checked)}
+                  color="primary"
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <PsychologyIcon color={showAIResults ? 'primary' : 'disabled'} />
+                  <Typography>Показать AI результаты</Typography>
+                </Box>
+              }
+            />
+            {showAIResults && (
+              <Typography variant="caption" color="textSecondary">
+                Включен расширенный режим с отображением AI анализа постов
+              </Typography>
+            )}
+          </Box>
+          
           <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} md={3}>
+            <Grid item xs={12} md={2}>
               <TextField
                 fullWidth
                 placeholder="Поиск по содержимому..."
@@ -416,7 +491,7 @@ function PostsCachePage() {
                 </Select>
               </FormControl>
             </Grid>
-            <Grid item xs={12} md={2}>
+            <Grid item xs={12} md={1.5}>
               <FormControl fullWidth>
                 <InputLabel>Статус</InputLabel>
                 <Select
@@ -432,7 +507,23 @@ function PostsCachePage() {
                 </Select>
               </FormControl>
             </Grid>
-                         <Grid item xs={12} md={2}>
+            {showAIResults && (
+              <Grid item xs={12} md={1.5}>
+                <FormControl fullWidth>
+                  <InputLabel>AI Статус</InputLabel>
+                  <Select
+                    value={aiStatusFilter}
+                    label="AI Статус"
+                    onChange={(e) => setAiStatusFilter(e.target.value)}
+                  >
+                    <MenuItem value="all">Все</MenuItem>
+                    <MenuItem value="processed">Обработано AI</MenuItem>
+                    <MenuItem value="unprocessed">Не обработано</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            )}
+            <Grid item xs={12} md={2}>
               <TextField
                 fullWidth
                 label="Дата от"
@@ -485,6 +576,7 @@ function PostsCachePage() {
                   <TableCell>ID</TableCell>
                   <TableCell>Канал</TableCell>
                   <TableCell>Содержание</TableCell>
+                  {showAIResults && <TableCell>AI Анализ</TableCell>}
                   <TableCell>Просмотры</TableCell>
                   <TableCell>Дата поста</TableCell>
                   <TableCell>Собрано</TableCell>
@@ -533,6 +625,130 @@ function PostsCachePage() {
                             {truncateText(post.content, 100)}
                           </Typography>
                         </TableCell>
+                        {showAIResults && (
+                          <TableCell sx={{ maxWidth: 350 }}>
+                            {post.ai_summary || post.ai_category || post.ai_importance ? (
+                              <Box>
+                                {/* ОТЛАДКА: показываем все AI данные */}
+                                {process.env.NODE_ENV === 'development' && (
+                                  <Box sx={{ mb: 1, p: 1, bgcolor: 'grey.100', fontSize: '0.7rem' }}>
+                                    <div>Summary: {post.ai_summary || 'null'}</div>
+                                    <div>Category: {post.ai_category || 'null'}</div>
+                                    <div>Importance: {post.ai_importance || 'null'}</div>
+                                  </Box>
+                                )}
+                                
+                                {/* AI Summary - с возможностью развернуть */}
+                                {post.ai_summary && (
+                                  <Box sx={{ mb: 1 }}>
+                                    <Box
+                                      onClick={() => togglePostExpansion(post.id)}
+                                      sx={{ 
+                                        cursor: 'pointer',
+                                        display: 'inline-block'
+                                      }}
+                                    >
+                                      <Tooltip title="Кликните для развертывания полной саммаризации">
+                                        <Chip
+                                          icon={<PsychologyIcon />}
+                                          label={expandedPosts.has(post.id) ? 
+                                            `📝 ${post.ai_summary}` : 
+                                            `📝 ${truncateText(post.ai_summary, 40)}...`
+                                          }
+                                          color="primary"
+                                          size="small"
+                                          variant="outlined"
+                                          sx={{ 
+                                            mb: 0.5, 
+                                            maxWidth: '100%',
+                                            height: 'auto',
+                                            '& .MuiChip-label': {
+                                              whiteSpace: expandedPosts.has(post.id) ? 'normal' : 'nowrap',
+                                              overflow: 'visible',
+                                              textOverflow: 'clip'
+                                            }
+                                          }}
+                                        />
+                                      </Tooltip>
+                                    </Box>
+                                    {expandedPosts.has(post.id) && (
+                                      <IconButton 
+                                        size="small" 
+                                        onClick={() => togglePostExpansion(post.id)}
+                                        sx={{ ml: 0.5 }}
+                                      >
+                                        <ExpandLessIcon />
+                                      </IconButton>
+                                    )}
+                                  </Box>
+                                )}
+                                
+                                {/* AI Category - более заметно */}
+                                {post.ai_category && (
+                                  <Box sx={{ mb: 1 }}>
+                                    <Chip
+                                      icon={<CategoryIcon />}
+                                      label={`🏷️ ${post.ai_category}`}
+                                      color="secondary"
+                                      size="small"
+                                      sx={{ 
+                                        mb: 0.5,
+                                        fontWeight: 'bold'
+                                      }}
+                                    />
+                                  </Box>
+                                )}
+                                
+                                {/* AI Metrics - улучшенное отображение */}
+                                {(post.ai_importance || post.ai_urgency || post.ai_significance) && (
+                                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+                                    {post.ai_importance && (
+                                      <Tooltip title={`Важность: ${formatAIMetric(post.ai_importance)}/10`}>
+                                        <Chip
+                                          icon={<TrendingUpIcon />}
+                                          label={`⚡ ${formatAIMetric(post.ai_importance)}`}
+                                          size="small"
+                                          color={post.ai_importance >= 7 ? 'error' : post.ai_importance >= 5 ? 'warning' : 'default'}
+                                        />
+                                      </Tooltip>
+                                    )}
+                                    {post.ai_urgency && (
+                                      <Tooltip title={`Срочность: ${formatAIMetric(post.ai_urgency)}/10`}>
+                                        <Chip
+                                          label={`🚨 ${formatAIMetric(post.ai_urgency)}`}
+                                          size="small"
+                                          color={post.ai_urgency >= 7 ? 'error' : post.ai_urgency >= 5 ? 'warning' : 'default'}
+                                        />
+                                      </Tooltip>
+                                    )}
+                                    {post.ai_significance && (
+                                      <Tooltip title={`Значимость: ${formatAIMetric(post.ai_significance)}/10`}>
+                                        <Chip
+                                          label={`⭐ ${formatAIMetric(post.ai_significance)}`}
+                                          size="small"
+                                          color={post.ai_significance >= 7 ? 'error' : post.ai_significance >= 5 ? 'warning' : 'default'}
+                                        />
+                                      </Tooltip>
+                                    )}
+                                  </Box>
+                                )}
+                                
+                                {/* AI Processing Date */}
+                                {post.ai_processed_at && (
+                                  <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.5 }}>
+                                    🤖 Обработано: {formatDate(post.ai_processed_at)}
+                                  </Typography>
+                                )}
+                              </Box>
+                            ) : (
+                              <Box sx={{ textAlign: 'center', py: 2 }}>
+                                <Typography variant="caption" color="textSecondary">
+                                  ⏳ Ожидает AI обработки
+                                </Typography>
+                              </Box>
+                            )}
+                          </TableCell>
+                        )}
                         <TableCell>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <ViewIcon fontSize="small" color="action" />
