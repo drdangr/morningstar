@@ -629,15 +629,6 @@ function PostsCachePage() {
                           <TableCell sx={{ maxWidth: 350 }}>
                             {post.ai_summary || post.ai_category || post.ai_importance ? (
                               <Box>
-                                {/* ОТЛАДКА: показываем все AI данные */}
-                                {process.env.NODE_ENV === 'development' && (
-                                  <Box sx={{ mb: 1, p: 1, bgcolor: 'grey.100', fontSize: '0.7rem' }}>
-                                    <div>Summary: {post.ai_summary || 'null'}</div>
-                                    <div>Category: {post.ai_category || 'null'}</div>
-                                    <div>Importance: {post.ai_importance || 'null'}</div>
-                                  </Box>
-                                )}
-                                
                                 {/* AI Summary - с возможностью развернуть */}
                                 {post.ai_summary && (
                                   <Box sx={{ mb: 1 }}>
