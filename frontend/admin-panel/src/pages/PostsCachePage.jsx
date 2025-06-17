@@ -69,6 +69,7 @@ function PostsCachePage() {
   // Новые состояния для AI функциональности
   const [showAIResults, setShowAIResults] = useState(true);
   const [expandedPosts, setExpandedPosts] = useState(new Set());
+  const [expandedContent, setExpandedContent] = useState(new Set());
 
   // Состояние для диалогов очистки базы
   const [firstWarningDialog, setFirstWarningDialog] = useState(false);
@@ -255,18 +256,58 @@ function PostsCachePage() {
   // Обрезка текста
   const truncateText = (text, maxLength = 100) => {
     if (!text) return '';
-    return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+  };
+
+  // Функция для очистки Markdown-ссылок и форматирования
+  const cleanMarkdownText = (text) => {
+    if (!text) return '';
+    
+    return text
+      // Убираем Markdown ссылки [текст](ссылка)
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      // Убираем просто ссылки в скобках (https://...)
+      .replace(/\(https?:\/\/[^)]+\)/g, '')
+      // Убираем жирный текст **текст**
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      // Убираем курсив *текст*
+      .replace(/\*([^*]+)\*/g, '$1')
+      // Убираем подчеркивание __текст__
+      .replace(/__([^_]+)__/g, '$1')
+      // Убираем зачеркнутый текст ~~текст~~
+      .replace(/~~([^~]+)~~/g, '$1')
+      // Убираем код `код`
+      .replace(/`([^`]+)`/g, '$1')
+      // Убираем множественные пробелы
+      .replace(/\s+/g, ' ')
+      // Убираем пробелы в начале и конце
+      .trim();
   };
 
   // Переключение развернутого состояния поста
   const togglePostExpansion = (postId) => {
-    const newExpanded = new Set(expandedPosts);
-    if (newExpanded.has(postId)) {
-      newExpanded.delete(postId);
-    } else {
-      newExpanded.add(postId);
-    }
-    setExpandedPosts(newExpanded);
+    setExpandedPosts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleContentExpansion = (postId) => {
+    setExpandedContent(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
   };
 
   // Форматирование AI метрик
@@ -462,19 +503,9 @@ function PostsCachePage() {
             )}
           </Box>
           
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} md={2}>
-              <TextField
-                fullWidth
-                placeholder="Поиск по содержимому..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                InputProps={{
-                  startAdornment: <SearchIcon color="action" />,
-                }}
-              />
-            </Grid>
-            <Grid item xs={12} md={2}>
+          {/* Первая строка: фильтры */}
+          <Box sx={{ mb: 2, display: 'flex', gap: 2, alignItems: 'center' }}>
+            <Box sx={{ width: 300 }}>
               <FormControl fullWidth>
                 <InputLabel>Канал</InputLabel>
                 <Select
@@ -483,15 +514,15 @@ function PostsCachePage() {
                   onChange={(e) => setChannelFilter(e.target.value)}
                 >
                   <MenuItem value="">Все каналы</MenuItem>
-                  {stats?.channels.map((channel) => (
+                  {stats?.channels?.map((channel) => (
                     <MenuItem key={channel.telegram_id} value={channel.telegram_id}>
                       {channel.title}
                     </MenuItem>
-                  ))}
+                  )) || <MenuItem value="">Каналы загружаются...</MenuItem>}
                 </Select>
               </FormControl>
-            </Grid>
-            <Grid item xs={12} md={1.5}>
+            </Box>
+            <Box sx={{ width: 250 }}>
               <FormControl fullWidth>
                 <InputLabel>Статус</InputLabel>
                 <Select
@@ -506,9 +537,9 @@ function PostsCachePage() {
                   <MenuItem value="failed">Failed</MenuItem>
                 </Select>
               </FormControl>
-            </Grid>
+            </Box>
             {showAIResults && (
-              <Grid item xs={12} md={1.5}>
+              <Box sx={{ width: 250 }}>
                 <FormControl fullWidth>
                   <InputLabel>AI Статус</InputLabel>
                   <Select
@@ -521,9 +552,24 @@ function PostsCachePage() {
                     <MenuItem value="unprocessed">Не обработано</MenuItem>
                   </Select>
                 </FormControl>
-              </Grid>
+              </Box>
             )}
-            <Grid item xs={12} md={2}>
+          </Box>
+          
+          {/* Вторая строка: поиск, даты и кнопки */}
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} md={3}>
+              <TextField
+                fullWidth
+                placeholder="Поиск по содержимому..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon color="action" />,
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} md={3}>
               <TextField
                 fullWidth
                 label="Дата от"
@@ -533,7 +579,7 @@ function PostsCachePage() {
                 InputLabelProps={{ shrink: true }}
               />
             </Grid>
-            <Grid item xs={12} md={2}>
+            <Grid item xs={12} md={3}>
               <TextField
                 fullWidth
                 label="Дата до"
@@ -543,8 +589,8 @@ function PostsCachePage() {
                 InputLabelProps={{ shrink: true }}
               />
             </Grid>
-            <Grid item xs={12} md={1}>
-              <Box sx={{ display: 'flex', gap: 1 }}>
+            <Grid item xs={12} md={3}>
+              <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-start' }}>
                 <Tooltip title="Обновить">
                   <IconButton onClick={loadPosts}>
                     <RefreshIcon />
@@ -573,9 +619,9 @@ function PostsCachePage() {
             <Table>
               <TableHead>
                 <TableRow>
-                  <TableCell>ID</TableCell>
+                  <TableCell sx={{ width: 80, maxWidth: 80 }}>ID</TableCell>
                   <TableCell>Канал</TableCell>
-                  <TableCell>Содержание</TableCell>
+                  <TableCell sx={{ width: 450, maxWidth: 450 }}>Содержание</TableCell>
                   {showAIResults && <TableCell>AI Анализ</TableCell>}
                   <TableCell>Просмотры</TableCell>
                   <TableCell>Дата поста</TableCell>
@@ -587,13 +633,13 @@ function PostsCachePage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={8} align="center">
+                    <TableCell colSpan={showAIResults ? 9 : 8} align="center">
                       <CircularProgress />
                     </TableCell>
                   </TableRow>
                 ) : posts.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} align="center">
+                    <TableCell colSpan={showAIResults ? 9 : 8} align="center">
                       Постов не найдено
                     </TableCell>
                   </TableRow>
@@ -602,7 +648,7 @@ function PostsCachePage() {
                     const channelInfo = getChannelInfo(post.channel_telegram_id);
                     return (
                       <TableRow key={post.id}>
-                        <TableCell>{post.telegram_message_id}</TableCell>
+                        <TableCell sx={{ width: 80, maxWidth: 80 }}>{post.telegram_message_id}</TableCell>
                         <TableCell>
                           <Box>
                             <Typography variant="body2" fontWeight="bold">
@@ -615,15 +661,46 @@ function PostsCachePage() {
                             )}
                           </Box>
                         </TableCell>
-                        <TableCell sx={{ maxWidth: 300 }}>
+                        <TableCell sx={{ maxWidth: 450, width: 450 }}>
                           {post.title && (
                             <Typography variant="body2" fontWeight="bold" gutterBottom>
-                              {truncateText(post.title, 50)}
+                              {truncateText(cleanMarkdownText(post.title), 50)}
                             </Typography>
                           )}
-                          <Typography variant="body2">
-                            {truncateText(post.content, 100)}
-                          </Typography>
+                          <Box
+                            onClick={() => toggleContentExpansion(post.id)}
+                            sx={{ 
+                              cursor: 'pointer',
+                              '&:hover': {
+                                backgroundColor: 'action.hover',
+                                borderRadius: 1,
+                                p: 0.5,
+                                m: -0.5
+                              }
+                            }}
+                          >
+                            <Tooltip title="Кликните для просмотра полного текста">
+                              <Typography variant="body2">
+                                {expandedContent.has(post.id) ? 
+                                  cleanMarkdownText(post.content) : 
+                                  truncateText(cleanMarkdownText(post.content), 150)
+                                }
+                              </Typography>
+                            </Tooltip>
+                            {expandedContent.has(post.id) && (
+                              <Box sx={{ mt: 0.5, textAlign: 'right' }}>
+                                <IconButton 
+                                  size="small" 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleContentExpansion(post.id);
+                                  }}
+                                >
+                                  <ExpandLessIcon />
+                                </IconButton>
+                              </Box>
+                            )}
+                          </Box>
                         </TableCell>
                         {showAIResults && (
                           <TableCell sx={{ maxWidth: 350 }}>
@@ -643,8 +720,8 @@ function PostsCachePage() {
                                         <Chip
                                           icon={<PsychologyIcon />}
                                           label={expandedPosts.has(post.id) ? 
-                                            `📝 ${post.ai_summary}` : 
-                                            `📝 ${truncateText(post.ai_summary, 40)}...`
+                                            `📝 ${cleanMarkdownText(post.ai_summary)}` : 
+                                            `📝 ${truncateText(cleanMarkdownText(post.ai_summary), 40)}...`
                                           }
                                           color="primary"
                                           size="small"
