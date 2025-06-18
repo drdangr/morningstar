@@ -472,8 +472,8 @@ const AIResultsPage = () => {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
         <CircularProgress />
-      </Box>
-    );
+        </Box>
+  );
   }
 
   return (
@@ -483,7 +483,7 @@ const AIResultsPage = () => {
         <Typography variant="h4" component="h1">
           <SmartToyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
           AI Results Management
-        </Typography>
+          </Typography>
         <Button
           variant="outlined"
           startIcon={<RefreshIcon />}
@@ -546,20 +546,20 @@ const AIResultsPage = () => {
                                 </Typography>
                                 <Typography variant="caption" color="text.secondary">
                                   {channel.username ? (channel.username.startsWith('@') ? channel.username : `@${channel.username}`) : `ID: ${channel.telegram_id}`}
-                                </Typography>
-                              </Box>
+                    </Typography>
+                  </Box>
                             }
                           />
-                        </Grid>
+                  </Grid>
                       ))}
-                    </Grid>
+                  </Grid>
                   </FormGroup>
                   {selectedChannels.length > 0 && (
                     <Box mt={2}>
                       <Typography variant="body2" color="primary">
                         Выбрано каналов: {selectedChannels.length}
                       </Typography>
-                    </Box>
+                        </Box>
                   )}
                 </CardContent>
               </Card>
@@ -635,10 +635,10 @@ const AIResultsPage = () => {
                   </Stack>
                 </CardContent>
               </Card>
-            </Grid>
-          </Grid>
-        </AccordionDetails>
-      </Accordion>
+                  </Grid>
+                </Grid>
+              </AccordionDetails>
+            </Accordion>
 
       {/* Статистика */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
@@ -646,24 +646,24 @@ const AIResultsPage = () => {
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
+          <Typography variant="h6" gutterBottom>
                 <AssessmentIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                 Статистика постов
-              </Typography>
+          </Typography>
               {aiStatus?.posts_stats && (
                 <Stack spacing={2}>
                   <Box>
                     <Typography variant="body2" color="text.secondary">
-                      Всего постов: {aiStatus.posts_stats.total}
-                    </Typography>
+                      Всего постов: {aiStatus.total_posts}
+            </Typography>
                     <LinearProgress
                       variant="determinate"
-                      value={aiStatus.posts_stats.total > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.posts_stats.total) * 100) : 0}
+                      value={aiStatus.total_posts > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.total_posts) * 100) : 0}
                       sx={{ mt: 1 }}
                     />
                     <Typography variant="caption" color="text.secondary">
-                      Обработано: {aiStatus.posts_stats.total > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.posts_stats.total) * 100) : 0}%
-                    </Typography>
+                      Готово: {aiStatus.total_posts > 0 ? Math.round((aiStatus.posts_stats.completed / aiStatus.total_posts) * 100) : 0}%
+          </Typography>
                   </Box>
                   <Divider />
                   <Grid container spacing={1}>
@@ -723,15 +723,15 @@ const AIResultsPage = () => {
                     Всего AI результатов
                   </Typography>
                   <Divider />
-                  <Typography variant="body2">
+                    <Typography variant="body2">
                     Результатов на пост: {aiStatus.ai_results_stats.results_per_post}
-                  </Typography>
+                    </Typography>
                 </Stack>
               )}
             </CardContent>
           </Card>
-        </Grid>
-
+                </Grid>
+                
         {/* Статистика ботов */}
         <Grid item xs={12} md={4}>
           <Card>
@@ -882,8 +882,8 @@ const AIResultsPage = () => {
                               />
                               <Typography variant="caption">
                                 {channel.progress || 0}%
-                              </Typography>
-                            </Box>
+                    </Typography>
+                  </Box>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -1006,7 +1006,211 @@ const AIResultsPage = () => {
             <PendingIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
             Активные AI задачи ({activeTasks.length})
           </Typography>
-          
+
+          {/* НОВЫЙ РАЗДЕЛ: Реал-тайм статус AI Orchestrator */}
+          <Card variant="outlined" sx={{ mb: 3, bgcolor: 'background.paper' }}>
+            <CardContent>
+              <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                <Typography variant="h6">
+                  <SmartToyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                  AI Orchestrator v2.0 - Live Status
+                </Typography>
+                <Box display="flex" alignItems="center" gap={1}>
+                  {orchestratorLiveStatus && (
+                    <Chip
+                      icon={<span style={{ fontSize: '14px' }}>{getOrchestratorStatus().icon}</span>}
+                      label={getOrchestratorStatus().text}
+                      color={getOrchestratorStatus().color}
+                      size="small"
+                    />
+                  )}
+                  <Tooltip title="Автообновление каждые 5 секунд">
+                    <RefreshIcon sx={{ color: 'action.active', fontSize: 20 }} />
+                  </Tooltip>
+                </Box>
+              </Box>
+
+              {orchestratorLiveStatus ? (
+                <Grid container spacing={2}>
+                  {/* Основная информация */}
+                  <Grid item xs={12} md={6}>
+                    <Box>
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        Основная информация
+                      </Typography>
+                      <Stack spacing={1}>
+                        <Box display="flex" justifyContent="space-between">
+                          <Typography variant="body2">Статус:</Typography>
+                          <Typography variant="body2" fontWeight="bold" color={
+                            orchestratorLiveStatus.orchestrator_active ? 'success.main' : 'error.main'
+                          }>
+                            {orchestratorLiveStatus.status}
+                          </Typography>
+                        </Box>
+                        
+                        <Box display="flex" justifyContent="space-between">
+                          <Typography variant="body2">Последнее обновление:</Typography>
+                          <Typography variant="body2">
+                            {orchestratorLiveStatus.last_update ? 
+                              formatDate(orchestratorLiveStatus.last_update) : 'Никогда'
+                            }
+                          </Typography>
+                        </Box>
+
+                        {orchestratorLiveStatus.time_since_update !== null && (
+                          <Box display="flex" justifyContent="space-between">
+                            <Typography variant="body2">Время с обновления:</Typography>
+                            <Typography variant="body2" color={
+                              orchestratorLiveStatus.time_since_update > 120 ? 'error.main' : 'text.primary'
+                            }>
+                              {Math.floor(orchestratorLiveStatus.time_since_update / 60)}м {orchestratorLiveStatus.time_since_update % 60}с
+                            </Typography>
+                          </Box>
+                        )}
+                      </Stack>
+                    </Box>
+                  </Grid>
+
+                  {/* Статистика очереди */}
+                  <Grid item xs={12} md={6}>
+                    <Box>
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        Состояние очереди
+                      </Typography>
+                      <Stack spacing={1}>
+                        {orchestratorLiveStatus.stats && (
+                          <>
+                            <Box display="flex" justifyContent="space-between">
+                              <Typography variant="body2">Размер очереди:</Typography>
+                              <Chip 
+                                label={orchestratorLiveStatus.stats.queue_size || 0}
+                                color={orchestratorLiveStatus.stats.queue_size > 0 ? 'warning' : 'success'}
+                                size="small"
+                              />
+                            </Box>
+                            
+                            <Box display="flex" justifyContent="space-between">
+                              <Typography variant="body2">Фоновый обработчик:</Typography>
+                              <Chip
+                                label={orchestratorLiveStatus.stats.background_worker_running ? 'Запущен' : 'Остановлен'}
+                                color={orchestratorLiveStatus.stats.background_worker_running ? 'success' : 'error'}
+                                size="small"
+                                icon={orchestratorLiveStatus.stats.background_worker_running ? 
+                                  <PlayIcon sx={{ fontSize: 16 }} /> : <StopIcon sx={{ fontSize: 16 }} />
+                                }
+                              />
+                            </Box>
+
+                            <Box display="flex" justifyContent="space-between">
+                              <Typography variant="body2">Активная обработка:</Typography>
+                              <Chip
+                                label={orchestratorLiveStatus.stats.processing_active ? 'Да' : 'Нет'}
+                                color={orchestratorLiveStatus.stats.processing_active ? 'info' : 'default'}
+                                size="small"
+                                icon={orchestratorLiveStatus.stats.processing_active ? 
+                                  <CircularProgress size={16} /> : <PauseIcon sx={{ fontSize: 16 }} />
+                                }
+                              />
+                            </Box>
+                          </>
+                        )}
+                      </Stack>
+                    </Box>
+                  </Grid>
+
+                  {/* Детали текущей задачи */}
+                  {orchestratorLiveStatus.details && Object.keys(orchestratorLiveStatus.details).length > 0 && (
+                    <Grid item xs={12}>
+                      <Divider sx={{ my: 1 }} />
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        Детали текущей задачи
+                      </Typography>
+                      <Box sx={{ 
+                        bgcolor: 'grey.50', 
+                        p: 1, 
+                        borderRadius: 1, 
+                        fontFamily: 'monospace', 
+                        fontSize: '0.875rem' 
+                      }}>
+                        {Object.entries(orchestratorLiveStatus.details).map(([key, value]) => (
+                          <Box key={key} display="flex" justifyContent="space-between">
+                            <Typography variant="body2" component="span">{key}:</Typography>
+                            <Typography variant="body2" component="span" fontWeight="bold">
+                              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                            </Typography>
+                          </Box>
+                        ))}
+                      </Box>
+                    </Grid>
+                  )}
+
+                  {/* Быстрые действия */}
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 1 }} />
+                    <Box display="flex" gap={1} flexWrap="wrap">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<RefreshIcon />}
+                        onClick={() => fetchOrchestratorLiveStatus()}
+                      >
+                        Обновить статус
+                      </Button>
+                      
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="primary"
+                        startIcon={<PlayIcon />}
+                        onClick={() => openConfirmDialog(
+                          handleReprocessAll,
+                          'Запуск обработки',
+                          'Запустить AI обработку всех необработанных постов?'
+                        )}
+                        disabled={actionLoading}
+                      >
+                        Запустить обработку
+                      </Button>
+
+                      {orchestratorLiveStatus.stats?.processing_active && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="warning"
+                          startIcon={<StopIcon />}
+                          onClick={() => openConfirmDialog(
+                            handleStopAI,
+                            'Остановка обработки',
+                            'Остановить текущую AI обработку?'
+                          )}
+                          disabled={actionLoading}
+                        >
+                          Остановить
+                        </Button>
+                      )}
+                    </Box>
+                  </Grid>
+                </Grid>
+              ) : (
+                <Box textAlign="center" py={2}>
+                  <Typography variant="body2" color="text.secondary">
+                    Не удалось получить статус AI Orchestrator
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    onClick={() => fetchOrchestratorLiveStatus()}
+                    sx={{ mt: 1 }}
+                  >
+                    Попробовать снова
+                  </Button>
+                </Box>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Существующая таблица активных задач */}
           {activeTasks.length === 0 ? (
             <Box textAlign="center" py={4}>
               <Typography variant="body1" color="text.secondary">

@@ -43,3 +43,6 @@ python src/bot.py
 4. AI Services (когда создадим):
 cd ai_services
 python main.py
+5. Continuous mode
+cd ai_services
+python orchestrator.py --mode continuous

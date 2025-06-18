@@ -202,11 +202,11 @@ class CategorizationService:
         """Подготовка текста поста для анализа"""
         text_parts = []
         
-        if post.text:
-            text_parts.append(post.text)
+        if post.content:
+            text_parts.append(post.content)
         
-        if post.caption:
-            text_parts.append(f"Подпись: {post.caption}")
+        if hasattr(post, 'title') and post.title:
+            text_parts.append(f"Заголовок: {post.title}")
         
         # Добавляем метаданные канала если есть
         if hasattr(post, 'channel_title') and post.channel_title:
@@ -257,7 +257,7 @@ class CategorizationService:
             # Валидируем и нормализуем поля
             normalized_result = {
                 'post_id': post.id,
-                'post_text': post.text[:200] + '...' if len(post.text or '') > 200 else post.text,
+                'post_text': post.content[:200] + '...' if len(post.content or '') > 200 else post.content,
                 'category_number': self._validate_category_number(result.get('category_number'), len(bot_categories)),
                 'category_name': result.get('category_name', 'Unknown'),
                 'relevance_score': self._validate_score(result.get('relevance_score'), 0.0, 1.0),
@@ -308,7 +308,7 @@ class CategorizationService:
         """Создание fallback результата при ошибках"""
         return {
             'post_id': post.id,
-            'post_text': post.text[:200] + '...' if len(post.text or '') > 200 else post.text,
+            'post_text': post.content[:200] + '...' if len(post.content or '') > 200 else post.content,
             'category_number': None,
             'category_name': 'NULL',
             'relevance_score': 0.0,

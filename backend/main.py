@@ -1771,8 +1771,8 @@ def get_posts_cache_with_ai(
                     categories = row.ai_categories if isinstance(row.ai_categories, dict) else json.loads(row.ai_categories)
                 else:
                     categories = json.loads(row.ai_categories)
-                # Исправленный парсинг: сначала пробуем ru, потом старые форматы
-                ai_category = categories.get('ru') or categories.get('category') or categories.get('primary_category')
+                # Исправленный парсинг: сначала пробуем ru, потом primary, потом старые форматы
+                ai_category = categories.get('ru') or categories.get('primary') or categories.get('category') or categories.get('primary_category')
             except (json.JSONDecodeError, AttributeError):
                 pass
         
@@ -2919,6 +2919,50 @@ def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends
         db.refresh(r)
     return created_records
 
+@app.get("/api/ai/results", response_model=List[AIResultResponse])
+def get_ai_results(
+    skip: int = 0,
+    limit: int = Query(100, ge=1, le=500),
+    bot_id: Optional[int] = None,
+    post_id: Optional[int] = None,
+    processing_version: Optional[str] = None,
+    sort_by: str = "processed_at",
+    sort_order: str = "desc",
+    db: Session = Depends(get_db)
+):
+    """Получение AI результатов с фильтрацией"""
+    query = db.query(ProcessedData)
+    
+    # Фильтры
+    if bot_id:
+        query = query.filter(ProcessedData.public_bot_id == bot_id)
+    if post_id:
+        query = query.filter(ProcessedData.post_id == post_id)
+    if processing_version:
+        query = query.filter(ProcessedData.processing_version == processing_version)
+    
+    # Сортировка
+    if sort_by == "processed_at":
+        if sort_order == "desc":
+            query = query.order_by(ProcessedData.processed_at.desc())
+        else:
+            query = query.order_by(ProcessedData.processed_at.asc())
+    elif sort_by == "post_id":
+        if sort_order == "desc":
+            query = query.order_by(ProcessedData.post_id.desc())
+        else:
+            query = query.order_by(ProcessedData.post_id.asc())
+    
+    return query.offset(skip).limit(limit).all()
+
+@app.get("/api/ai/results/{result_id}", response_model=AIResultResponse)
+def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
+    """Получение конкретного AI результата по ID"""
+    result = db.query(ProcessedData).filter(ProcessedData.id == result_id).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="AI result not found")
+    return result
+
 @app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
 def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     return db.query(PostCache).filter(PostCache.processing_status == "pending").order_by(PostCache.collected_at.asc()).limit(limit).all()
@@ -3020,8 +3064,8 @@ def get_ai_tasks(db: Session = Depends(get_db)):
         }
 
 @app.post("/api/ai/reprocess-all")
-def reprocess_all_posts(db: Session = Depends(get_db)):
-    """Перезапустить AI обработку для всех постов"""
+async def reprocess_all_posts(db: Session = Depends(get_db)):
+    """Перезапустить AI обработку для всех постов + автозапуск AI Orchestrator"""
     try:
         # Сбрасываем статус всех постов на "pending"
         updated_count = db.query(PostCache).update(
@@ -3035,11 +3079,41 @@ def reprocess_all_posts(db: Session = Depends(get_db)):
         
         db.commit()
         
+        # 🚀 АВТОЗАПУСК AI ORCHESTRATOR
+        import subprocess
+        import os
+        import sys
+        
+        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
+        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
+        
+        ai_start_success = False
+        ai_message = ""
+        
+        try:
+            if os.path.exists(orchestrator_path):
+                # Запускаем в фоне без ожидания (Popen без communicate)
+                process = subprocess.Popen([
+                    sys.executable, orchestrator_path, "--mode", "single"
+                ], cwd=project_root,  # Меняем рабочую директорию на корень проекта
+                   stdout=subprocess.DEVNULL, 
+                   stderr=subprocess.DEVNULL)
+                
+                ai_start_success = True
+                ai_message = "AI Orchestrator запущен автоматически"
+            else:
+                ai_message = f"AI Orchestrator не найден: {orchestrator_path}"
+        except Exception as e:
+            ai_message = f"Ошибка автозапуска AI: {str(e)}"
+        
         return {
             "success": True,
             "message": "Перезапуск AI обработки инициирован",
             "posts_reset": updated_count,
-            "ai_results_cleared": deleted_results
+            "ai_results_cleared": deleted_results,
+            "ai_auto_start": ai_start_success,
+            "ai_message": ai_message
         }
     except Exception as e:
         db.rollback()
@@ -3280,8 +3354,8 @@ def stop_ai_processing(db: Session = Depends(get_db)):
         }
 
 @app.delete("/api/ai/clear-results")
-def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
-    """Очистить все AI результаты (без сброса статуса постов)"""
+async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
+    """Очистить все AI результаты И сбросить статусы постов + автозапуск AI Orchestrator"""
     if not confirm:
         return {
             "success": False,
@@ -3293,15 +3367,50 @@ def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
         # Подсчитываем количество записей для удаления
         total_results = db.query(ProcessedData).count()
         
-        # Удаляем все AI результаты
+        # Сбрасываем ВСЕ посты со статусом "completed" И "processing" на "pending"
+        # (поскольку если удаляем все AI результаты, то все обработанные/обрабатывающиеся посты должны стать pending)
+        posts_updated = db.query(PostCache).filter(
+            PostCache.processing_status.in_(["completed", "processing"])
+        ).update(
+            {"processing_status": "pending"},
+            synchronize_session=False
+        )
+        
+        # Удаляем все AI результаты ПОСЛЕ сброса статусов
         db.query(ProcessedData).delete(synchronize_session=False)
+        
         db.commit()
         
-        return {
+        # АВТОМАТИЧЕСКИ ЗАПУСКАЕМ AI ORCHESTRATOR ПОСЛЕ СБРОСА
+        ai_orchestrator_triggered = False
+        trigger_error = None
+        
+        if posts_updated > 0:
+            try:
+                # Вызываем существующую функцию trigger_ai_processing
+                trigger_response = await trigger_ai_processing()
+                ai_orchestrator_triggered = trigger_response.get("success", False)
+            except Exception as e:
+                trigger_error = str(e)
+        
+        # Формируем ответ
+        result = {
             "success": True,
-            "message": "Все AI результаты успешно удалены",
-            "deleted_results": total_results
+            "deleted_results": total_results,
+            "reset_posts": posts_updated,
+            "ai_orchestrator_triggered": ai_orchestrator_triggered
         }
+        
+        if ai_orchestrator_triggered:
+            result["message"] = f"Удалено {total_results} AI результатов, сброшено {posts_updated} статусов постов. AI Orchestrator запущен автоматически."
+        elif posts_updated > 0:
+            result["message"] = f"Удалено {total_results} AI результатов, сброшено {posts_updated} статусов постов. Ошибка автозапуска AI Orchestrator: {trigger_error or 'Неизвестная ошибка'}"
+            result["trigger_error"] = trigger_error
+        else:
+            result["message"] = f"Удалено {total_results} AI результатов, статусы постов не изменились"
+        
+        return result
+        
     except Exception as e:
         db.rollback()
         return {

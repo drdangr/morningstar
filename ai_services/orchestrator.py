@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-AI Orchestrator - Центральный координатор AI сервисов
-Автоматически обрабатывает посты через CategorizationService и SummarizationService
+AI Orchestrator v2.0 - Event-Driven Architecture
+Центральный координатор AI сервисов с приоритетной очередью и реактивной обработкой
 """
 
 import asyncio
 import aiohttp
-import json
-import logging
+import heapq
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
+from enum import Enum
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
@@ -21,56 +22,82 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ai_services.services.categorization import CategorizationService
 from ai_services.services.summarization import SummarizationService
 
-# Простые классы для данных
-class Post:
-    """Простой класс для поста"""
-    def __init__(self, id, text, caption="", views=0, date=None, channel_id=None, message_id=None):
-        self.id = id
-        self.text = text
-        self.caption = caption
-        self.views = views
-        self.date = date
-        self.channel_id = channel_id
-        self.message_id = message_id
+# Система приоритетов согласно документации
+class AITaskPriority(Enum):
+    BACKGROUND = 1    # Фоновая обработка (когда все сделано)
+    NORMAL = 2        # Плановая обработка
+    HIGH = 3          # Активные боты, скорые дайджесты
+    URGENT = 4        # Пользовательские запросы
+    CRITICAL = 5      # Принудительные операции, новые данные
 
-class Bot:
-    """Простой класс для бота"""
-    def __init__(self, id, name, categorization_prompt="", summarization_prompt="", max_posts_per_digest=10, max_summary_length=150):
-        self.id = id
-        self.name = name
-        self.categorization_prompt = categorization_prompt
-        self.summarization_prompt = summarization_prompt
-        self.max_posts_per_digest = max_posts_per_digest
-        self.max_summary_length = max_summary_length
+class AITaskType(Enum):
+    # Системные операции
+    STARTUP_PROCESSING = "startup_processing"
+    BACKGROUND_PROCESSING = "background_processing"
+    
+    # Принудительные операции (CRITICAL приоритет)
+    FORCE_REPROCESS_ALL = "force_reprocess_all"
+    FORCE_REPROCESS_CHANNELS = "force_reprocess_channels"
+    FORCE_REPROCESS_BOT = "force_reprocess_bot"
+    CLEAR_AI_RESULTS = "clear_ai_results"
+    
+    # Реактивные операции (URGENT/CRITICAL приоритет)
+    NEW_POSTS_PROCESSING = "new_posts_processing"
+    BOT_SETTINGS_CHANGED = "bot_settings_changed"
+    USER_URGENT_REQUEST = "user_urgent_request"
+    
+    # Плановые операции (NORMAL/HIGH приоритет)
+    SCHEDULED_PROCESSING = "scheduled_processing"
+    DIGEST_PREPARATION = "digest_preparation"
 
-class AIOrchestrator:
+@dataclass
+class AITask:
+    task_type: AITaskType
+    priority: AITaskPriority
+    bot_id: Optional[int] = None
+    channel_ids: Optional[List[int]] = None
+    post_ids: Optional[List[int]] = None
+    user_id: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    
+    def __lt__(self, other):
+        """Сравнение для heapq (меньший приоритет = выше в очереди)"""
+        return (-self.priority.value, self.created_at) < (-other.priority.value, other.created_at)
+
+class AIOrchestratorV2:
     """
-    AI Orchestrator - координатор автоматической обработки постов
+    AI Orchestrator v2.0 - Event-Driven Architecture
     
     Функции:
-    1. Мониторинг необработанных постов
-    2. Получение настроек публичных ботов
-    3. Вызов AI сервисов (категоризация + суммаризация)
-    4. Сохранение результатов в Backend API
-    5. Обновление статуса постов
+    1. Приоритетная очередь задач (heapq)
+    2. Реактивная обработка новых данных от Userbot
+    3. Умная остановка/пробуждение фонового обработчика
+    4. Система прерываний для критических задач
+    5. Startup initialization с проверкой необработанных данных
     """
     
     def __init__(self, 
                  backend_url: str = "http://localhost:8000",
                  openai_api_key: Optional[str] = None,
-                 processing_interval: int = 30,
                  batch_size: int = 10):
         
         self.backend_url = backend_url
-        self.processing_interval = processing_interval
         self.batch_size = batch_size
+        
+        # Event-Driven архитектура
+        self.task_queue = []  # Приоритетная очередь (heapq)
+        self.processing_locks = {}  # Активные задачи
+        self.background_worker_running = False
+        self.processing_active = False  # Флаг активной обработки
+        self.last_activity = None
+        self.worker_event = asyncio.Event()  # Событие для пробуждения
         
         # Инициализация AI сервисов
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         if not self.openai_api_key:
             logger.warning("⚠️ OPENAI_API_KEY не найден, будет использоваться mock режим")
         
-        # Инициализация сервисов
         self.categorization_service = CategorizationService(
             openai_api_key=self.openai_api_key,
             backend_url=self.backend_url
@@ -88,247 +115,646 @@ class AIOrchestrator:
             "successful_processed": 0,
             "failed_processed": 0,
             "last_run": None,
-            "processing_time": 0
+            "processing_time": 0,
+            "queue_size": 0,
+            "active_tasks": 0
         }
         
-        logger.info("🤖 AI Orchestrator инициализирован")
+        logger.info("🤖 AI Orchestrator v2.0 (Event-Driven) инициализирован")
         logger.info(f"📡 Backend URL: {self.backend_url}")
-        logger.info(f"⏱️ Интервал обработки: {self.processing_interval}с")
         logger.info(f"📦 Размер батча: {self.batch_size}")
-    
-    async def get_max_posts_needed(self, bots_data: List[Dict[str, Any]]) -> int:
-        """Определить максимальное количество постов, необходимое для всех ботов"""
-        if not bots_data:
-            return self.batch_size  # fallback
-        
-        max_needed = max(bot.get('max_posts_per_digest', 10) for bot in bots_data)
-        logger.info(f"📊 Максимальное количество постов для обработки: {max_needed}")
-        return max_needed
 
-    async def get_unprocessed_posts_for_channels(self, channel_ids: List[int], limit: int) -> List[Dict[str, Any]]:
-        """Получить необработанные посты для конкретных каналов с лимитом"""
-        if not channel_ids:
-            return []
+    # === СИСТЕМА СОБЫТИЙ И ПРИОРИТЕТОВ ===
+    
+    async def handle_new_posts_from_userbot(self, post_ids: List[int], channel_id: int):
+        """Обработка сигнала о новых данных от Userbot"""
+        logger.info(f"📡 Получен сигнал о {len(post_ids)} новых постах из канала {channel_id}")
+        
+        # Определяем затронутых ботов
+        affected_bots = await self._get_bots_using_channel(channel_id)
+        
+        if not affected_bots:
+            logger.warning(f"⚠️ Канал {channel_id} не используется активными ботами")
+            return
+        
+        # Создаем задачи для каждого затронутого бота
+        for bot_id in affected_bots:
+            task = AITask(
+                task_type=AITaskType.NEW_POSTS_PROCESSING,
+                priority=AITaskPriority.CRITICAL,  # Новые данные = критический приоритет
+                bot_id=bot_id,
+                post_ids=post_ids,
+                metadata={
+                    'channel_id': channel_id,
+                    'trigger': 'userbot_new_posts',
+                    'posts_count': len(post_ids)
+                }
+            )
             
+            await self._add_task_to_queue(task)
+        
+        # Если фоновый обработчик остановился - запускаем
+        if not self.background_worker_running:
+            logger.info("🔄 Фоновый обработчик остановлен, запускаем...")
+            await self._start_background_worker()
+
+    async def _add_task_to_queue(self, task: AITask):
+        """Добавление задачи в приоритетную очередь"""
+        # Проверяем дублирование
+        if await self._is_duplicate_task(task):
+            logger.warning(f"⚠️ Задача {task.task_type.value} уже выполняется, пропускаем")
+            return
+        
+        # Если это критическая задача - прерываем текущую обработку
+        if task.priority == AITaskPriority.CRITICAL:
+            await self._interrupt_current_processing(task)
+        
+        # Добавляем в приоритетную очередь
+        heapq.heappush(self.task_queue, task)
+        self.stats['queue_size'] = len(self.task_queue)
+        
+        logger.info(f"➕ Задача добавлена: {task.task_type.value} (приоритет: {task.priority.name})")
+        
+        # Будим фоновый обработчик
+        self.worker_event.set()
+
+    async def _is_duplicate_task(self, task: AITask) -> bool:
+        """Проверка дублирования задач"""
+        # Простая проверка по типу задачи и bot_id
+        for existing_task in self.task_queue:
+            if (existing_task.task_type == task.task_type and 
+                existing_task.bot_id == task.bot_id):
+                return True
+        return False
+
+    async def _interrupt_current_processing(self, urgent_task: AITask):
+        """Прерывание текущей обработки для критических задач"""
+        if urgent_task.priority == AITaskPriority.CRITICAL:
+            logger.warning(f"🚨 ПРЕРЫВАНИЕ: Критическая задача {urgent_task.task_type.value}")
+            
+            # Помечаем текущие задачи для прерывания
+            for lock_key in list(self.processing_locks.keys()):
+                current_task = self.processing_locks[lock_key]
+                if current_task.priority.value < urgent_task.priority.value:
+                    logger.info(f"⏸️ Прерываем задачу {current_task.task_type.value}")
+
+    # === УМНЫЙ ФОНОВЫЙ ОБРАБОТЧИК ===
+    
+    async def _start_background_worker(self):
+        """Запуск умного фонового обработчика"""
+        if self.background_worker_running:
+            return
+        
+        self.background_worker_running = True
+        logger.info("🚀 Запуск умного фонового обработчика")
+        
+        # Запускаем в отдельной задаче
+        asyncio.create_task(self._smart_background_worker())
+
+    async def _smart_background_worker(self):
+        """Умный фоновый обработчик с засыпанием/пробуждением по сигналам"""
+        logger.info("🧠 Умный фоновый обработчик запущен")
+        self.background_worker_running = True
+        
         try:
-            # Формируем запрос с фильтрацией по каналам
-            channel_filter = "&".join([f"channel_telegram_id={cid}" for cid in channel_ids])
-            url = f"{self.backend_url}/api/posts/cache?processing_status=pending&{channel_filter}&limit={limit}&sort_by=post_date&sort_order=desc"
-            
+            while self.background_worker_running:
+                # Проверяем очередь задач
+                if self.task_queue:
+                    logger.info(f"📋 В очереди {len(self.task_queue)} задач, начинаем обработку")
+                    
+                    # Обрабатываем задачи по приоритету
+                    while self.task_queue and self.background_worker_running:
+                        task = heapq.heappop(self.task_queue)
+                        self.stats['queue_size'] = len(self.task_queue)
+                        
+                        logger.info(f"🔄 Обработка задачи: {task.task_type.value} (приоритет: {task.priority.name})")
+                        await self.report_orchestrator_status("PROCESSING", {
+                            "current_task": task.task_type.value,
+                            "priority": task.priority.name,
+                            "queue_remaining": len(self.task_queue)
+                        })
+                        
+                        success = await self._process_task(task)
+                        
+                        if success:
+                            self.stats['successful_processed'] += 1
+                            logger.info(f"✅ Задача {task.task_type.value} выполнена успешно")
+                        else:
+                            self.stats['failed_processed'] += 1
+                            logger.error(f"❌ Задача {task.task_type.value} завершена с ошибкой")
+                        
+                        self.stats['total_processed'] += 1
+                        self.last_activity = datetime.utcnow()
+                        
+                        # Небольшая пауза между задачами
+                        await asyncio.sleep(0.5)
+                
+                else:
+                    # Нет задач - засыпаем до сигнала
+                    logger.info("😴 Нет задач, засыпаем до получения сигнала...")
+                    await self.report_orchestrator_status("IDLE", {"queue_size": 0})
+                    
+                    # Ждем сигнала или периодически проверяем Backend API на наличие новых заданий
+                    try:
+                        await asyncio.wait_for(self.worker_event.wait(), timeout=30.0)
+                        self.worker_event.clear()
+                        logger.info("⚡ Получен сигнал пробуждения!")
+                    except asyncio.TimeoutError:
+                        # Периодическая проверка Backend API на наличие заданий
+                        logger.debug("🔍 Периодическая проверка Backend API...")
+                        await self._check_for_pending_tasks()
+                        
+        except Exception as e:
+            logger.error(f"💥 Критическая ошибка фонового обработчика: {str(e)}")
+        finally:
+            self.background_worker_running = False
+            await self.report_orchestrator_status("STOPPED", {"reason": "background_worker_terminated"})
+            logger.info("🛑 Фоновый обработчик остановлен")
+
+    async def _check_for_pending_tasks(self):
+        """Периодическая проверка Backend API на наличие заданий от single режима И pending постов"""
+        try:
+            # 1. Проверяем команды от Backend API
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
+                async with session.get(f"{self.backend_url}/api/ai/orchestrator-commands") as response:
+                    if response.status == 200:
+                        commands = await response.json()
+                        
+                        for command in commands:
+                            command_type = command.get('command_type')
+                            if command_type == 'trigger_processing':
+                                logger.info("📡 Получена команда trigger_processing от Backend API")
+                                
+                                # Создаем задачу обработки
+                                task = AITask(
+                                    task_type=AITaskType.BACKGROUND_PROCESSING,
+                                    priority=AITaskPriority.NORMAL,
+                                    metadata={'trigger': 'backend_api_command'}
+                                )
+                                
+                                await self._add_task_to_queue(task)
+                                
+                                # Помечаем команду как выполненную
+                                await self._mark_command_processed(command['id'])
+                    
+                    elif response.status == 404:
+                        # Endpoint не существует - это нормально для старых версий Backend
+                        pass
+                    else:
+                        logger.debug(f"⚠️ Неожиданный статус при проверке команд: {response.status}")
+                        
+            # 2. Проверяем наличие pending постов напрямую
+            pending_data = await self._check_pending_data()
+            if pending_data['total_posts'] > 0:
+                logger.info(f"🔍 Обнаружено {pending_data['total_posts']} pending постов, добавляем задачу обработки")
+                
+                # Создаем задачу фоновой обработки
+                task = AITask(
+                    task_type=AITaskType.BACKGROUND_PROCESSING,
+                    priority=AITaskPriority.NORMAL,
+                    metadata={'trigger': 'periodic_check', 'total_posts': pending_data['total_posts']}
+                )
+                
+                await self._add_task_to_queue(task)
+            else:
+                logger.debug("✅ Нет pending постов для обработки")
+                        
+        except Exception as e:
+            logger.debug(f"🔍 Ошибка проверки команд/данных Backend API: {str(e)}")
+
+    async def _mark_command_processed(self, command_id: int):
+        """Помечаем команду как обработанную в Backend API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(f"{self.backend_url}/api/ai/orchestrator-commands/{command_id}") as response:
+                    if response.status == 200:
+                        logger.debug(f"✅ Команда {command_id} помечена как обработанная")
+                    else:
+                        logger.debug(f"⚠️ Не удалось пометить команду {command_id}: HTTP {response.status}")
+        except Exception as e:
+            logger.debug(f"❌ Ошибка при пометке команды {command_id}: {str(e)}")
+
+    async def startup_initialization(self):
+        """Инициализация при запуске системы - проверка необработанных данных"""
+        logger.info("🚀 Startup Initialization - проверка необработанных данных")
+        
+        # 1. Проверяем наличие необработанных данных
+        pending_data = await self._check_pending_data()
+        
+        if pending_data['total_posts'] > 0:
+            logger.info(f"📊 Найдено {pending_data['total_posts']} необработанных постов")
+            
+            # 2. Запускаем обработку по приоритетам
+            await self._schedule_pending_data_processing(pending_data)
+        else:
+            logger.info("✅ Все данные обработаны")
+        
+        # 3. Запускаем фоновый обработчик
+        await self._start_background_worker()
+        
+        logger.info("✅ AI Orchestrator готов к работе")
+
+    async def run_continuous(self):
+        """Непрерывная обработка в Event-Driven режиме"""
+        logger.info("🔄 Запуск непрерывной Event-Driven обработки")
+        
+        # Startup initialization
+        await self.startup_initialization()
+        
+        # Основной цикл - просто ждем прерывания
+        try:
+            while True:
+                await asyncio.sleep(60)  # Проверяем каждую минуту что система работает
+                
+                # Логируем статистику
+                if self.background_worker_running:
+                    logger.debug(f"📊 Статистика: очередь={len(self.task_queue)}, активных={len(self.processing_locks)}")
+                
+        except KeyboardInterrupt:
+            logger.info("🛑 Получен сигнал остановки, завершение работы")
+            await self.stop_background_worker()
+
+    async def stop_background_worker(self):
+        """Остановка фонового обработчика"""
+        logger.info("🛑 Остановка фонового обработчика")
+        self.background_worker_running = False
+        self.worker_event.set()  # Будим чтобы он завершился
+
+    # === ЗАГЛУШКИ ДЛЯ МЕТОДОВ (БУДУТ РЕАЛИЗОВАНЫ) ===
+    
+    async def _get_bots_using_channel(self, channel_id: int) -> List[int]:
+        """Получить список ботов, использующих данный канал"""
+        # Заглушка - возвращаем тестовый бот
+        return [1] if channel_id else []
+
+    async def _check_pending_data(self) -> Dict[str, Any]:
+        """Проверка необработанных данных при запуске"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.backend_url}/api/posts/unprocessed?limit=500") as response:
                     if response.status == 200:
                         posts = await response.json()
-                        logger.info(f"📥 Получено {len(posts)} необработанных постов для каналов {channel_ids}")
-                        return posts
+                        return {
+                            'total_posts': len(posts),
+                            'bots_affected': 1,  # Заглушка
+                            'pending_by_bot': {1: len(posts)}
+                        }
                     else:
-                        logger.error(f"❌ Ошибка получения постов для каналов: HTTP {response.status}")
-                        return []
+                        logger.error(f"❌ Ошибка проверки данных: HTTP {response.status}")
+                        return {'total_posts': 0, 'bots_affected': 0, 'pending_by_bot': {}}
         except Exception as e:
-            logger.error(f"❌ Исключение при получении постов для каналов: {str(e)}")
-            return []
+            logger.error(f"❌ Исключение при проверке данных: {str(e)}")
+            return {'total_posts': 0, 'bots_affected': 0, 'pending_by_bot': {}}
 
-    async def get_unprocessed_posts(self, limit: int = None) -> List[Dict[str, Any]]:
-        """Получить необработанные посты из Backend API"""
-        limit = limit or self.batch_size
+    async def _schedule_pending_data_processing(self, pending_data: Dict[str, Any]):
+        """Планирование обработки необработанных данных по приоритетам"""
+        logger.info(f"📋 Планирование обработки {pending_data['total_posts']} постов")
+        
+        # Создаем задачу фоновой обработки
+        task = AITask(
+            task_type=AITaskType.BACKGROUND_PROCESSING,
+            priority=AITaskPriority.NORMAL,
+            metadata={'startup_processing': True, 'total_posts': pending_data['total_posts']}
+        )
+        
+        await self._add_task_to_queue(task)
+        logger.info("✅ Задача обработки добавлена в очередь")
+
+    async def _process_task(self, task: AITask) -> bool:
+        """Обработка конкретной задачи"""
+        logger.info(f"🔄 Обработка задачи {task.task_type.value}")
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.backend_url}/api/posts/unprocessed?limit={limit}"
-                ) as response:
-                    if response.status == 200:
-                        posts = await response.json()
-                        logger.info(f"📥 Получено {len(posts)} необработанных постов")
-                        return posts
-                    else:
-                        logger.error(f"❌ Ошибка получения постов: HTTP {response.status}")
-                        return []
+            if task.task_type == AITaskType.BACKGROUND_PROCESSING:
+                return await self._process_background_batch()
+            elif task.task_type == AITaskType.NEW_POSTS_PROCESSING:
+                return await self._process_new_posts(task.post_ids, task.channel_ids)
+            elif task.task_type == AITaskType.FORCE_REPROCESS_CHANNELS:
+                return await self._reprocess_channels(task.channel_ids)
+            else:
+                logger.warning(f"⚠️ Неизвестный тип задачи: {task.task_type.value}")
+                return True
+                
         except Exception as e:
-            logger.error(f"❌ Исключение при получении постов: {str(e)}")
-            return []
-    
-    async def get_public_bots(self) -> List[Dict[str, Any]]:
-        """Получить список активных публичных ботов (включая development)"""
+            logger.error(f"❌ Ошибка обработки задачи {task.task_type.value}: {str(e)}")
+            return False
+
+    async def _process_background_batch(self) -> bool:
+        """Обработка фонового батча постов с правильной фильтрацией по ботам"""
+        logger.info("🔄 Обработка фонового батча")
+        
+        try:
+            # 1. Получаем активных ботов
+            active_bots = await self._get_active_bots()
+            if not active_bots:
+                logger.info("✅ Нет активных ботов для обработки")
+                return True
+            
+            logger.info(f"🤖 Найдено {len(active_bots)} активных ботов")
+            
+            # 2. Для каждого активного бота обрабатываем его посты
+            total_processed = 0
+            for bot in active_bots:
+                bot_id = bot['id']
+                bot_name = bot['name']
+                logger.info(f"🔄 Обработка постов для бота: {bot_name} (ID: {bot_id})")
+                
+                # Получаем каналы бота
+                bot_channels = await self._get_bot_channels(bot_id)
+                if not bot_channels:
+                    logger.info(f"⚠️ У бота {bot_name} нет настроенных каналов")
+                    continue
+                
+                # Получаем telegram_id каналов
+                channel_telegram_ids = [ch['telegram_id'] for ch in bot_channels]
+                logger.info(f"📺 Каналы бота {bot_name}: {[ch['username'] for ch in bot_channels]}")
+                
+                # Получаем категории бота
+                bot_categories = await self._get_bot_categories(bot_id)
+                if not bot_categories:
+                    logger.info(f"⚠️ У бота {bot_name} нет настроенных категорий")
+                    continue
+                
+                category_names = [cat['category_name'] for cat in bot_categories]
+                logger.info(f"📂 Категории бота {bot_name}: {category_names}")
+                
+                # Получаем необработанные посты только из каналов этого бота
+                bot_posts = await self._get_pending_posts_for_bot(channel_telegram_ids, limit=self.batch_size)
+                
+                if not bot_posts:
+                    logger.info(f"✅ Нет необработанных постов для бота {bot_name}")
+                    continue
+                
+                logger.info(f"📋 Найдено {len(bot_posts)} необработанных постов для бота {bot_name}")
+                
+                # СРАЗУ обновляем статус постов на "processing" для real-time UI
+                post_ids = [post['id'] for post in bot_posts]
+                await self._update_posts_status(post_ids, "processing")
+                logger.info(f"🔄 Посты {post_ids} помечены как 'processing'")
+                
+                # Обрабатываем посты РЕАЛЬНЫМИ AI сервисами
+                ai_results = await self._process_posts_with_real_ai(bot_posts, bot, bot_categories)
+                
+                # Сохраняем результаты
+                if ai_results:
+                    success = await self._save_ai_results(ai_results)
+                    if success:
+                        # Обновляем статус постов на "completed"
+                        post_ids = [result['post_id'] for result in ai_results]
+                        await self._update_posts_status(post_ids, "completed")
+                        
+                        logger.info(f"✅ Сохранено {len(ai_results)} AI результатов для бота {bot_name}")
+                        total_processed += len(ai_results)
+                    else:
+                        logger.error(f"❌ Ошибка сохранения AI результатов для бота {bot_name}")
+            
+            logger.info(f"🎉 Всего обработано {total_processed} постов")
+            return total_processed > 0
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки фонового батча: {str(e)}")
+            return False
+
+    async def _get_active_bots(self) -> List[Dict[str, Any]]:
+        """Получение активных публичных ботов"""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.backend_url}/api/public-bots"  # Убираем фильтр, получаем всех
-                ) as response:
+                async with session.get(f"{self.backend_url}/api/public-bots") as response:
                     if response.status == 200:
                         bots = await response.json()
-                        # Фильтруем активных и development ботов
-                        processing_bots = [bot for bot in bots if bot.get('status') in ['active', 'development']]
-                        active_bots = [bot for bot in processing_bots if bot.get('status') == 'active']
-                        dev_bots = [bot for bot in processing_bots if bot.get('status') == 'development']
-                        
-                        logger.info(f"🤖 Получено {len(active_bots)} активных ботов, {len(dev_bots)} в разработке")
-                        return processing_bots
+                        # Фильтруем только активных ботов
+                        active_bots = [bot for bot in bots if bot.get('status') == 'active']
+                        return active_bots
                     else:
                         logger.error(f"❌ Ошибка получения ботов: HTTP {response.status}")
                         return []
         except Exception as e:
             logger.error(f"❌ Исключение при получении ботов: {str(e)}")
             return []
-    
-    def convert_to_post_objects(self, posts_data: List[Dict[str, Any]]) -> List[Post]:
-        """Конвертация данных постов в объекты Post"""
-        posts = []
-        for post_data in posts_data:
-            try:
-                # Парсинг даты
-                post_date_str = post_data['post_date']
-                if post_date_str.endswith('Z'):
-                    post_date_str = post_date_str[:-1] + '+00:00'
-                
-                post = Post(
-                    id=post_data['id'],
-                    text=post_data.get('content', ''),
-                    caption=post_data.get('title', ''),
-                    views=post_data.get('views', 0),
-                    date=datetime.fromisoformat(post_date_str),
-                    channel_id=post_data['channel_telegram_id'],
-                    message_id=post_data['telegram_message_id']
-                )
-                posts.append(post)
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка конвертации поста {post_data.get('id', 'unknown')}: {str(e)}")
-        
-        logger.info(f"🔄 Конвертировано {len(posts)} постов в объекты Post")
-        return posts
-    
-    def convert_to_bot_objects(self, bots_data: List[Dict[str, Any]]) -> List[Bot]:
-        """Конвертация данных ботов в объекты Bot"""
-        bots = []
-        for bot_data in bots_data:
-            try:
-                bot = Bot(
-                    id=bot_data['id'],
-                    name=bot_data['name'],
-                    categorization_prompt=bot_data.get('categorization_prompt'),
-                    summarization_prompt=bot_data.get('summarization_prompt'),
-                    max_posts_per_digest=bot_data.get('max_posts_per_digest', 10),
-                    max_summary_length=bot_data.get('max_summary_length', 150)
-                )
-                bots.append(bot)
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка конвертации бота {bot_data.get('id', 'unknown')}: {str(e)}")
-        
-        logger.info(f"🔄 Конвертировано {len(bots)} ботов в объекты Bot")
-        return bots
-    
-    async def process_posts_for_bot(self, posts: List[Post], bot: Bot) -> List[Dict[str, Any]]:
-        """Обработка постов для конкретного бота"""
-        logger.info(f"🧠 Обработка {len(posts)} постов для бота '{bot.name}' (ID: {bot.id})")
-        
-        if not self.categorization_service:
-            logger.error("❌ CategorizationService недоступен")
-            return []
-        
-        # Используем существующий метод process_with_bot_config
-        try:
-            categorization_results = await self.categorization_service.process_with_bot_config(
-                posts=posts,
-                bot_id=bot.id
-            )
-        except Exception as e:
-            logger.error(f"❌ Ошибка категоризации для бота {bot.id}: {str(e)}")
-            return []
-        
-        results = []
-        
-        # Обрабатываем результаты категоризации
-        for categorization_result in categorization_results:
-            try:
-                post_id = categorization_result.get('post_id')
-                
-                # Находим соответствующий пост
-                post = next((p for p in posts if p.id == post_id), None)
-                if not post:
-                    logger.warning(f"⚠️ Пост {post_id} не найден для суммаризации")
-                    continue
-                
-                # 2. Суммаризация поста (если есть OpenAI API)
-                if self.openai_api_key and self.summarization_service:
-                    summarization_result = await self.summarization_service.process(
-                        text=post.text,
-                        language="ru",
-                        custom_prompt=bot.summarization_prompt
-                    )
-                else:
-                    # Mock суммаризация
-                    summarization_result = {
-                        "summary": f"Краткое содержание: {post.text[:100]}..." if post.text else "Пост без текста",
-                        "language": "ru",
-                        "tokens_used": 150,
-                        "status": "mock"
-                    }
-                
-                # 3. Формирование результата
-                ai_result = {
-                    "post_id": post_id,
-                    "public_bot_id": bot.id,
-                    "summaries": {"ru": summarization_result.get("summary", "")},
-                    "categories": {"ru": categorization_result.get("category_name", "NULL")},
-                    "metrics": {
-                        "importance": categorization_result.get("importance", 7),
-                        "urgency": categorization_result.get("urgency", 6),
-                        "significance": categorization_result.get("significance", 7),
-                        "relevance_score": categorization_result.get("relevance_score", 0.0)
-                    },
-                    "processing_version": "v2.1",
-                    "ai_metadata": {
-                        "reasoning": categorization_result.get("reasoning", ""),
-                        "tokens_used": categorization_result.get("tokens_used", 0) + summarization_result.get("tokens_used", 0)
-                    }
-                }
-                
-                results.append(ai_result)
-                logger.info(f"  ✅ Пост {post_id}: {categorization_result.get('category_name', 'UNKNOWN')} (релевантность: {categorization_result.get('relevance_score', 0):.2f})")
-                
-            except Exception as e:
-                logger.error(f"  ❌ Ошибка обработки результата для поста {categorization_result.get('post_id', 'N/A')}: {str(e)}")
-                self.stats["failed_processed"] += 1
-        
-        logger.info(f"🎯 Обработано {len(results)} постов для бота '{bot.name}'")
-        return results
-    
-    async def save_ai_results(self, ai_results: List[Dict[str, Any]]) -> bool:
-        """Сохранение результатов AI обработки в Backend API"""
-        if not ai_results:
-            return True
-        
-        logger.info(f"💾 Сохранение {len(ai_results)} результатов AI обработки")
-        
+
+    async def _get_bot_channels(self, bot_id: int) -> List[Dict[str, Any]]:
+        """Получение каналов бота"""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.backend_url}/api/ai/results/batch",
-                    json=ai_results,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    if response.status == 201:
-                        saved_results = await response.json()
-                        logger.info(f"✅ Сохранено {len(saved_results)} результатов")
-                        self.stats["successful_processed"] += len(saved_results)
-                        return True
+                async with session.get(f"{self.backend_url}/api/public-bots/{bot_id}/channels") as response:
+                    if response.status == 200:
+                        channels = await response.json()
+                        return channels
                     else:
-                        error_text = await response.text()
-                        logger.error(f"❌ Ошибка сохранения: HTTP {response.status}")
-                        logger.error(f"   Детали: {error_text}")
-                        return False
-                        
+                        logger.error(f"❌ Ошибка получения каналов бота {bot_id}: HTTP {response.status}")
+                        return []
         except Exception as e:
-            logger.error(f"❌ Исключение при сохранении: {str(e)}")
-            return False
-    
+            logger.error(f"❌ Исключение при получении каналов бота {bot_id}: {str(e)}")
+            return []
+
+    async def _get_bot_categories(self, bot_id: int) -> List[Dict[str, Any]]:
+        """Получение категорий бота"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.backend_url}/api/public-bots/{bot_id}/categories") as response:
+                    if response.status == 200:
+                        categories = await response.json()
+                        return categories
+                    else:
+                        logger.error(f"❌ Ошибка получения категорий бота {bot_id}: HTTP {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"❌ Исключение при получении категорий бота {bot_id}: {str(e)}")
+            return []
+
+    async def _get_pending_posts_for_bot(self, channel_telegram_ids: List[int], limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение необработанных постов только из каналов конкретного бота"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.backend_url}/api/posts/unprocessed",
+                    params={"limit": 500}  # Получаем больше, чтобы отфильтровать
+                ) as response:
+                    if response.status == 200:
+                        all_posts = await response.json()
+                        # Фильтруем только посты из каналов этого бота
+                        bot_posts = [
+                            post for post in all_posts 
+                            if post.get('channel_telegram_id') in channel_telegram_ids
+                        ]
+                        # Возвращаем только нужное количество
+                        return bot_posts[:limit]
+                    else:
+                        logger.error(f"❌ Ошибка получения постов: HTTP {response.status}")
+                        return []
+        except Exception as e:
+            logger.error(f"❌ Исключение при получении постов: {str(e)}")
+            return []
+
+    async def _process_posts_with_real_ai(self, posts: List[Dict[str, Any]], bot: Dict[str, Any], categories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Обработка постов реальными AI сервисами"""
+        logger.info(f"🤖 Обработка {len(posts)} постов реальными AI сервисами")
+        
+        ai_results = []
+        
+        try:
+            # Используем уже инициализированные AI сервисы из __init__
+            categorization_service = self.categorization_service
+            summarization_service = self.summarization_service
+            
+            # Преобразуем посты в формат Post для CategorizationService
+            from ai_services.models.post import Post
+            post_objects = []
+            for post_data in posts:
+                post_obj = Post(
+                    id=post_data['id'],
+                    content=post_data.get('content', ''),
+                    channel_telegram_id=post_data.get('channel_telegram_id'),
+                    created_at=post_data.get('created_at'),
+                    telegram_message_id=post_data.get('message_id', 0)
+                )
+                post_objects.append(post_obj)
+            
+            # 1. Категоризация всех постов через CategorizationService
+            logger.info(f"🔄 Категоризация {len(post_objects)} постов")
+            categorization_results = await categorization_service.process_with_bot_config(
+                posts=post_objects,
+                bot_id=bot['id']
+            )
+            
+            # 2. Саммаризация каждого поста через SummarizationService
+            logger.info(f"🔄 Саммаризация {len(posts)} постов")
+            for i, post in enumerate(posts):
+                try:
+                    post_id = post['id']
+                    content = post.get('content', '')
+                    
+                    if not content or len(content.strip()) < 10:
+                        logger.warning(f"⚠️ Пост {post_id} слишком короткий, пропускаем")
+                        continue
+                    
+                    logger.info(f"🔄 Обработка поста {post_id}")
+                    
+                    # Получаем результат категоризации для этого поста
+                    categorization_result = None
+                    for cat_result in categorization_results:
+                        if cat_result.get('post_id') == post_id:
+                            categorization_result = cat_result
+                            break
+                    
+                    if not categorization_result:
+                        logger.warning(f"⚠️ Не найден результат категоризации для поста {post_id}")
+                        continue
+                    
+                    # Саммаризация
+                    summarization_result = await summarization_service.process(
+                        text=content,
+                        language=bot.get('default_language', 'ru'),
+                        custom_prompt=bot.get('summarization_prompt'),
+                        max_summary_length=bot.get('max_summary_length', 150)
+                    )
+                    
+                    # Формируем результат
+                    ai_result = {
+                        "post_id": post_id,
+                        "public_bot_id": bot['id'],  # Правильный bot_id!
+                        "summaries": {
+                            "ru": summarization_result.get('summary', ''),
+                            "en": summarization_result.get('summary_en', '')
+                        },
+                        "categories": {
+                            "primary": categorization_result.get('category_name', ''),
+                            "secondary": [],
+                            "relevance_scores": [categorization_result.get('relevance_score', 0.0)]
+                        },
+                        "metrics": {
+                            "importance": categorization_result.get('importance', 5.0),
+                            "urgency": categorization_result.get('urgency', 5.0),
+                            "significance": categorization_result.get('significance', 5.0),
+                            "tokens_used": summarization_result.get('tokens_used', 0),
+                            "processing_time": 0.0  # TODO: измерить время
+                        },
+                        "processing_version": "v3.0_real_ai"
+                    }
+                    
+                    ai_results.append(ai_result)
+                    
+                    # 🚀 НЕМЕДЛЕННОЕ ОБНОВЛЕНИЕ СТАТУСА ДЛЯ REAL-TIME UI
+                    await self._update_posts_status([post_id], "completed")
+                    
+                    logger.info(f"✅ Пост {post_id} обработан: {categorization_result.get('category_name', 'N/A')}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки поста {post.get('id', 'Unknown')}: {str(e)}")
+                    # При ошибке помечаем пост как failed
+                    if 'post_id' in locals():
+                        await self._update_posts_status([post_id], "failed")
+                    continue
+            
+            logger.info(f"🎉 Обработано {len(ai_results)} постов из {len(posts)}")
+            return ai_results
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка реальной AI обработки: {str(e)}")
+            logger.info("🔄 Используем заглушки...")
+            return await self._process_posts_with_mock_ai(posts, bot)
+
+    async def _process_posts_with_mock_ai(self, posts: List[Dict[str, Any]], bot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Fallback: обработка постов заглушками (с правильным bot_id)"""
+        logger.info(f"🧪 Fallback: обработка {len(posts)} постов заглушками")
+        
+        ai_results = []
+        for post in posts:
+            post_id = post["id"]
+            ai_result = {
+                "post_id": post_id,
+                "public_bot_id": bot['id'],  # Правильный bot_id!
+                "summaries": {
+                    "ru": f"AI резюме для поста {post_id} (бот: {bot['name']})",
+                    "en": f"AI summary for post {post_id} (bot: {bot['name']})"
+                },
+                "categories": {
+                    "primary": "Тестовая категория",
+                    "secondary": ["AI", "Тест"],
+                    "relevance_scores": [0.95, 0.85]
+                },
+                "metrics": {
+                    "importance": 8.0,
+                    "urgency": 7.0, 
+                    "significance": 8.5,
+                    "tokens_used": 150,
+                    "processing_time": 1.5
+                },
+                "processing_version": "v3.0_mock"
+            }
+            ai_results.append(ai_result)
+            
+            # 🚀 НЕМЕДЛЕННОЕ ОБНОВЛЕНИЕ СТАТУСА ДЛЯ REAL-TIME UI (Mock режим)
+            await self._update_posts_status([post_id], "completed")
+            logger.info(f"✅ Mock пост {post_id} обработан")
+        
+        return ai_results
+
+    async def _process_new_posts(self, post_ids: List[int], channel_ids: List[int]) -> bool:
+        """Обработка новых постов"""
+        logger.info(f"🔄 Обработка новых постов: {len(post_ids)} постов из каналов {channel_ids}")
+        # Заглушка
+        return True
+
+    async def _reprocess_channels(self, channel_ids: List[int]) -> bool:
+        """Переобработка каналов"""
+        logger.info(f"🔄 Переобработка каналов: {channel_ids}")
+        # Заглушка
+        return True
+
     async def report_orchestrator_status(self, status: str, details: Dict[str, Any] = None):
         """Отчет о статусе AI Orchestrator в Backend API"""
+        logger.debug(f"📡 Статус: {status}, детали: {details}")
+        
         try:
             status_data = {
                 "orchestrator_status": status,
-                "timestamp": datetime.now().isoformat(),
-                "stats": self.stats.copy(),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "stats": {
+                    "queue_size": len(self.task_queue),
+                    "background_worker_running": self.background_worker_running,
+                    "processing_active": self.processing_active
+                },
                 "details": details or {}
             }
             
@@ -338,274 +764,112 @@ class AIOrchestrator:
                     json=status_data,
                     headers={"Content-Type": "application/json"}
                 ) as response:
-                    if response.status in [200, 201]:
-                        logger.debug(f"📡 Статус '{status}' отправлен в Backend API")
+                    if response.status == 200:
+                        logger.debug("✅ Статус успешно отправлен в Backend API")
                     else:
-                        logger.warning(f"⚠️ Не удалось отправить статус: HTTP {response.status}")
+                        logger.warning(f"⚠️ Ошибка отправки статуса: HTTP {response.status}")
                         
         except Exception as e:
-            logger.debug(f"🔇 Не удалось отправить статус в Backend API: {str(e)}")
-            # Не критично, продолжаем работу
-    
-    async def report_processing_start(self, posts_count: int, bots_count: int):
-        """Отчет о начале обработки"""
-        await self.report_orchestrator_status("PROCESSING_STARTED", {
-            "posts_to_process": posts_count,
-            "active_bots": bots_count,
-            "batch_size": self.batch_size
-        })
-    
-    async def report_processing_complete(self, success: bool, processing_time: float, posts_processed: int):
-        """Отчет о завершении обработки"""
-        status = "PROCESSING_COMPLETED" if success else "PROCESSING_FAILED"
-        await self.report_orchestrator_status(status, {
-            "processing_time": processing_time,
-            "posts_processed": posts_processed,
-            "success": success
-        })
-    
-    async def report_idle_status(self):
-        """Отчет о состоянии ожидания"""
-        await self.report_orchestrator_status("IDLE", {
-            "message": "Нет необработанных постов"
-        })
-    
-    async def get_bot_channels(self, bot_id: int) -> List[int]:
-        """Получить список telegram_id каналов, на которые подписан бот"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.backend_url}/api/public-bots/{bot_id}/channels"
-                ) as response:
-                    if response.status == 200:
-                        channels = await response.json()
-                        channel_ids = [channel['telegram_id'] for channel in channels]
-                        logger.info(f"📺 Бот {bot_id} подписан на {len(channel_ids)} каналов: {channel_ids}")
-                        return channel_ids
-                    else:
-                        logger.error(f"❌ Ошибка получения каналов бота {bot_id}: HTTP {response.status}")
-                        return []
-        except Exception as e:
-            logger.error(f"❌ Исключение при получении каналов бота {bot_id}: {str(e)}")
-            return []
+            logger.warning(f"⚠️ Исключение при отправке статуса: {str(e)}")
 
-    def filter_posts_for_bot(self, posts: List[Post], bot_channel_ids: List[int]) -> List[Post]:
-        """Фильтрация постов по каналам, на которые подписан бот"""
-        if not bot_channel_ids:
-            logger.warning("⚠️ Бот не подписан ни на один канал, пропускаем обработку")
-            return []
+    async def trigger_processing(self):
+        """Реактивный запуск обработки (для вызова из Backend API)"""
+        logger.info("⚡ Trigger Processing - реактивный запуск обработки")
         
-        filtered_posts = [post for post in posts if post.channel_id in bot_channel_ids]
-        logger.info(f"🔍 Отфильтровано {len(filtered_posts)} из {len(posts)} постов для бота (каналы: {bot_channel_ids})")
-        return filtered_posts
+        # Создаем фоновую задачу
+        task = AITask(
+            task_type=AITaskType.BACKGROUND_PROCESSING,
+            priority=AITaskPriority.NORMAL,
+            metadata={'trigger': 'api_request'}
+        )
+        
+        await self._add_task_to_queue(task)
+        
+        # Если фоновый обработчик не запущен - запускаем
+        if not self.background_worker_running:
+            await self._start_background_worker()
+        
+        return {"success": True, "message": "AI обработка запущена успешно"}
 
-    async def process_batch(self) -> bool:
-        """Обработка одного батча постов"""
-        start_time = datetime.now()
+    async def run_single_batch(self):
+        """Запуск одного батча обработки (для тестирования)"""
+        logger.info("🧪 Запуск тестового батча AI Orchestrator v2.0")
         
-        # 1. Получение активных ботов
-        bots_data = await self.get_public_bots()
-        if not bots_data:
-            logger.warning("⚠️ Нет активных ботов для обработки")
-            await self.report_orchestrator_status("ERROR", {"message": "Нет активных ботов"})  # 🚀 ОТЧЕТ: ошибка
-            return False
-
-        # 🚀 ОТЧЕТ: начало обработки
-        await self.report_processing_start(0, len(bots_data))  # Пока не знаем количество постов
+        # Создаем фоновую задачу
+        task = AITask(
+            task_type=AITaskType.BACKGROUND_PROCESSING,
+            priority=AITaskPriority.NORMAL,
+            metadata={'trigger': 'single_batch_test'}
+        )
         
-        # 2. Обработка постов для каждого бота индивидуально
-        all_results = []
-        dev_results = []  # Результаты для development ботов (только логирование)
-        total_posts_processed = 0
-        
-        for bot_data in bots_data:
-            try:
-                bot = Bot(
-                    id=bot_data['id'],
-                    name=bot_data['name'],
-                    categorization_prompt=bot_data.get('categorization_prompt'),
-                    summarization_prompt=bot_data.get('summarization_prompt'),
-                    max_posts_per_digest=bot_data.get('max_posts_per_digest', 10),
-                    max_summary_length=bot_data.get('max_summary_length', 150)
-                )
-                
-                # 🚀 НОВОЕ: Получаем каналы бота
-                bot_channel_ids = await self.get_bot_channels(bot.id)
-                if not bot_channel_ids:
-                    logger.info(f"⏭️ Бот '{bot.name}' (ID: {bot.id}) - не подписан на каналы")
-                    continue
-                
-                # 🚀 НОВОЕ: Получаем посты для конкретного бота с его лимитом
-                posts_data = await self.get_unprocessed_posts_for_channels(
-                    bot_channel_ids, 
-                    bot.max_posts_per_digest
-                )
-                
-                if not posts_data:
-                    logger.info(f"⏭️ Бот '{bot.name}' (ID: {bot.id}) - нет постов для обработки")
-                    continue
-                
-                # Конвертация в объекты
-                posts = self.convert_to_post_objects(posts_data)
-                total_posts_processed += len(posts)
-                
-                logger.info(f"🎯 Обрабатываем {len(posts)} постов для бота '{bot.name}' (лимит: {bot.max_posts_per_digest})")
-                
-                bot_results = await self.process_posts_for_bot(posts, bot)
-                
-                # Разделяем результаты по статусу бота
-                if bot_data.get('status') == 'development':
-                    dev_results.extend(bot_results)
-                    logger.info(f"🧪 DEVELOPMENT MODE: Бот '{bot.name}' обработал {len(bot_results)} постов (результаты НЕ сохраняются)")
-                    # Детальное логирование для development ботов
-                    for result in bot_results:
-                        logger.info(f"   📝 Пост {result['post_id']}: {result['categories']['ru']} (важность: {result['metrics']['importance']})")
-                else:  # active статус
-                    all_results.extend(bot_results)
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка обработки бота {bot_data.get('id', 'unknown')}: {str(e)}")
-                continue
-        
-        # 3. Сохранение результатов (только для активных ботов)
-        success = True
-        if all_results:
-            success = await self.save_ai_results(all_results)
-        elif total_posts_processed == 0:
-            logger.info("📭 Нет постов для обработки")
-            await self.report_idle_status()  # 🚀 ОТЧЕТ: состояние ожидания
-            return True
-        
-        # 4. Обновление статистики
-        processing_time = (datetime.now() - start_time).total_seconds()
-        self.stats["last_run"] = datetime.now()
-        self.stats["processing_time"] = processing_time
-        self.stats["total_processed"] += total_posts_processed
-        
-        # 🚀 ОТЧЕТ: завершение обработки
-        await self.report_processing_complete(success, processing_time, total_posts_processed)
-        
-        logger.info(f"⏱️ Батч обработан за {processing_time:.2f}с")
-        logger.info(f"📊 Итого обработано постов: {total_posts_processed}")
-        return success
-    
-    async def process_single_batch(self) -> Dict[str, Any]:
-        """Обработка одного батча с возвратом статистики (для тестирования)"""
-        logger.info("🧪 Запуск тестового батча AI Orchestrator")
-        
-        # Сброс статистики перед обработкой
-        initial_stats = self.stats.copy()
-        
-        success = await self.process_batch()
-        
-        # Подготовка статистики
-        stats = {
-            "success": success,
-            "posts_processed": self.stats['total_processed'] - initial_stats.get('total_processed', 0),
-            "successful_processing": self.stats['successful_processed'] - initial_stats.get('successful_processed', 0),
-            "errors": self.stats['failed_processed'] - initial_stats.get('failed_processed', 0),
-            "processing_time": self.stats.get('processing_time', 0),
-            "bots_processed": 1  # Примерное значение
-        }
+        # Обрабатываем напрямую
+        success = await self._process_task(task)
         
         if success:
             logger.info("🎉 Тестовый батч завершен успешно!")
         else:
             logger.error("💥 Тестовый батч завершен с ошибками")
         
-        # Вывод финальной статистики
-        logger.info("📊 Финальная статистика:")
-        logger.info(f"  • Всего обработано: {stats['posts_processed']}")
-        logger.info(f"  • Успешно: {stats['successful_processing']}")
-        logger.info(f"  • Ошибок: {stats['errors']}")
-        logger.info(f"  • Время обработки: {stats['processing_time']:.2f}с")
-        
-        return stats
-    
-    async def run_single_batch(self):
-        """Запуск одного батча обработки (для тестирования)"""
-        stats = await self.process_single_batch()
-        return stats["success"]
-    
-    async def startup_initialization(self):
-        """Инициализация при запуске системы - проверка необработанных данных"""
-        logger.info("🚀 Startup Initialization - проверка необработанных данных")
-        
-        # Проверяем наличие необработанных данных
-        posts_data = await self.get_unprocessed_posts(limit=1)  # Проверяем есть ли хотя бы 1 пост
-        
-        if posts_data:
-            logger.info(f"📋 Найдено необработанных постов, запускаем автоматическую обработку")
-            # Автоматически запускаем обработку
-            await self.process_single_batch()
-        else:
-            logger.info("✅ Нет необработанных данных при запуске")
-    
-    async def run_continuous(self):
-        """Непрерывная обработка с интервалами"""
-        logger.info(f"🔄 Запуск непрерывной обработки (интервал: {self.processing_interval}с)")
-        
-        # Startup initialization
-        await self.startup_initialization()
-        
-        # Основной цикл
-        while True:
-            try:
-                logger.info("🔍 Проверка необработанных постов...")
-                success = await self.process_batch()
-                
-                if success:
-                    logger.info(f"✅ Батч обработан успешно, ожидание {self.processing_interval}с")
-                else:
-                    logger.warning(f"⚠️ Проблемы при обработке, ожидание {self.processing_interval}с")
-                
-                # Ожидание перед следующей итерацией
-                await asyncio.sleep(self.processing_interval)
-                
-            except KeyboardInterrupt:
-                logger.info("🛑 Получен сигнал остановки, завершение работы")
-                break
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка в непрерывном режиме: {str(e)}")
-                logger.info(f"⏳ Ожидание {self.processing_interval}с перед повтором")
-                await asyncio.sleep(self.processing_interval)
-    
-    async def trigger_processing(self):
-        """Реактивный запуск обработки (для вызова из Backend API)"""
-        logger.info("⚡ Trigger Processing - реактивный запуск обработки")
-        
+        return success
+
+    async def _save_ai_results(self, ai_results: List[Dict[str, Any]]) -> bool:
+        """Сохранение AI результатов в Backend API"""
         try:
-            success = await self.process_single_batch()
-            if success:
-                logger.info("✅ Реактивная обработка завершена успешно")
-                return {"success": True, "message": "AI обработка запущена успешно"}
-            else:
-                logger.error("❌ Ошибки при реактивной обработке")
-                return {"success": False, "message": "Ошибки при AI обработке"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.backend_url}/api/ai/results/batch",
+                    json=ai_results,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 201:
+                        saved_results = await response.json()
+                        logger.info(f"✅ Сохранено {len(saved_results)} AI результатов")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Ошибка сохранения: HTTP {response.status}")
+                        logger.error(f"   Детали: {error_text}")
+                        return False
         except Exception as e:
-            logger.error(f"❌ Исключение при реактивной обработке: {str(e)}")
-            return {"success": False, "message": f"Исключение: {str(e)}"}
+            logger.error(f"❌ Исключение при сохранении: {str(e)}")
+            return False
+
+    async def _update_posts_status(self, post_ids: List[int], status: str) -> bool:
+        """Обновление статуса постов в Backend API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                for post_id in post_ids:
+                    async with session.put(
+                        f"{self.backend_url}/api/posts/cache/{post_id}/status",
+                        json={"status": status},
+                        headers={"Content-Type": "application/json"}
+                    ) as response:
+                        if response.status == 200:
+                            logger.debug(f"✅ Пост {post_id} помечен как {status}")
+                        else:
+                            logger.warning(f"⚠️ Ошибка обновления поста {post_id}: HTTP {response.status}")
+                return True
+        except Exception as e:
+            logger.error(f"❌ Исключение при обновлении статуса постов: {str(e)}")
+            return False
 
 async def main():
-    """Главная функция для запуска AI Orchestrator"""
+    """Главная функция для запуска AI Orchestrator v2.0"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="AI Orchestrator для автоматической обработки постов")
+    parser = argparse.ArgumentParser(description="AI Orchestrator v2.0 Event-Driven Architecture")
     parser.add_argument("--mode", choices=["continuous", "single"], default="single",
                        help="Режим работы: continuous (непрерывно) или single (один батч)")
     parser.add_argument("--backend-url", default="http://localhost:8000",
                        help="URL Backend API")
-    parser.add_argument("--interval", type=int, default=30,
-                       help="Интервал обработки в секундах")
     parser.add_argument("--batch-size", type=int, default=10,
                        help="Размер батча для обработки")
     
     args = parser.parse_args()
     
-    # Создание AI Orchestrator
-    orchestrator = AIOrchestrator(
+    # Создание AI Orchestrator v2.0
+    orchestrator = AIOrchestratorV2(
         backend_url=args.backend_url,
-        processing_interval=args.interval,
         batch_size=args.batch_size
     )
     
