@@ -168,9 +168,65 @@ class ApiService {
       method: 'DELETE',
     });
   }
+
+  // === МУЛЬТИТЕНАНТНАЯ ОЧИСТКА ДАННЫХ ===
+  
+  // Предварительный просмотр очистки
+  async getCleanupPreview(cleanupType, targetId = null) {
+    const params = new URLSearchParams({ cleanup_type: cleanupType });
+    if (targetId) {
+      params.append('target_id', targetId);
+    }
+    return this.request(`/data/cleanup-preview?${params.toString()}`);
+  }
+  
+  // Полная очистка всех данных
+  async clearAllData(options = {}) {
+    const params = new URLSearchParams({ confirm: true });
+    if (options.includePosts !== undefined) {
+      params.append('include_posts', options.includePosts);
+    }
+    if (options.includeAiResults !== undefined) {
+      params.append('include_ai_results', options.includeAiResults);
+    }
+    return this.request(`/data/clear-all?${params.toString()}`, {
+      method: 'DELETE',
+    });
+  }
+  
+  // Очистка данных по каналу
+  async clearDataByChannel(channelId, options = {}) {
+    const params = new URLSearchParams({ confirm: true });
+    if (options.includePosts !== undefined) {
+      params.append('include_posts', options.includePosts);
+    }
+    if (options.includeAiResults !== undefined) {
+      params.append('include_ai_results', options.includeAiResults);
+    }
+    return this.request(`/data/clear-by-channel/${channelId}?${params.toString()}`, {
+      method: 'DELETE',
+    });
+  }
+  
+  // Очистка данных по боту
+  async clearDataByBot(botId, options = {}) {
+    const params = new URLSearchParams({ confirm: true });
+    if (options.includePosts !== undefined) {
+      params.append('include_posts', options.includePosts);
+    }
+    if (options.includeAiResults !== undefined) {
+      params.append('include_ai_results', options.includeAiResults);
+    }
+    return this.request(`/data/clear-by-bot/${botId}?${params.toString()}`, {
+      method: 'DELETE',
+    });
+  }
+  
+  // === КОНЕЦ МУЛЬТИТЕНАНТНОЙ ОЧИСТКИ ДАННЫХ ===
 }
 
 // Create singleton instance
 const apiService = new ApiService();
 
-export default apiService; 
+export default apiService;
+export { apiService as dataAPI }; 

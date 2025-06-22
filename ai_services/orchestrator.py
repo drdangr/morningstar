@@ -508,8 +508,12 @@ class AIOrchestratorV2:
                     else:
                         logger.error(f"❌ Ошибка сохранения AI результатов для бота {bot_name}")
             
-            logger.info(f"🎉 Всего обработано {total_processed} постов")
-            return total_processed > 0
+            if total_processed > 0:
+                logger.info(f"🎉 Всего обработано {total_processed} постов")
+            else:
+                logger.info("✅ Нет постов для обработки - все боты обработаны или нет orphan posts")
+            
+            return True  # Всегда возвращаем True - отсутствие постов не является ошибкой
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки фонового батча: {str(e)}")
@@ -852,6 +856,80 @@ class AIOrchestratorV2:
         except Exception as e:
             logger.error(f"❌ Исключение при обновлении статуса постов: {str(e)}")
             return False
+
+    # === ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ СОВМЕСТИМОСТИ С BACKEND ===
+    
+    async def process_posts_for_bot(self, posts: List['Post'], bot: 'Bot') -> List[Dict[str, Any]]:
+        """Обработка постов для конкретного бота (совместимость с backend)"""
+        logger.info(f"🧠 Обработка {len(posts)} постов для бота '{bot.name}' (ID: {bot.id})")
+        
+        # Конвертируем Post объекты в словари для внутренней обработки
+        posts_data = []
+        for post in posts:
+            post_dict = {
+                "id": post.id,
+                "content": post.text,
+                "title": post.caption,
+                "views": post.views,
+                "post_date": post.date,
+                "channel_telegram_id": post.channel_id,
+                "telegram_message_id": post.message_id
+            }
+            posts_data.append(post_dict)
+        
+        # Конвертируем Bot объект в словарь
+        bot_data = {
+            "id": bot.id,
+            "name": bot.name,
+            "categorization_prompt": bot.categorization_prompt,
+            "summarization_prompt": bot.summarization_prompt,
+            "max_posts_per_digest": bot.max_posts_per_digest,
+            "max_summary_length": bot.max_summary_length
+        }
+        
+        # Получаем категории бота
+        categories = await self._get_bot_categories(bot.id)
+        
+        # Обрабатываем через реальный AI или mock
+        if self.openai_api_key:
+            ai_results = await self._process_posts_with_real_ai(posts_data, bot_data, categories)
+        else:
+            ai_results = await self._process_posts_with_mock_ai(posts_data, bot_data)
+        
+        logger.info(f"✅ Подготовлено {len(ai_results)} результатов для сохранения")
+        return ai_results
+
+    async def save_ai_results(self, ai_results: List[Dict[str, Any]]) -> bool:
+        """Сохранение результатов AI обработки (совместимость с backend)"""
+        return await self._save_ai_results(ai_results)
+
+# === АЛИАС ДЛЯ СОВМЕСТИМОСТИ С BACKEND ===
+# Backend импортирует AIOrchestrator, но класс называется AIOrchestratorV2
+AIOrchestrator = AIOrchestratorV2
+
+# === КЛАССЫ ДЛЯ СОВМЕСТИМОСТИ С BACKEND ===
+# Backend также импортирует Post и Bot классы
+
+class Post:
+    """Простой класс для поста (совместимость с backend)"""
+    def __init__(self, id, text, caption="", views=0, date=None, channel_id=None, message_id=None):
+        self.id = id
+        self.text = text
+        self.caption = caption
+        self.views = views
+        self.date = date
+        self.channel_id = channel_id
+        self.message_id = message_id
+
+class Bot:
+    """Простой класс для бота (совместимость с backend)"""
+    def __init__(self, id, name, categorization_prompt="", summarization_prompt="", max_posts_per_digest=10, max_summary_length=150):
+        self.id = id
+        self.name = name
+        self.categorization_prompt = categorization_prompt
+        self.summarization_prompt = summarization_prompt
+        self.max_posts_per_digest = max_posts_per_digest
+        self.max_summary_length = max_summary_length
 
 async def main():
     """Главная функция для запуска AI Orchestrator v2.0"""

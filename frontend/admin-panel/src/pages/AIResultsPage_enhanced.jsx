@@ -17,8 +17,6 @@ import {
   Memory as MemoryIcon, Timeline as TimelineIcon, Dashboard as DashboardIcon
 } from '@mui/icons-material';
 
-import DataCleanup from '../components/DataCleanup';
-
 function TabPanel({ children, value, index, ...other }) {
   return (
     <div role="tabpanel" hidden={value !== index} {...other}>
@@ -363,26 +361,10 @@ const AIResultsPage = () => {
               
               <Grid container spacing={3}>
                 {[
-                  { 
-                    label: 'AI результатов', 
-                    value: aiServicesStats?.ai_results_stats?.total_results || 0, 
-                    color: 'primary' 
-                  },
-                  { 
-                    label: 'В очереди', 
-                    value: aiServicesStats?.posts_stats?.pending || 0, 
-                    color: 'warning.main' 
-                  },
-                  { 
-                    label: 'Обработано', 
-                    value: aiServicesStats?.posts_stats?.completed || 0, 
-                    color: 'success.main' 
-                  },
-                  { 
-                    label: 'Прогресс', 
-                    value: `${Math.round(aiServicesStats?.progress_percentage || 0)}%`, 
-                    color: 'info.main' 
-                  }
+                  { label: 'Обработано постов', value: aiServicesStats?.total_processed || 0, color: 'primary' },
+                  { label: 'В очереди', value: aiServicesStats?.total_pending || 0, color: 'warning.main' },
+                  { label: 'Успешность', value: `${aiServicesStats?.success_rate ? Math.round(aiServicesStats.success_rate * 100) : 0}%`, color: 'success.main' },
+                  { label: 'Среднее время', value: aiServicesStats?.average_processing_time || 'N/A', color: 'info.main' }
                 ].map((stat, index) => (
                   <Grid item xs={12} md={3} key={index}>
                     <Paper sx={{ p: 2, textAlign: 'center' }}>
@@ -933,9 +915,6 @@ const AIResultsPage = () => {
               )}
             </CardContent>
           </Card>
-          
-          {/* Компонент мультитенантной очистки данных */}
-          <DataCleanup />
         </AccordionDetails>
       </Accordion>
     </Box>

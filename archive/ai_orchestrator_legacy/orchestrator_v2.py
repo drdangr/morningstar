@@ -407,9 +407,31 @@ class AIOrchestratorV2:
                 success = await self._save_ai_results(ai_results)
                 if success:
                     logger.info(f"✅ Сохранено {len(ai_results)} AI результатов")
+                    
+                    # Обновляем статистику
+                    self.stats["total_processed"] += len(ai_results)
+                    self.stats["successful_processed"] += len(ai_results)
+                    self.last_activity = datetime.utcnow()
+                    
+                    # Отправляем статистику об успешном завершении
+                    await self.report_orchestrator_status("PROCESSING_COMPLETED", {
+                        "batch_size": len(ai_results),
+                        "total_processed": self.stats["total_processed"]
+                    })
+                    
                     return True
                 else:
                     logger.error("❌ Ошибка сохранения AI результатов")
+                    
+                    # Обновляем статистику ошибок
+                    self.stats["failed_processed"] += len(ai_results)
+                    
+                    # Отправляем статистику об ошибке
+                    await self.report_orchestrator_status("PROCESSING_FAILED", {
+                        "error": "Failed to save AI results",
+                        "failed_count": len(ai_results)
+                    })
+                    
                     return False
             
             return True
@@ -472,7 +494,37 @@ class AIOrchestratorV2:
 
     async def report_orchestrator_status(self, status: str, details: Dict[str, Any] = None):
         """Отчет о статусе AI Orchestrator в Backend API"""
-        logger.debug(f"📡 Статус: {status}, детали: {details}")
+        try:
+            status_data = {
+                "orchestrator_status": status,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "stats": {
+                    "queue_size": len(self.task_queue),
+                    "background_worker_running": self.background_worker_running,
+                    "processing_active": False,  # Можно добавить отслеживание активной обработки
+                    "last_activity": self.last_activity.isoformat() if hasattr(self, 'last_activity') and self.last_activity else None,
+                    "total_processed": self.stats.get("total_processed", 0),
+                    "successful_processed": self.stats.get("successful_processed", 0),
+                    "failed_processed": self.stats.get("failed_processed", 0),
+                    "processing_time": self.stats.get("processing_time", 0)
+                },
+                "details": details or {}
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.backend_url}/api/ai/orchestrator-status",
+                    json=status_data,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        logger.debug("✅ Статус успешно отправлен в Backend API")
+                    else:
+                        logger.warning(f"⚠️ Ошибка отправки статуса: HTTP {response.status}")
+                        
+        except Exception as e:
+            logger.warning(f"⚠️ Исключение при отправке статуса: {str(e)}")
+            # Не критично, продолжаем работу
 
     async def trigger_processing(self):
         """Реактивный запуск обработки (для вызова из Backend API)"""
