@@ -70,7 +70,7 @@ class PostCache(Base):
     post_date = Column(DateTime, nullable=False)
     collected_at = Column(DateTime, default=func.now(), nullable=False)
     userbot_metadata = Column(JSONB if USE_POSTGRESQL else Text, default={} if USE_POSTGRESQL else "{}")
-    processing_status = Column(String, default="pending")  # pending, processing, completed, failed
+    # processing_status = Column(String, default="pending")  # УБРАНО: заменено мультитенантными статусами в processed_data
     retention_until = Column(DateTime)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

@@ -14,7 +14,9 @@ import {
   Psychology as PsychologyIcon, CheckCircle as CheckCircleIcon, Error as ErrorIcon,
   Pending as PendingIcon, RestartAlt as RestartAltIcon, ExpandLess as ExpandLessIcon,
   ExpandMore as ExpandMoreIconTable, Settings as SettingsIcon, Build as BuildIcon,
-  Memory as MemoryIcon, Timeline as TimelineIcon, Dashboard as DashboardIcon
+  Memory as MemoryIcon, Timeline as TimelineIcon, Dashboard as DashboardIcon,
+  PlayArrow as PlayArrowIcon, Pause as PauseIcon, Computer as ComputerIcon,
+  ViewList as ViewListIcon, MonitorHeart as MonitorHeartIcon
 } from '@mui/icons-material';
 
 import DataCleanup from '../components/DataCleanup';
@@ -49,10 +51,16 @@ const AIResultsPage = () => {
   
   // Мультитенантные состояния
   const [botsWithStats, setBotsWithStats] = useState([]);
+  const [multitenantStats, setMultitenantStats] = useState(null);
   const [channels, setChannels] = useState([]);
   const [selectedChannels, setSelectedChannels] = useState([]);
   const [selectedBots, setSelectedBots] = useState([]);
   const [expandedBot, setExpandedBot] = useState(null);
+  
+  // Состояния для фонового управления AI Orchestrator
+  const [backgroundProcessStatus, setBackgroundProcessStatus] = useState(null);
+  const [orchestratorLogs, setOrchestratorLogs] = useState([]);
+  const [showLogs, setShowLogs] = useState(false);
 
   // Загрузка данных при монтировании
   useEffect(() => {
@@ -71,7 +79,9 @@ const AIResultsPage = () => {
         fetchDetailedAIStatus(),
         fetchOrchestratorCommands(),
         fetchBotsWithStats(),
-        fetchChannels()
+        fetchMultitenantStats(),
+        fetchChannels(),
+        fetchOrchestratorLogs()
       ]);
     } catch (error) {
       showAlert('error', 'Ошибка загрузки данных');
@@ -132,17 +142,28 @@ const AIResultsPage = () => {
   const fetchOrchestratorStatus = async () => {
     try {
       const response = await fetch('http://localhost:8000/api/ai/orchestrator-live-status');
-      setOrchestratorStatus(response.ok ? await response.json() : 
-        { orchestrator_active: false, status: 'UNAVAILABLE' });
+      const data = response.ok ? await response.json() : 
+        { orchestrator_active: false, status: 'UNAVAILABLE' };
+      setOrchestratorStatus(data);
+      
+      // Обновляем статус фонового процесса из расширенной диагностики
+      if (data.background_control) {
+        setBackgroundProcessStatus(data.background_control);
+      }
     } catch (error) {
       setOrchestratorStatus({ orchestrator_active: false, status: 'ERROR', error: error.message });
+      setBackgroundProcessStatus({ is_running: false, process_id: null });
     }
   };
 
   const fetchAIServicesStats = async () => {
     try {
       const response = await fetch('http://localhost:8000/api/ai/status');
-      if (response.ok) setAiServicesStats(await response.json());
+      if (response.ok) {
+        const data = await response.json();
+        setAiServicesStats(data);
+        console.log('🚀 Мультитенантная статистика AI:', data.multitenant_stats);
+      }
     } catch (error) {
       console.error('Ошибка загрузки статистики AI:', error);
     }
@@ -195,6 +216,99 @@ const AIResultsPage = () => {
       setBotsWithStats(await Promise.all(botsWithStatsPromises));
     } catch (error) {
       setBotsWithStats([]);
+    }
+  };
+
+  // Новые API функции для управления фоновым процессом
+  const fetchOrchestratorLogs = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/orchestrator/logs?limit=50');
+      if (response.ok) {
+        const data = await response.json();
+        setOrchestratorLogs(data.logs || []);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки логов:', error);
+      setOrchestratorLogs([]);
+    }
+  };
+
+  const startBackgroundProcess = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/orchestrator/start-background', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', data.message);
+        setBackgroundProcessStatus({ is_running: true, process_id: data.process_id });
+        await fetchOrchestratorLogs(); // Обновляем логи
+      } else {
+        showAlert('error', data.message);
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка запуска фонового процесса');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const stopBackgroundProcess = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/orchestrator/stop-background', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', data.message);
+        setBackgroundProcessStatus({ is_running: false, process_id: null });
+        await fetchOrchestratorLogs(); // Обновляем логи
+      } else {
+        showAlert('error', data.message);
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка остановки фонового процесса');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const restartOrchestratorProcess = async () => {
+    setActionLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/orchestrator/restart', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        showAlert('success', data.message);
+        setBackgroundProcessStatus({ is_running: true, process_id: data.start_result?.process_id });
+        await fetchOrchestratorLogs(); // Обновляем логи
+      } else {
+        showAlert('error', data.message);
+      }
+    } catch (error) {
+      showAlert('error', 'Ошибка перезапуска процесса');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const fetchMultitenantStats = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/ai/multitenant-status');
+      if (response.ok) {
+        const data = await response.json();
+        setMultitenantStats(data);
+        console.log('🚀 Полная мультитенантная статистика:', data);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки мультитенантной статистики:', error);
     }
   };
 
@@ -353,15 +467,154 @@ const AIResultsPage = () => {
             </CardContent>
           </Card>
 
-          {/* Статистика AI сервисов */}
+          {/* НОВАЯ СЕКЦИЯ: Управление фоновым процессом AI Orchestrator */}
+          <Card sx={{ mb: 3 }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <ComputerIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Фоновый процесс AI Orchestrator
+              </Typography>
+              
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle2" gutterBottom>Статус фонового процесса:</Typography>
+                  <Box display="flex" alignItems="center" gap={1} mb={2}>
+                    <Chip 
+                      label={backgroundProcessStatus?.is_running ? 'Запущен' : 'Остановлен'}
+                      color={backgroundProcessStatus?.is_running ? 'success' : 'default'}
+                      icon={backgroundProcessStatus?.is_running ? <PlayArrowIcon /> : <PauseIcon />}
+                    />
+                    {backgroundProcessStatus?.process_id && (
+                      <Chip 
+                        label={`PID: ${backgroundProcessStatus.process_id}`}
+                        size="small" 
+                        variant="outlined"
+                      />
+                    )}
+                  </Box>
+                  
+                  {/* Расширенная диагностика */}
+                  {orchestratorStatus?.diagnostics && (
+                    <Box mb={2}>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Общее здоровье: {orchestratorStatus.diagnostics.overall_health}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Метод соединения: {orchestratorStatus.diagnostics.connection_method}
+                      </Typography>
+                      {orchestratorStatus.diagnostics.heartbeat_age_seconds && (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Последний heartbeat: {orchestratorStatus.diagnostics.heartbeat_age_seconds}с назад
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+                </Grid>
+                
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle2" gutterBottom>Управление процессом:</Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap">
+                    {!backgroundProcessStatus?.is_running ? (
+                      <Button 
+                        variant="contained" 
+                        color="success"
+                        startIcon={<PlayArrowIcon />}
+                        onClick={startBackgroundProcess}
+                        disabled={actionLoading}
+                        size="small"
+                      >
+                        Запустить фоновый режим
+                      </Button>
+                    ) : (
+                      <Button 
+                        variant="contained" 
+                        color="error"
+                        startIcon={<PauseIcon />}
+                        onClick={stopBackgroundProcess}
+                        disabled={actionLoading}
+                        size="small"
+                      >
+                        Остановить фоновый режим
+                      </Button>
+                    )}
+                    
+                    <Button 
+                      variant="outlined"
+                      startIcon={<RestartAltIcon />}
+                      onClick={restartOrchestratorProcess}
+                      disabled={actionLoading}
+                      size="small"
+                    >
+                      Перезапустить
+                    </Button>
+                    
+                    <Button 
+                      variant="outlined"
+                      startIcon={<ViewListIcon />}
+                      onClick={() => setShowLogs(!showLogs)}
+                      size="small"
+                    >
+                      {showLogs ? 'Скрыть логи' : 'Показать логи'}
+                    </Button>
+                  </Stack>
+                </Grid>
+              </Grid>
+              
+              {/* Логи AI Orchestrator */}
+              <Collapse in={showLogs} timeout="auto" unmountOnExit>
+                <Box mt={3}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    <ViewListIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                    Логи AI Orchestrator (последние {orchestratorLogs.length})
+                  </Typography>
+                  
+                  {orchestratorLogs.length > 0 ? (
+                    <Paper variant="outlined" sx={{ maxHeight: 300, overflow: 'auto', p: 2 }}>
+                      {orchestratorLogs.map((log, index) => (
+                        <Box key={index} mb={1}>
+                          <Typography 
+                            variant="body2" 
+                            component="div"
+                            sx={{
+                              fontFamily: 'monospace',
+                              fontSize: '0.8rem',
+                              color: log.level === 'ERROR' ? 'error.main' : 
+                                     log.level === 'WARNING' ? 'warning.main' : 'text.primary'
+                            }}
+                          >
+                            <Box component="span" sx={{ color: 'text.secondary' }}>
+                              [{new Date(log.timestamp).toLocaleTimeString('ru-RU')}]
+                            </Box>
+                            {' '}
+                            <Box component="span" sx={{ fontWeight: 'bold' }}>
+                              {log.level}:
+                            </Box>
+                            {' '}
+                            {log.message}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Paper>
+                  ) : (
+                    <Alert severity="info">
+                      Нет доступных логов
+                    </Alert>
+                  )}
+                </Box>
+              </Collapse>
+            </CardContent>
+          </Card>
+
+          {/* 🚀 МУЛЬТИТЕНАНТНАЯ Статистика AI сервисов */}
           <Card sx={{ mb: 3 }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
                 <AnalyticsIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-                Статистика AI сервисов
+                Мультитенантная статистика AI сервисов
               </Typography>
               
-              <Grid container spacing={3}>
+              {/* Основная статистика */}
+              <Grid container spacing={3} sx={{ mb: 3 }}>
                 {[
                   { 
                     label: 'AI результатов', 
@@ -374,24 +627,75 @@ const AIResultsPage = () => {
                     color: 'warning.main' 
                   },
                   { 
-                    label: 'Обработано', 
-                    value: aiServicesStats?.posts_stats?.completed || 0, 
-                    color: 'success.main' 
+                    label: 'Обрабатывается', 
+                    value: aiServicesStats?.posts_stats?.processing || 0, 
+                    color: 'info.main',
+                    tooltip: 'Промежуточные статусы: categorized + summarized'
                   },
                   { 
-                    label: 'Прогресс', 
-                    value: `${Math.round(aiServicesStats?.progress_percentage || 0)}%`, 
-                    color: 'info.main' 
+                    label: 'Завершено', 
+                    value: aiServicesStats?.posts_stats?.completed || 0, 
+                    color: 'success.main' 
                   }
                 ].map((stat, index) => (
                   <Grid item xs={12} md={3} key={index}>
                     <Paper sx={{ p: 2, textAlign: 'center' }}>
                       <Typography variant="h4" color={stat.color}>{stat.value}</Typography>
                       <Typography variant="body2" color="text.secondary">{stat.label}</Typography>
+                      {stat.tooltip && (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {stat.tooltip}
+                        </Typography>
+                      )}
                     </Paper>
                   </Grid>
                 ))}
               </Grid>
+
+              {/* Детальная мультитенантная статистика */}
+              {aiServicesStats?.multitenant_stats && (
+                <Box>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Детальная статистика по статусам:
+                  </Typography>
+                  <Grid container spacing={2}>
+                    {Object.entries(aiServicesStats.multitenant_stats).map(([status, count]) => (
+                      <Grid item xs={6} md={2} key={status}>
+                        <Paper sx={{ p: 1, textAlign: 'center', bgcolor: 'grey.50' }}>
+                          <Typography variant="h6" color={
+                            status === 'completed' ? 'success.main' :
+                            status === 'failed' ? 'error.main' :
+                            status === 'categorized' ? 'info.main' :
+                            status === 'summarized' ? 'primary.main' :
+                            'warning.main'
+                          }>
+                            {count}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {status === 'pending' ? 'Ожидает' :
+                             status === 'categorized' ? 'Категоризовано' :
+                             status === 'summarized' ? 'Суммировано' :
+                             status === 'completed' ? 'Завершено' :
+                             status === 'failed' ? 'Ошибки' : status}
+                          </Typography>
+                        </Paper>
+                      </Grid>
+                    ))}
+                  </Grid>
+                  
+                  <Box sx={{ mt: 2 }}>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={aiServicesStats?.progress_percentage || 0}
+                      sx={{ height: 8, borderRadius: 4 }}
+                    />
+                    <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 1 }}>
+                      Прогресс: {Math.round(aiServicesStats?.progress_percentage || 0)}% 
+                      ({aiServicesStats?.posts_stats?.completed || 0} из {aiServicesStats?.total_posts || 0} постов)
+                    </Typography>
+                  </Box>
+                </Box>
+              )}
             </CardContent>
           </Card>
 
@@ -536,6 +840,27 @@ const AIResultsPage = () => {
                               </Typography>
                             </Box>
                           </ListItem>
+                          {/* Новые мультитенантные статусы */}
+                          {detailedAIStatus.multitenant_stats && (
+                            <>
+                              <ListItem>
+                                <Box display="flex" justifyContent="space-between" width="100%">
+                                  <Typography variant="body2">↳ Категоризовано:</Typography>
+                                  <Typography variant="body2" fontWeight="bold" color="info.main">
+                                    {detailedAIStatus.multitenant_stats.categorized || 0}
+                                  </Typography>
+                                </Box>
+                              </ListItem>
+                              <ListItem>
+                                <Box display="flex" justifyContent="space-between" width="100%">
+                                  <Typography variant="body2">↳ Суммировано:</Typography>
+                                  <Typography variant="body2" fontWeight="bold" color="primary.main">
+                                    {detailedAIStatus.multitenant_stats.summarized || 0}
+                                  </Typography>
+                                </Box>
+                              </ListItem>
+                            </>
+                          )}
                           <ListItem>
                             <Box display="flex" justifyContent="space-between" width="100%">
                               <Typography variant="body2">Ошибки:</Typography>
@@ -781,7 +1106,148 @@ const AIResultsPage = () => {
         </AccordionDetails>
       </Accordion>
 
-      {/* РАЗДЕЛ 2: МУЛЬТИТЕНАНТНЫЕ ДАННЫЕ */}
+      {/* РАЗДЕЛ 2: 🚀 МУЛЬТИТЕНАНТНАЯ СТАТИСТИКА ПО БОТАМ */}
+      <Accordion defaultExpanded sx={{ mb: 2 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box display="flex" alignItems="center" gap={1}>
+            <MonitorHeartIcon color="secondary" />
+            <Typography variant="h6">Мультитенантная статистика по ботам</Typography>
+            <Chip label={`${multitenantStats?.total_bots || 0} активных ботов`} color="secondary" size="small" />
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          {multitenantStats ? (
+            <>
+              {/* Общая статистика */}
+              <Card sx={{ mb: 3 }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    <DashboardIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                    Общая мультитенантная статистика
+                  </Typography>
+                  
+                  <Grid container spacing={2} sx={{ mb: 3 }}>
+                    {Object.entries(multitenantStats.summary).map(([status, count]) => (
+                      <Grid item xs={6} md={2} key={status}>
+                        <Paper sx={{ p: 2, textAlign: 'center' }}>
+                          <Typography variant="h5" color={
+                            status === 'completed' ? 'success.main' :
+                            status === 'failed' ? 'error.main' :
+                            status === 'categorized' ? 'info.main' :
+                            status === 'summarized' ? 'primary.main' :
+                            'warning.main'
+                          }>
+                            {count}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {status === 'pending' ? 'В очереди' :
+                             status === 'categorized' ? 'Категоризовано' :
+                             status === 'summarized' ? 'Суммировано' :
+                             status === 'completed' ? 'Завершено' :
+                             status === 'failed' ? 'Ошибки' : status}
+                          </Typography>
+                        </Paper>
+                      </Grid>
+                    ))}
+                  </Grid>
+                  
+                  <Typography variant="body2" color="text.secondary" align="center">
+                    Обрабатывается: {multitenantStats.ui_compatible_summary.processing} постов 
+                    (категоризация + суммаризация)
+                  </Typography>
+                </CardContent>
+              </Card>
+
+              {/* Детальная статистика по ботам */}
+              <Card sx={{ mb: 3 }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    <SmartToyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                    Статистика по ботам ({multitenantStats.bots_stats.length})
+                  </Typography>
+                  
+                  {multitenantStats.bots_stats.length > 0 ? (
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Бот</TableCell>
+                            <TableCell align="center">Ожидает</TableCell>
+                            <TableCell align="center">Категоризовано</TableCell>
+                            <TableCell align="center">Суммировано</TableCell>
+                            <TableCell align="center">Завершено</TableCell>
+                            <TableCell align="center">Ошибки</TableCell>
+                            <TableCell align="center">Прогресс</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {multitenantStats.bots_stats.map((bot) => (
+                            <TableRow key={bot.bot_id}>
+                              <TableCell>
+                                <Box>
+                                  <Typography variant="body2" fontWeight="bold">{bot.name}</Typography>
+                                  <Chip label={bot.status} 
+                                    color={bot.status === 'active' ? 'success' : 'info'} size="small" />
+                                  <Typography variant="caption" color="text.secondary" display="block">
+                                    {bot.channels_count} каналов
+                                  </Typography>
+                                </Box>
+                              </TableCell>
+                              <TableCell align="center">
+                                <Chip label={bot.multitenant_stats.pending} 
+                                  color="warning" size="small" />
+                              </TableCell>
+                              <TableCell align="center">
+                                <Chip label={bot.multitenant_stats.categorized} 
+                                  color="info" size="small" />
+                              </TableCell>
+                              <TableCell align="center">
+                                <Chip label={bot.multitenant_stats.summarized} 
+                                  color="primary" size="small" />
+                              </TableCell>
+                              <TableCell align="center">
+                                <Chip label={bot.multitenant_stats.completed} 
+                                  color="success" size="small" />
+                              </TableCell>
+                              <TableCell align="center">
+                                <Chip label={bot.multitenant_stats.failed} 
+                                  color={bot.multitenant_stats.failed > 0 ? "error" : "default"} size="small" />
+                              </TableCell>
+                              <TableCell align="center">
+                                <Box display="flex" alignItems="center" gap={1}>
+                                  <LinearProgress 
+                                    variant="determinate" 
+                                    value={bot.progress_percentage || 0}
+                                    sx={{ width: 60, height: 6 }}
+                                    color={bot.progress_percentage === 100 ? "success" : "primary"}
+                                  />
+                                  <Typography variant="caption">
+                                    {Math.round(bot.progress_percentage || 0)}%
+                                  </Typography>
+                                </Box>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : (
+                    <Alert severity="info">
+                      Нет активных ботов для отображения статистики
+                    </Alert>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          ) : (
+            <Alert severity="info">
+              Загрузка мультитенантной статистики...
+            </Alert>
+          )}
+        </AccordionDetails>
+      </Accordion>
+
+      {/* РАЗДЕЛ 3: МУЛЬТИТЕНАНТНЫЕ ДАННЫЕ */}
       <Accordion defaultExpanded sx={{ mb: 2 }}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box display="flex" alignItems="center" gap={1}>

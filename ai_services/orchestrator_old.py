@@ -80,10 +80,10 @@ class AIOrchestratorV2:
     def __init__(self, 
                  backend_url: str = "http://localhost:8000",
                  openai_api_key: Optional[str] = None,
-                 batch_size: int = 10):
+                 batch_size: Optional[int] = None):
         
         self.backend_url = backend_url
-        self.batch_size = batch_size
+        self.batch_size = batch_size  # Будет получен из настроек если None
         
         # Event-Driven архитектура
         self.task_queue = []  # Приоритетная очередь (heapq)
@@ -98,16 +98,9 @@ class AIOrchestratorV2:
         if not self.openai_api_key:
             logger.warning("⚠️ OPENAI_API_KEY не найден, будет использоваться mock режим")
         
-        self.categorization_service = CategorizationService(
-            openai_api_key=self.openai_api_key,
-            backend_url=self.backend_url
-        )
-        
-        self.summarization_service = SummarizationService(
-            model_name="gpt-4o-mini",
-            max_tokens=4000,
-            temperature=0.3
-        )
+        # AI сервисы будут инициализированы в startup_initialization после получения настроек
+        self.categorization_service = None
+        self.summarization_service = None
         
         # Статистика
         self.stats = {
@@ -336,20 +329,23 @@ class AIOrchestratorV2:
 
     async def startup_initialization(self):
         """Инициализация при запуске системы - проверка необработанных данных"""
-        logger.info("🚀 Startup Initialization - проверка необработанных данных")
+        logger.info("🚀 Startup Initialization - инициализация AI сервисов и проверка данных")
         
-        # 1. Проверяем наличие необработанных данных
+        # 1. Инициализируем AI сервисы
+        await self._initialize_ai_services()
+        
+        # 2. Проверяем наличие необработанных данных
         pending_data = await self._check_pending_data()
         
         if pending_data['total_posts'] > 0:
             logger.info(f"📊 Найдено {pending_data['total_posts']} необработанных постов")
             
-            # 2. Запускаем обработку по приоритетам
+            # 3. Запускаем обработку по приоритетам
             await self._schedule_pending_data_processing(pending_data)
         else:
             logger.info("✅ Все данные обработаны")
         
-        # 3. Запускаем фоновый обработчик
+        # 4. Запускаем фоновый обработчик
         await self._start_background_worker()
         
         logger.info("✅ AI Orchestrator готов к работе")
@@ -479,7 +475,7 @@ class AIOrchestratorV2:
                 logger.info(f"📂 Категории бота {bot_name}: {category_names}")
                 
                 # Получаем необработанные посты только из каналов этого бота
-                bot_posts = await self._get_pending_posts_for_bot(channel_telegram_ids, limit=self.batch_size)
+                bot_posts = await self._get_pending_posts_for_bot(channel_telegram_ids, limit=self.batch_size, bot_id=bot['id'])
                 
                 if not bot_posts:
                     logger.info(f"✅ Нет необработанных постов для бота {bot_name}")
@@ -487,10 +483,10 @@ class AIOrchestratorV2:
                 
                 logger.info(f"📋 Найдено {len(bot_posts)} необработанных постов для бота {bot_name}")
                 
-                # СРАЗУ обновляем статус постов на "processing" для real-time UI
+                # СРАЗУ обновляем мультитенантный статус постов на "pending" для этого бота
                 post_ids = [post['id'] for post in bot_posts]
-                await self._update_posts_status(post_ids, "processing")
-                logger.info(f"🔄 Посты {post_ids} помечены как 'processing'")
+                await self._update_multitenant_status(post_ids, "pending", bot['id'])
+                logger.info(f"🔄 Посты {post_ids} помечены как 'pending' для бота {bot_name}")
                 
                 # Обрабатываем посты РЕАЛЬНЫМИ AI сервисами
                 ai_results = await self._process_posts_with_real_ai(bot_posts, bot, bot_categories)
@@ -499,14 +495,14 @@ class AIOrchestratorV2:
                 if ai_results:
                     success = await self._save_ai_results(ai_results)
                     if success:
-                        # Обновляем статус постов на "completed"
-                        post_ids = [result['post_id'] for result in ai_results]
-                        await self._update_posts_status(post_ids, "completed")
-                        
+                        # Статусы уже обновлены в _process_posts_with_real_ai
                         logger.info(f"✅ Сохранено {len(ai_results)} AI результатов для бота {bot_name}")
                         total_processed += len(ai_results)
                     else:
                         logger.error(f"❌ Ошибка сохранения AI результатов для бота {bot_name}")
+                        # При ошибке сохранения помечаем как failed
+                        post_ids = [result['post_id'] for result in ai_results]
+                        await self._update_multitenant_status(post_ids, "failed", bot['id'])
             
             if total_processed > 0:
                 logger.info(f"🎉 Всего обработано {total_processed} постов")
@@ -566,28 +562,132 @@ class AIOrchestratorV2:
             logger.error(f"❌ Исключение при получении категорий бота {bot_id}: {str(e)}")
             return []
 
-    async def _get_pending_posts_for_bot(self, channel_telegram_ids: List[int], limit: int = 10) -> List[Dict[str, Any]]:
-        """Получение необработанных постов только из каналов конкретного бота"""
+    async def _get_batch_size_from_settings(self) -> int:
+        """Получение размера батча из настроек Backend API"""
         try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.backend_url}/api/settings") as response:
+                    if response.status == 200:
+                        settings = await response.json()
+                        for setting in settings:
+                            if setting.get('key') == 'MAX_POSTS_FOR_AI_ANALYSIS':
+                                batch_size = int(setting.get('value', 30))
+                                logger.info(f"📦 Размер батча из настроек: {batch_size}")
+                                return batch_size
+                        
+                        logger.warning("⚠️ Настройка 'MAX_POSTS_FOR_AI_ANALYSIS' не найдена, используем 30")
+                        return 30
+                    else:
+                        logger.error(f"❌ Ошибка получения настроек: HTTP {response.status}")
+                        return 30
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса настроек: {str(e)}")
+            return 30
+
+    async def _initialize_ai_services(self):
+        """Инициализация AI сервисов с правильным размером батча"""
+        logger.info("🔧 Инициализация AI сервисов...")
+        
+        # Получаем размер батча из настроек если не задан
+        if self.batch_size is None:
+            self.batch_size = await self._get_batch_size_from_settings()
+            logger.info(f"📦 Размер батча получен из настроек: {self.batch_size}")
+        
+        # Инициализируем AI сервисы с правильным размером батча
+        from ai_services.services.categorization import CategorizationService
+        from ai_services.services.summarization import SummarizationService
+        
+        self.categorization_service = CategorizationService(
+            openai_api_key=self.openai_api_key,
+            backend_url=self.backend_url,
+            batch_size=self.batch_size
+        )
+        
+        self.summarization_service = SummarizationService(
+            model_name="gpt-4o-mini",
+            max_tokens=4000,
+            temperature=0.3
+        )
+        
+        logger.info(f"✅ AI сервисы инициализированы с размером батча: {self.batch_size}")
+
+    async def _get_pending_posts_for_bot(self, channel_telegram_ids: List[int], limit: int = None, bot_id: int = None) -> List[Dict[str, Any]]:
+        """✅ ПРАВИЛЬНАЯ АРХИТЕКТУРА: Получение постов из общего пула, которые НЕ обработаны для конкретного бота"""
+        try:
+            # Используем переданный лимит или по умолчанию 500
+            fetch_limit = limit if limit is not None else 500
+            
+            # 1. Получаем ВСЕ посты из общего пула
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.backend_url}/api/posts/unprocessed",
-                    params={"limit": 500}  # Получаем больше, чтобы отфильтровать
+                    params={"limit": fetch_limit * 3}  # Получаем больше для фильтрации
                 ) as response:
                     if response.status == 200:
                         all_posts = await response.json()
-                        # Фильтруем только посты из каналов этого бота
-                        bot_posts = [
-                            post for post in all_posts 
-                            if post.get('channel_telegram_id') in channel_telegram_ids
-                        ]
-                        # Возвращаем только нужное количество
-                        return bot_posts[:limit]
                     else:
                         logger.error(f"❌ Ошибка получения постов: HTTP {response.status}")
                         return []
+            
+            # 2. Фильтруем только посты из каналов этого бота
+            bot_posts = [
+                post for post in all_posts 
+                if post.get('channel_telegram_id') in channel_telegram_ids
+            ]
+            
+            if not bot_posts:
+                logger.debug(f"📭 Нет постов из каналов бота {bot_id}")
+                return []
+            
+            # 3. Если bot_id передан, проверяем какие посты НЕ обработаны для этого бота
+            if bot_id is not None:
+                post_ids = [post['id'] for post in bot_posts]
+                
+                # 🚀 ИСПРАВЛЕНИЕ: Получаем уже обработанные посты через мультитенантную таблицу processed_data
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{self.backend_url}/api/ai/results/batch-status",
+                        params={
+                            "post_ids": ",".join(map(str, post_ids)),
+                            "bot_id": bot_id
+                        }
+                    ) as response:
+                        if response.status == 200:
+                            batch_status_response = await response.json()
+                            # Получаем массив статусов из ответа
+                            batch_status = batch_status_response.get('statuses', [])
+                            # Получаем ID постов которые уже completed для этого бота
+                            processed_post_ids = {
+                                item['post_id'] for item in batch_status 
+                                if item.get('status') == 'completed'
+                            }
+                            logger.debug(f"🔍 Бот {bot_id}: {len(processed_post_ids)} постов уже обработано через processed_data")
+                        else:
+                            logger.warning(f"⚠️ Не удалось получить статусы постов для бота {bot_id}")
+                            processed_post_ids = set()
+                
+                # Фильтруем только НЕ обработанные посты
+                unprocessed_posts = [
+                    post for post in bot_posts 
+                    if post['id'] not in processed_post_ids
+                ]
+                
+                logger.info(f"📊 Бот {bot_id}: {len(bot_posts)} постов из каналов, {len(unprocessed_posts)} необработанных")
+                
+                # Возвращаем только нужное количество
+                if limit is not None:
+                    return unprocessed_posts[:limit]
+                else:
+                    return unprocessed_posts
+            else:
+                # Если bot_id не передан, возвращаем все посты из каналов бота
+                if limit is not None:
+                    return bot_posts[:limit]
+                else:
+                    return bot_posts
+                    
         except Exception as e:
-            logger.error(f"❌ Исключение при получении постов: {str(e)}")
+            logger.error(f"❌ Исключение при получении постов для бота {bot_id}: {str(e)}")
             return []
 
     async def _process_posts_with_real_ai(self, posts: List[Dict[str, Any]], bot: Dict[str, Any], categories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -597,7 +697,12 @@ class AIOrchestratorV2:
         ai_results = []
         
         try:
-            # Используем уже инициализированные AI сервисы из __init__
+            # Проверяем что AI сервисы инициализированы
+            if self.categorization_service is None or self.summarization_service is None:
+                logger.error("❌ AI сервисы не инициализированы!")
+                return await self._process_posts_with_mock_ai(posts, bot)
+            
+            # Используем инициализированные AI сервисы
             categorization_service = self.categorization_service
             summarization_service = self.summarization_service
             
@@ -621,18 +726,56 @@ class AIOrchestratorV2:
                 bot_id=bot['id']
             )
             
-            # 2. Саммаризация каждого поста через SummarizationService
-            logger.info(f"🔄 Саммаризация {len(posts)} постов")
+            # 2. БАТЧЕВАЯ саммаризация всех постов через SummarizationService
+            logger.info(f"🔄 БАТЧЕВАЯ саммаризация {len(posts)} постов")
+            
+            # Подготавливаем тексты для батчевой саммаризации
+            texts_for_summarization = []
+            post_id_to_index = {}
+            valid_posts = []
+            
             for i, post in enumerate(posts):
+                post_id = post['id']
+                content = post.get('content', '')
+                
+                if not content or len(content.strip()) < 10:
+                    logger.warning(f"⚠️ Пост {post_id} слишком короткий, пропускаем")
+                    continue
+                
+                # Проверяем что есть результат категоризации
+                categorization_result = None
+                for cat_result in categorization_results:
+                    if cat_result.get('post_id') == post_id:
+                        categorization_result = cat_result
+                        break
+                
+                if not categorization_result:
+                    logger.warning(f"⚠️ Не найден результат категоризации для поста {post_id}")
+                    continue
+                
+                # Добавляем в батч для саммаризации
+                texts_for_summarization.append(content)
+                post_id_to_index[post_id] = len(valid_posts)
+                valid_posts.append(post)
+            
+            # Батчевая саммаризация всех текстов
+            if texts_for_summarization:
+                logger.info(f"🚀 Батчевая саммаризация {len(texts_for_summarization)} постов")
+                summarization_results = await summarization_service.process_batch(
+                    texts=texts_for_summarization,
+                    language=bot.get('default_language', 'ru'),
+                    custom_prompt=bot.get('summarization_prompt'),
+                    max_summary_length=bot.get('max_summary_length', 150)
+                )
+            else:
+                logger.warning("⚠️ Нет постов для саммаризации")
+                summarization_results = []
+            
+            # 3. Формируем финальные результаты, объединяя категоризацию и саммаризацию
+            logger.info(f"🔄 Формирование {len(valid_posts)} финальных результатов")
+            for i, post in enumerate(valid_posts):
                 try:
                     post_id = post['id']
-                    content = post.get('content', '')
-                    
-                    if not content or len(content.strip()) < 10:
-                        logger.warning(f"⚠️ Пост {post_id} слишком короткий, пропускаем")
-                        continue
-                    
-                    logger.info(f"🔄 Обработка поста {post_id}")
                     
                     # Получаем результат категоризации для этого поста
                     categorization_result = None
@@ -641,17 +784,10 @@ class AIOrchestratorV2:
                             categorization_result = cat_result
                             break
                     
-                    if not categorization_result:
-                        logger.warning(f"⚠️ Не найден результат категоризации для поста {post_id}")
-                        continue
-                    
-                    # Саммаризация
-                    summarization_result = await summarization_service.process(
-                        text=content,
-                        language=bot.get('default_language', 'ru'),
-                        custom_prompt=bot.get('summarization_prompt'),
-                        max_summary_length=bot.get('max_summary_length', 150)
-                    )
+                    # Получаем результат саммаризации (по индексу)
+                    summarization_result = {}
+                    if i < len(summarization_results):
+                        summarization_result = summarization_results[i]
                     
                     # Формируем результат
                     ai_result = {
@@ -662,33 +798,34 @@ class AIOrchestratorV2:
                             "en": summarization_result.get('summary_en', '')
                         },
                         "categories": {
-                            "primary": categorization_result.get('category_name', ''),
+                            "primary": categorization_result.get('category_name', '') if categorization_result else '',
                             "secondary": [],
-                            "relevance_scores": [categorization_result.get('relevance_score', 0.0)]
+                            "relevance_scores": [categorization_result.get('relevance_score', 0.0)] if categorization_result else [0.0]
                         },
                         "metrics": {
-                            "importance": categorization_result.get('importance', 5.0),
-                            "urgency": categorization_result.get('urgency', 5.0),
-                            "significance": categorization_result.get('significance', 5.0),
+                            "importance": categorization_result.get('importance', 5.0) if categorization_result else 5.0,
+                            "urgency": categorization_result.get('urgency', 5.0) if categorization_result else 5.0,
+                            "significance": categorization_result.get('significance', 5.0) if categorization_result else 5.0,
                             "tokens_used": summarization_result.get('tokens_used', 0),
                             "processing_time": 0.0  # TODO: измерить время
                         },
-                        "processing_version": "v3.0_real_ai"
+                        "processing_version": "v3.1_multitenant_batch"
                     }
                     
                     ai_results.append(ai_result)
                     
-                    # 🚀 НЕМЕДЛЕННОЕ ОБНОВЛЕНИЕ СТАТУСА ДЛЯ REAL-TIME UI
-                    await self._update_posts_status([post_id], "completed")
+                    # 🚀 УМНОЕ ОБНОВЛЕНИЕ МУЛЬТИТЕНАНТНОГО СТАТУСА 
+                    await self._update_multitenant_status([post_id], "completed", bot['id'], "both_services")
                     
-                    logger.info(f"✅ Пост {post_id} обработан: {categorization_result.get('category_name', 'N/A')}")
+                    category_name = categorization_result.get('category_name', 'N/A') if categorization_result else 'N/A'
+                    logger.info(f"✅ Пост {post_id} обработан: {category_name}")
                     
                 except Exception as e:
-                    logger.error(f"❌ Ошибка обработки поста {post.get('id', 'Unknown')}: {str(e)}")
+                    logger.error(f"❌ Ошибка формирования результата для поста {post.get('id', 'Unknown')}: {str(e)}")
                     # При ошибке помечаем пост как failed
-                    if 'post_id' in locals():
-                        await self._update_posts_status([post_id], "failed")
-                    continue
+                    post_id = post.get('id')
+                    if post_id:
+                        await self._update_multitenant_status([post_id], "failed", bot['id'])
             
             logger.info(f"🎉 Обработано {len(ai_results)} постов из {len(posts)}")
             return ai_results
@@ -724,12 +861,12 @@ class AIOrchestratorV2:
                     "tokens_used": 150,
                     "processing_time": 1.5
                 },
-                "processing_version": "v3.0_mock"
+                                        "processing_version": "v3.1_multitenant_mock"
             }
             ai_results.append(ai_result)
             
-            # 🚀 НЕМЕДЛЕННОЕ ОБНОВЛЕНИЕ СТАТУСА ДЛЯ REAL-TIME UI (Mock режим)
-            await self._update_posts_status([post_id], "completed")
+            # 🚀 УМНОЕ ОБНОВЛЕНИЕ МУЛЬТИТЕНАНТНОГО СТАТУСА (Mock режим)
+            await self._update_multitenant_status([post_id], "completed", bot['id'], "both_services")
             logger.info(f"✅ Mock пост {post_id} обработан")
         
         return ai_results
@@ -799,6 +936,9 @@ class AIOrchestratorV2:
         """Запуск одного батча обработки (для тестирования)"""
         logger.info("🧪 Запуск тестового батча AI Orchestrator v2.0")
         
+        # Инициализируем AI сервисы перед обработкой
+        await self._initialize_ai_services()
+        
         # Создаем фоновую задачу
         task = AITask(
             task_type=AITaskType.BACKGROUND_PROCESSING,
@@ -838,24 +978,119 @@ class AIOrchestratorV2:
             logger.error(f"❌ Исключение при сохранении: {str(e)}")
             return False
 
-    async def _update_posts_status(self, post_ids: List[int], status: str) -> bool:
-        """Обновление статуса постов в Backend API"""
+    # ❌ УДАЛЕН УСТАРЕВШИЙ МЕТОД _update_posts_status - использовал глобальные статусы
+    # ✅ Используйте _update_multitenant_status для мультитенантной архитектуры
+
+    async def _update_multitenant_status(self, post_ids: List[int], status: str, bot_id: int, service_type: str = None) -> bool:
+        """🔧 НОВОЕ: Умное обновление мультитенантных статусов AI обработки"""
         try:
+            # 🧠 УМНАЯ ЛОГИКА СТАТУСОВ
+            # Определяем правильный статус на основе текущего состояния и типа сервиса
+            smart_status = await self._calculate_smart_status(post_ids, bot_id, status, service_type)
+            
+            # 🚀 БАТЧЕВОЕ ОБНОВЛЕНИЕ через новый endpoint
             async with aiohttp.ClientSession() as session:
-                for post_id in post_ids:
-                    async with session.put(
-                        f"{self.backend_url}/api/posts/cache/{post_id}/status",
-                        json={"status": status},
-                        headers={"Content-Type": "application/json"}
-                    ) as response:
-                        if response.status == 200:
-                            logger.debug(f"✅ Пост {post_id} помечен как {status}")
-                        else:
-                            logger.warning(f"⚠️ Ошибка обновления поста {post_id}: HTTP {response.status}")
-                return True
+                async with session.put(
+                    f"{self.backend_url}/api/ai/results/batch-status",
+                    json={
+                        "post_ids": post_ids,
+                        "bot_id": bot_id,
+                        "status": smart_status
+                    },
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        affected_count = result.get('affected_count', 0)
+                        logger.info(f"✅ Батчево обновлено {affected_count} AI статусов на '{smart_status}' для бота {bot_id}")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Ошибка батчевого обновления: HTTP {response.status}")
+                        logger.error(f"   Детали: {error_text}")
+                        return False
         except Exception as e:
-            logger.error(f"❌ Исключение при обновлении статуса постов: {str(e)}")
+            logger.error(f"❌ Исключение при обновлении мультитенантных статусов: {str(e)}")
             return False
+
+    async def _calculate_smart_status(self, post_ids: List[int], bot_id: int, requested_status: str, service_type: str = None) -> str:
+        """🧠 Умное вычисление статуса на основе текущего состояния и типа сервиса"""
+        
+        # Если не указан тип сервиса, возвращаем как есть
+        if not service_type:
+            return requested_status
+        
+        try:
+            # 🔧 ИСПРАВЛЕНО: Получаем текущие статусы через МУЛЬТИТЕНАНТНЫЙ endpoint
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.backend_url}/api/ai/results/batch-status",
+                    params={
+                        "post_ids": ",".join(map(str, post_ids)),
+                        "bot_id": bot_id
+                    },
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        batch_status_response = await response.json()
+                        # Получаем массив статусов из ответа
+                        batch_status = batch_status_response.get('statuses', [])
+                        
+                        # Создаем карту текущих статусов из мультитенантных данных
+                        current_statuses = {}
+                        for item in batch_status:
+                            if item['post_id'] in post_ids:
+                                current_statuses[item['post_id']] = item.get('status', 'pending')
+                        
+                        # 🧠 УМНАЯ ЛОГИКА СТАТУСОВ
+                        if service_type == "categorization":
+                            # Категоризация завершена
+                            smart_statuses = []
+                            for post_id in post_ids:
+                                current = current_statuses.get(post_id, 'pending')
+                                if current == 'pending':
+                                    smart_statuses.append('categorized')
+                                elif current == 'summarized':
+                                    smart_statuses.append('completed')
+                                else:
+                                    smart_statuses.append(current)  # Оставляем как есть
+                            
+                            # Если все статусы одинаковые, возвращаем один
+                            unique_statuses = set(smart_statuses)
+                            if len(unique_statuses) == 1:
+                                return smart_statuses[0]
+                            else:
+                                logger.info(f"📊 Смешанные статусы после категоризации: {unique_statuses}")
+                                return 'categorized'  # Консервативный подход
+                        
+                        elif service_type == "summarization":
+                            # Саммаризация завершена
+                            smart_statuses = []
+                            for post_id in post_ids:
+                                current = current_statuses.get(post_id, 'pending')
+                                if current == 'pending':
+                                    smart_statuses.append('summarized')
+                                elif current == 'categorized':
+                                    smart_statuses.append('completed')
+                                else:
+                                    smart_statuses.append(current)  # Оставляем как есть
+                            
+                            # Если все статусы одинаковые, возвращаем один
+                            unique_statuses = set(smart_statuses)
+                            if len(unique_statuses) == 1:
+                                return smart_statuses[0]
+                            else:
+                                logger.info(f"📊 Смешанные статусы после саммаризации: {unique_statuses}")
+                                return 'summarized'  # Консервативный подход
+                    
+                    else:
+                        logger.warning(f"⚠️ Не удалось получить текущие мультитенантные статусы: HTTP {response.status}")
+                        
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при вычислении умного статуса: {str(e)}")
+        
+        # Fallback: возвращаем запрошенный статус
+        return requested_status
 
     # === ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ СОВМЕСТИМОСТИ С BACKEND ===
     
@@ -940,8 +1175,8 @@ async def main():
                        help="Режим работы: continuous (непрерывно) или single (один батч)")
     parser.add_argument("--backend-url", default="http://localhost:8000",
                        help="URL Backend API")
-    parser.add_argument("--batch-size", type=int, default=10,
-                       help="Размер батча для обработки")
+    parser.add_argument("--batch-size", type=int, default=None,
+                       help="Размер батча для обработки (если не указан, берется из настроек Backend)")
     
     args = parser.parse_args()
     

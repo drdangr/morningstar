@@ -3,6 +3,8 @@ from .base import BaseAIService
 from openai import AsyncOpenAI
 from loguru import logger
 import os
+import json
+import re
 
 class SummarizationService(BaseAIService):
     """Сервис для генерации краткого содержания постов"""
@@ -77,14 +79,144 @@ class SummarizationService(BaseAIService):
         custom_prompt: Optional[str] = None,
         **kwargs
     ) -> list[Dict[str, Any]]:
-        """Пакетная обработка постов"""
+        """НАСТОЯЩАЯ пакетная обработка постов - одним запросом к OpenAI"""
         
-        results = []
-        for text in texts:
-            result = await self.process(text, language, custom_prompt, **kwargs)
-            results.append(result)
+        if not texts:
+            return []
         
-        return results
+        self.logger.info(f"🚀 БАТЧЕВАЯ саммаризация {len(texts)} текстов одним запросом")
+        
+        try:
+            # Формируем промпт для батчевой обработки
+            base_prompt = custom_prompt or self._get_default_prompt(language)
+            
+            # Создаем батчевый промпт
+            batch_prompt = f"""{base_prompt}
+
+ВАЖНО: Обработай следующие {len(texts)} текстов и верни результат в формате JSON массива.
+Каждый элемент должен содержать поле "summary" с кратким содержанием соответствующего текста.
+
+Формат ответа:
+[
+  {{"summary": "краткое содержание текста 1"}},
+  {{"summary": "краткое содержание текста 2"}},
+  ...
+]
+
+ТЕКСТЫ ДЛЯ ОБРАБОТКИ:"""
+
+            # Добавляем все тексты с нумерацией
+            for i, text in enumerate(texts, 1):
+                batch_prompt += f"\n\n--- ТЕКСТ {i} ---\n{text}"
+            
+            # Отправляем батчевый запрос к OpenAI
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "user", "content": batch_prompt}
+                ],
+                max_tokens=self.max_tokens * 2,  # Увеличиваем лимит для батча
+                temperature=self.temperature
+            )
+            
+            # Парсим JSON ответ
+            response_text = response.choices[0].message.content.strip()
+            
+            # 🔧 УМНЫЙ ПАРСИНГ: обрабатываем JSON в markdown блоках
+            def extract_json_from_response(text: str) -> str:
+                """Извлекает JSON из ответа OpenAI, обрабатывая markdown блоки"""
+                
+                # Вариант 1: JSON в markdown блоке ```json
+                json_match = re.search(r'```json\s*\n(.*?)\n```', text, re.DOTALL)
+                if json_match:
+                    self.logger.info("📝 Найден JSON в markdown блоке ```json")
+                    return json_match.group(1).strip()
+                
+                # Вариант 2: JSON в блоке без языка ```
+                json_match = re.search(r'```\s*\n(.*?)\n```', text, re.DOTALL)
+                if json_match:
+                    potential_json = json_match.group(1).strip()
+                    if potential_json.startswith('[') or potential_json.startswith('{'):
+                        self.logger.info("📝 Найден JSON в markdown блоке ```")
+                        return potential_json
+                
+                # Вариант 3: Чистый JSON (начинается с [ или {)
+                if text.startswith('[') or text.startswith('{'):
+                    self.logger.info("📝 Найден чистый JSON")
+                    return text
+                
+                # Вариант 4: Ищем JSON в тексте по паттерну
+                json_match = re.search(r'(\[.*?\])', text, re.DOTALL)
+                if json_match:
+                    self.logger.info("📝 Найден JSON по паттерну в тексте")
+                    return json_match.group(1)
+                
+                self.logger.warning("⚠️ JSON не найден, возвращаем исходный текст")
+                return text
+            
+            # Извлекаем JSON из ответа
+            clean_json = extract_json_from_response(response_text)
+            
+            # Пробуем распарсить JSON
+            try:
+                summaries_data = json.loads(clean_json)
+                
+                if not isinstance(summaries_data, list):
+                    raise ValueError("Ответ не является массивом")
+                
+                if len(summaries_data) != len(texts):
+                    self.logger.warning(f"⚠️ Количество результатов ({len(summaries_data)}) не совпадает с количеством текстов ({len(texts)})")
+                
+                # Формируем результаты
+                results = []
+                total_tokens = response.usage.total_tokens
+                tokens_per_text = total_tokens // len(texts) if texts else 0
+                
+                for i, text in enumerate(texts):
+                    if i < len(summaries_data) and isinstance(summaries_data[i], dict):
+                        summary = summaries_data[i].get('summary', '')
+                    else:
+                        summary = f"Ошибка обработки текста {i+1}"
+                        self.logger.warning(f"⚠️ Не удалось получить саммаризацию для текста {i+1}")
+                    
+                    results.append({
+                        "summary": summary,
+                        "language": language,
+                        "tokens_used": tokens_per_text,
+                        "status": "success"
+                    })
+                
+                self.logger.info(f"✅ БАТЧЕВАЯ саммаризация завершена: {len(results)} результатов, {total_tokens} токенов")
+                return results
+                
+            except json.JSONDecodeError as e:
+                self.logger.error(f"❌ Ошибка парсинга JSON ответа: {e}")
+                self.logger.error(f"Ответ OpenAI: {response_text[:500]}...")
+                
+                # Fallback: возвращаем пустые саммаризации
+                results = []
+                for i, text in enumerate(texts):
+                    results.append({
+                        "summary": f"Ошибка парсинга для текста {i+1}",
+                        "language": language,
+                        "tokens_used": 0,
+                        "status": "error"
+                    })
+                return results
+                
+        except Exception as e:
+            self.logger.error(f"❌ Критическая ошибка батчевой саммаризации: {e}")
+            
+            # Fallback: возвращаем ошибки для всех текстов
+            results = []
+            for i, text in enumerate(texts):
+                results.append({
+                    "summary": f"Критическая ошибка для текста {i+1}",
+                    "language": language,
+                    "tokens_used": 0,
+                    "status": "error"
+                })
+            return results
     
     def _get_default_prompt(self, language: str) -> str:
         """Получение стандартного промпта для языка"""

@@ -65,7 +65,7 @@ class Post(Base):
     post_date = Column(DateTime, nullable=False)
     collected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     userbot_metadata = Column(JSONB, default=dict)
-    processing_status = Column(String(50), default='pending')
+    # processing_status = Column(String(50), default='pending')  # УБРАНО: заменено мультитенантными статусами в processed_data
     public_bot_id = Column(Integer, ForeignKey('public_bots.id'))
     retention_until = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)

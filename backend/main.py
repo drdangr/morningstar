@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -267,7 +267,7 @@ class PostCache(Base):
     post_date = Column(DateTime, nullable=False)
     collected_at = Column(DateTime, default=func.now(), nullable=False)
     userbot_metadata = Column(JSONB if USE_POSTGRESQL else Text, default={} if USE_POSTGRESQL else "{}")
-    processing_status = Column(String, default="pending")  # pending, processing, completed, failed
+    # processing_status = Column(String, default="pending")  # УБРАНО: заменено мультитенантными статусами в processed_data
 
 # Обновляем модель Category для связи с пользователями
 # ВРЕМЕННО ОТКЛЮЧЕНО ДО ИСПРАВЛЕНИЯ СТРУКТУРЫ ТАБЛИЦЫ user_subscriptions:
@@ -693,6 +693,14 @@ class PublicBotResponse(PublicBotBase):
     created_at: datetime
     updated_at: datetime
     
+    # Вычисляемое поле для совместимости с AI Orchestrator
+    is_active: bool = False  # Будет установлено в __init__
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Устанавливаем is_active на основе status
+        self.is_active = data.get('status') == 'active'
+
     class Config:
         from_attributes = True
 
@@ -1141,21 +1149,66 @@ def health_check():
 
 @app.get("/api/stats")
 def get_stats(db: Session = Depends(get_db)):
-    """Получить базовую статистику"""
+    """🚀 Получить базовую статистику (МУЛЬТИТЕНАНТНАЯ)"""
     categories_count = db.query(Category).count()
     channels_count = db.query(Channel).count()
     active_categories = db.query(Category).filter(Category.is_active == True).count()
     active_channels = db.query(Channel).filter(Channel.is_active == True).count()
     digests_count = db.query(Digest).count()
     posts_total = db.query(PostCache).count()
-    posts_pending = db.query(PostCache).filter(PostCache.processing_status == "pending").count()
-    posts_processed = db.query(PostCache).filter(PostCache.processing_status == "completed").count()
+    
+    # 🚀 МУЛЬТИТЕНАНТНАЯ статистика постов
+    # Получаем активные боты для мультитенантной статистики
+    active_bots = db.query(PublicBot).filter(
+        PublicBot.status.in_(['active', 'development'])
+    ).all()
+    
+    if active_bots:
+        active_bot_ids = [bot.id for bot in active_bots]
+        
+        # Получаем каналы активных ботов
+        bot_channels = db.query(BotChannel).filter(
+            BotChannel.public_bot_id.in_(active_bot_ids),
+            BotChannel.is_active == True
+        ).all()
+        
+        if bot_channels:
+            channel_ids = [bc.channel_id for bc in bot_channels]
+            channels_info = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+            channel_telegram_ids = [ch.telegram_id for ch in channels_info]
+            
+            # Мультитенантная статистика по статусам
+            posts_pending = db.query(PostCache.id).join(
+                ProcessedData, PostCache.id == ProcessedData.post_id
+            ).filter(
+                ProcessedData.processing_status == 'pending',
+                ProcessedData.public_bot_id.in_(active_bot_ids),
+                PostCache.channel_telegram_id.in_(channel_telegram_ids)
+            ).distinct().count()
+            
+            posts_processed = db.query(PostCache.id).join(
+                ProcessedData, PostCache.id == ProcessedData.post_id
+            ).filter(
+                ProcessedData.processing_status == 'completed',
+                ProcessedData.public_bot_id.in_(active_bot_ids),
+                PostCache.channel_telegram_id.in_(channel_telegram_ids)
+            ).distinct().count()
+        else:
+            posts_pending = 0
+            posts_processed = 0
+    else:
+        posts_pending = 0
+        posts_processed = 0
     
     # Статистика связей
     total_links = db.query(channel_categories).count()
     
     # Размер базы данных
     database_size = get_database_size()
+    
+    # 🔧 ИСПРАВЛЕНО: Добавляем статистику активных ботов
+    total_bots = db.query(PublicBot).count()
+    active_bots_count = len(active_bots)  # Используем уже посчитанных активных ботов
     
     return {
         "total_categories": categories_count,
@@ -1164,10 +1217,13 @@ def get_stats(db: Session = Depends(get_db)):
         "active_channels": active_channels,
         "total_digests": digests_count,
         "total_posts": posts_total,
-        "posts_pending": posts_pending,
-        "posts_processed": posts_processed,
+        "posts_pending": posts_pending,  # Теперь мультитенантная статистика
+        "posts_processed": posts_processed,  # Теперь мультитенантная статистика
         "channel_category_links": total_links,
-        "database_size_mb": database_size
+        "database_size_mb": database_size,
+        # 🚀 НОВЫЕ ПОЛЯ: Статистика ботов
+        "total_bots": total_bots,
+        "active_bots": active_bots_count
     }
 
 # API для управления связями канал-категория
@@ -1994,6 +2050,85 @@ def get_posts_cache_size(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка получения размера данных: {str(e)}"
+        )
+
+@app.put("/api/posts/cache/batch-status")
+def update_posts_status_batch(
+    request: dict,  # {"post_ids": [1, 2, 3], "status": "processing", "updated_at": "2025-06-24T10:00:00Z"}
+    db: Session = Depends(get_db)
+):
+    """🔧 НОВОЕ: Батчевое обновление статусов постов для оптимизации AI Orchestrator"""
+    post_ids = request.get("post_ids", [])
+    new_status = request.get("status")
+    
+    if not post_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'post_ids' обязательно и не может быть пустым"
+        )
+    
+    if not new_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'status' обязательно"
+        )
+    
+    # Валидация статуса
+    valid_statuses = ["pending", "processing", "completed", "failed"]
+    if new_status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Недопустимый статус. Допустимые: {valid_statuses}"
+        )
+    
+    # Валидация количества постов
+    if len(post_ids) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Максимальное количество постов в батче: 100"
+        )
+    
+    try:
+        # Получаем посты для обновления
+        posts = db.query(PostCache).filter(PostCache.id.in_(post_ids)).all()
+        found_post_ids = {post.id for post in posts}
+        missing_post_ids = set(post_ids) - found_post_ids
+        
+        if missing_post_ids:
+            logger.warning(f"Не найдены посты с ID: {missing_post_ids}")
+        
+        # Обновляем статус найденных постов
+        if posts:
+            update_count = db.query(PostCache).filter(
+                PostCache.id.in_([post.id for post in posts])
+            ).update({
+                "processing_status": new_status
+            }, synchronize_session=False)
+            
+            db.commit()
+            
+            logger.info(f"✅ Батчево обновлено {update_count} постов на статус '{new_status}'")
+            
+            return {
+                "message": f"Батчево обновлено {update_count} постов на статус '{new_status}'",
+                "updated_count": update_count,
+                "requested_count": len(post_ids),
+                "found_count": len(posts),
+                "missing_post_ids": list(missing_post_ids) if missing_post_ids else [],
+                "status": new_status
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Ни один из запрошенных постов не найден: {post_ids}"
+            )
+            
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка батчевого обновления статусов: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка батчевого обновления статусов: {str(e)}"
         )
 
 @app.get("/api/posts/cache/{post_id}", response_model=PostCacheResponse)
@@ -2890,7 +3025,8 @@ class ProcessedData(Base):
     categories = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
     metrics = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
     processed_at = Column(DateTime, default=func.now())
-    processing_version = Column(String, default="v1.0")
+    processing_version = Column(String, default="v3.1")
+    processing_status = Column(String, default="pending", nullable=False)  # Добавлено: мультитенантный статус
     __table_args__ = (UniqueConstraint('post_id', 'public_bot_id', name='uq_processed_post_bot'),)
 
 # Создание таблиц БД - выполняется в конце после всех определений
@@ -2909,7 +3045,7 @@ class AIResultCreate(BaseModel):
     summaries: Dict[str, Any]
     categories: Dict[str, Any]
     metrics: Dict[str, Any]
-    processing_version: str = "v1.0"
+    processing_version: str = "v3.1"
 
 class AIResultResponse(AIResultCreate):
     id: int
@@ -2943,27 +3079,48 @@ def create_ai_result(result: AIResultCreate, db: Session = Depends(get_db)):
 @app.post("/api/ai/results/batch", response_model=List[AIResultResponse], status_code=status.HTTP_201_CREATED)
 def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends(get_db)):
     created_records = []
+    updated_records = []
+    
     for res in results:
-        if db.query(ProcessedData).filter_by(post_id=res.post_id, public_bot_id=res.public_bot_id).first():
-            continue
-        r = ProcessedData(
-            post_id=res.post_id,
-            public_bot_id=res.public_bot_id,
-            summaries=res.summaries if USE_POSTGRESQL else json.dumps(res.summaries, ensure_ascii=False),
-            categories=res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False),
-            metrics=res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False),
-            processing_version=res.processing_version,
-        )
-        db.add(r)
-        created_records.append(r)
-        # менять статус поста
+        # Проверяем существующую запись
+        existing_record = db.query(ProcessedData).filter_by(post_id=res.post_id, public_bot_id=res.public_bot_id).first()
+        
+        if existing_record:
+            # ОБНОВЛЯЕМ существующую запись
+            existing_record.summaries = res.summaries if USE_POSTGRESQL else json.dumps(res.summaries, ensure_ascii=False)
+            existing_record.categories = res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False)
+            existing_record.metrics = res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False)
+            existing_record.processing_version = res.processing_version
+            existing_record.processing_status = "completed"
+            existing_record.processed_at = func.now()
+            updated_records.append(existing_record)
+        else:
+            # СОЗДАЕМ новую запись
+            r = ProcessedData(
+                post_id=res.post_id,
+                public_bot_id=res.public_bot_id,
+                summaries=res.summaries if USE_POSTGRESQL else json.dumps(res.summaries, ensure_ascii=False),
+                categories=res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False),
+                metrics=res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False),
+                processing_version=res.processing_version,
+                processing_status="completed"
+            )
+            db.add(r)
+            created_records.append(r)
+        
+        # Обновляем статус поста в posts_cache (legacy)
         post = db.query(PostCache).filter_by(id=res.post_id).first()
         if post:
             post.processing_status = "completed"
+    
     db.commit()
-    for r in created_records:
+    
+    # Обновляем записи после commit
+    for r in created_records + updated_records:
         db.refresh(r)
-    return created_records
+    
+    logger.info(f"✅ Batch AI results: создано {len(created_records)}, обновлено {len(updated_records)}")
+    return created_records + updated_records
 
 @app.get("/api/ai/results", response_model=List[AIResultResponse])
 def get_ai_results(
@@ -3001,6 +3158,201 @@ def get_ai_results(
     
     return query.offset(skip).limit(limit).all()
 
+@app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
+def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+    """✅ ПРАВИЛЬНАЯ АРХИТЕКТУРА: Возвращаем ВСЕ посты из общего пула, AI Orchestrator сам решает что обрабатывать"""
+    return db.query(PostCache).order_by(PostCache.collected_at.asc()).limit(limit).all()
+
+# === MULTITENANT STATUS ENDPOINTS ===
+@app.get("/api/ai/results/batch-status")
+def get_ai_results_batch_status(
+    post_ids: str = Query(..., description="Comma-separated list of post IDs"),
+    bot_id: int = Query(..., description="Bot ID"),
+    db: Session = Depends(get_db)
+):
+    """🔧 ИСПРАВЛЕНО: GET endpoint для проверки статусов постов в мультитенантной архитектуре"""
+    try:
+        # Парсим post_ids
+        post_ids_list = [int(pid.strip()) for pid in post_ids.split(',') if pid.strip()]
+        
+        if not post_ids_list:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="post_ids не может быть пустым"
+            )
+        
+        if len(post_ids_list) > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Максимальное количество post_ids: 100"
+            )
+        
+        # Проверяем существование бота
+        bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Бот с ID {bot_id} не найден"
+            )
+        
+        # Получаем статусы постов для данного бота
+        results = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids_list),
+            ProcessedData.public_bot_id == bot_id
+        ).all()
+        
+        # Формируем ответ
+        status_map = {}
+        for result in results:
+            status_map[result.post_id] = {
+                "post_id": result.post_id,
+                "bot_id": result.public_bot_id,
+                "status": result.processing_status,
+                "processed_at": result.processed_at.isoformat() if result.processed_at else None
+            }
+        
+        # Добавляем отсутствующие посты как "not_found"
+        for post_id in post_ids_list:
+            if post_id not in status_map:
+                status_map[post_id] = {
+                    "post_id": post_id,
+                    "bot_id": bot_id,
+                    "status": "not_found",
+                    "processed_at": None
+                }
+        
+        return {
+            "bot_id": bot_id,
+            "requested_posts": len(post_ids_list),
+            "found_posts": len(results),
+            "statuses": list(status_map.values())
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Некорректные post_ids: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения batch статусов: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения batch статусов: {str(e)}"
+        )
+
+@app.put("/api/ai/results/batch-status")
+def update_ai_results_status_batch(
+    request: dict,  # {"post_ids": [1, 2, 3], "bot_id": 4, "status": "categorized"}
+    db: Session = Depends(get_db)
+):
+    """🔧 НОВОЕ: Батчевое обновление мультитенантных статусов AI обработки"""
+    post_ids = request.get("post_ids", [])
+    bot_id = request.get("bot_id")
+    new_status = request.get("status")
+    
+    if not post_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'post_ids' обязательно и не может быть пустым"
+        )
+    
+    if not bot_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'bot_id' обязательно"
+        )
+    
+    if not new_status:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле 'status' обязательно"
+        )
+    
+    # Валидация статуса
+    valid_statuses = ["pending", "processing", "categorized", "summarized", "completed", "failed"]
+    if new_status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Недопустимый статус. Допустимые: {valid_statuses}"
+        )
+    
+    # Валидация количества постов
+    if len(post_ids) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Максимальное количество постов в батче: 100"
+        )
+    
+    try:
+        # Проверяем существование бота
+        bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Бот с ID {bot_id} не найден"
+            )
+        
+        # Получаем или создаем записи processed_data для этих постов и бота
+        existing_records = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids),
+            ProcessedData.public_bot_id == bot_id
+        ).all()
+        
+        existing_post_ids = {record.post_id for record in existing_records}
+        missing_post_ids = set(post_ids) - existing_post_ids
+        
+        # Создаем записи для отсутствующих постов
+        created_count = 0
+        if missing_post_ids:
+            for post_id in missing_post_ids:
+                # Проверяем что пост существует
+                post_exists = db.query(PostCache).filter(PostCache.id == post_id).first()
+                if post_exists:
+                    new_record = ProcessedData(
+                        post_id=post_id,
+                        public_bot_id=bot_id,
+                        summaries={},
+                        categories={},
+                        metrics={},
+                        processing_status=new_status
+                    )
+                    db.add(new_record)
+                    created_count += 1
+        
+        # Обновляем статус существующих записей
+        updated_count = 0
+        if existing_records:
+            updated_count = db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_([record.post_id for record in existing_records]),
+                ProcessedData.public_bot_id == bot_id
+            ).update({
+                "processing_status": new_status
+            }, synchronize_session=False)
+        
+        db.commit()
+        
+        total_affected = created_count + updated_count
+        logger.info(f"✅ Батчево обновлено {total_affected} AI статусов на '{new_status}' для бота {bot_id}")
+        
+        return {
+            "message": f"Батчево обновлено {total_affected} AI статусов на '{new_status}' для бота {bot_id}",
+            "affected_count": total_affected,
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "requested_count": len(post_ids),
+            "bot_id": bot_id,
+            "status": new_status,
+            "missing_posts": list(set(post_ids) - existing_post_ids - {r.post_id for r in existing_records}) if missing_post_ids else []
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка батчевого обновления AI статусов: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка батчевого обновления AI статусов: {str(e)}"
+        )
+
 @app.get("/api/ai/results/{result_id}", response_model=AIResultResponse)
 def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
     """Получение конкретного AI результата по ID"""
@@ -3009,14 +3361,10 @@ def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="AI result not found")
     return result
 
-@app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
-def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
-    return db.query(PostCache).filter(PostCache.processing_status == "pending").order_by(PostCache.collected_at.asc()).limit(limit).all()
-
 # === AI MANAGEMENT ENDPOINTS ===
 @app.get("/api/ai/status")
 def get_ai_status(db: Session = Depends(get_db)):
-    """Получить статус AI обработки"""
+    """Получить статус AI обработки (МУЛЬТИТЕНАНТНЫЕ СТАТУСЫ)"""
     try:
         # Получаем активные боты (active + development)
         active_bots = db.query(PublicBot).filter(
@@ -3039,14 +3387,27 @@ def get_ai_status(db: Session = Depends(get_db)):
                 channels_info = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
                 channel_telegram_ids = [ch.telegram_id for ch in channels_info]
                 
-                # Статистика постов по статусам ТОЛЬКО для каналов активных ботов
-                posts_stats = {}
-                for status in ['pending', 'processing', 'completed', 'failed']:
-                    count = db.query(PostCache).filter(
-                        PostCache.processing_status == status,
+                # 🚀 МУЛЬТИТЕНАНТНАЯ статистика постов по статусам
+                multitenant_stats = {}
+                for status in ['pending', 'categorized', 'summarized', 'completed', 'failed']:
+                    # Считаем уникальные посты из каналов активных ботов с данным статусом
+                    count = db.query(PostCache.id).join(
+                        ProcessedData, PostCache.id == ProcessedData.post_id
+                    ).filter(
+                        ProcessedData.processing_status == status,
+                        ProcessedData.public_bot_id.in_(active_bot_ids),
                         PostCache.channel_telegram_id.in_(channel_telegram_ids)
-                    ).count()
-                    posts_stats[status] = count
+                    ).distinct().count()
+                    multitenant_stats[status] = count
+                
+                # Создаем совместимую с UI статистику (processing = categorized + summarized)
+                processing_count = multitenant_stats.get('categorized', 0) + multitenant_stats.get('summarized', 0)
+                posts_stats = {
+                    'pending': multitenant_stats.get('pending', 0),
+                    'processing': processing_count,
+                    'completed': multitenant_stats.get('completed', 0),
+                    'failed': multitenant_stats.get('failed', 0)
+                }
                 
                 # Общая статистика постов (только для активных ботов)
                 total_assignable_posts = db.query(PostCache).filter(
@@ -3054,10 +3415,12 @@ def get_ai_status(db: Session = Depends(get_db)):
                 ).count()
             else:
                 # Нет назначенных каналов
+                multitenant_stats = {'pending': 0, 'categorized': 0, 'summarized': 0, 'completed': 0, 'failed': 0}
                 posts_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'failed': 0}
                 total_assignable_posts = 0
         else:
             # Нет активных ботов
+            multitenant_stats = {'pending': 0, 'categorized': 0, 'summarized': 0, 'completed': 0, 'failed': 0}
             posts_stats = {'pending': 0, 'processing': 0, 'completed': 0, 'failed': 0}
             total_assignable_posts = 0
         
@@ -3081,7 +3444,8 @@ def get_ai_status(db: Session = Depends(get_db)):
         processing_bots = active_bots_count + development_bots
         
         return {
-            "posts_stats": posts_stats,
+            "posts_stats": posts_stats,  # Совместимая с UI статистика
+            "multitenant_stats": multitenant_stats,  # Полная мультитенантная статистика
             "total_posts": total_assignable_posts,  # Посты назначенные активным ботам
             "total_posts_in_system": total_posts_in_system,  # Все посты в системе
             "progress_percentage": progress_percentage,  # Прогресс от назначенных постов
@@ -3102,11 +3466,130 @@ def get_ai_status(db: Session = Depends(get_db)):
         return {
             "error": str(e),
             "posts_stats": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+            "multitenant_stats": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
             "total_posts": 0,
             "progress_percentage": 0,
             "ai_results_stats": {"total_results": 0, "results_per_post": 0},
             "bots_stats": {"total_bots": 0, "active_bots": 0, "development_bots": 0, "total_processing_bots": 0},
             "is_processing": False,
+            "last_updated": datetime.now().isoformat()
+        }
+
+@app.get("/api/ai/multitenant-status")
+def get_multitenant_ai_status(db: Session = Depends(get_db)):
+    """🚀 НОВЫЙ: Полная мультитенантная статистика AI обработки по ботам"""
+    try:
+        # Получаем активные боты
+        active_bots = db.query(PublicBot).filter(
+            PublicBot.status.in_(['active', 'development'])
+        ).all()
+        
+        if not active_bots:
+            return {
+                "bots_stats": [],
+                "summary": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
+                "ui_compatible_summary": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+                "total_bots": 0,
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        bots_detailed = []
+        summary_stats = {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
+        
+        for bot in active_bots:
+            # Получаем каналы бота
+            bot_channels = db.query(BotChannel).filter(
+                BotChannel.public_bot_id == bot.id,
+                BotChannel.is_active == True
+            ).all()
+            
+            if bot_channels:
+                channel_ids = [bc.channel_id for bc in bot_channels]
+                channels_info = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+                channel_telegram_ids = [ch.telegram_id for ch in channels_info]
+                
+                # Статистика по статусам для этого бота
+                bot_stats = {}
+                for status in ['pending', 'categorized', 'summarized', 'completed', 'failed']:
+                    count = db.query(PostCache.id).join(
+                        ProcessedData, PostCache.id == ProcessedData.post_id
+                    ).filter(
+                        ProcessedData.processing_status == status,
+                        ProcessedData.public_bot_id == bot.id,
+                        PostCache.channel_telegram_id.in_(channel_telegram_ids)
+                    ).distinct().count()
+                    bot_stats[status] = count
+                    summary_stats[status] += count
+                
+                # Общее количество постов для бота
+                total_bot_posts = db.query(PostCache).filter(
+                    PostCache.channel_telegram_id.in_(channel_telegram_ids)
+                ).count()
+                
+                progress = 0
+                if total_bot_posts > 0:
+                    progress = round((bot_stats['completed'] / total_bot_posts) * 100, 2)
+            else:
+                bot_stats = {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
+                total_bot_posts = 0
+                progress = 0
+            
+            # UI-совместимая статистика для бота
+            processing_count = bot_stats.get('categorized', 0) + bot_stats.get('summarized', 0)
+            ui_compatible_stats = {
+                "pending": bot_stats.get('pending', 0),
+                "processing": processing_count,
+                "completed": bot_stats.get('completed', 0),
+                "failed": bot_stats.get('failed', 0)
+            }
+            
+            bots_detailed.append({
+                "bot_id": bot.id,
+                "name": bot.name,
+                "status": bot.status,
+                "multitenant_stats": bot_stats,  # Полная статистика
+                "ui_stats": ui_compatible_stats,  # Совместимая с UI
+                "total_posts": total_bot_posts,
+                "progress_percentage": progress,
+                "channels_count": len(bot_channels) if bot_channels else 0
+            })
+        
+        # UI-совместимая суммарная статистика
+        total_processing = summary_stats.get('categorized', 0) + summary_stats.get('summarized', 0)
+        ui_compatible_summary = {
+            "pending": summary_stats.get('pending', 0),
+            "processing": total_processing,
+            "completed": summary_stats.get('completed', 0),
+            "failed": summary_stats.get('failed', 0)
+        }
+        
+        # 🔧 ИСПРАВЛЕНО: Добавляем правильную статистику ботов для совместимости
+        bot_statistics = []
+        for bot_detail in bots_detailed:
+            bot_statistics.append({
+                "bot_id": bot_detail["bot_id"],
+                "bot_name": bot_detail["name"],
+                "total_posts": bot_detail["total_posts"],
+                "processed_posts": bot_detail["multitenant_stats"]["completed"],
+                "posts_by_status": bot_detail["multitenant_stats"]
+            })
+        
+        return {
+            "bots_stats": bots_detailed,
+            "bot_statistics": bot_statistics,  # 🚀 НОВОЕ: Совместимость с диагностическими скриптами
+            "summary": summary_stats,  # Полная мультитенантная статистика
+            "ui_compatible_summary": ui_compatible_summary,  # Совместимая с UI
+            "total_bots": len(active_bots),
+            "last_updated": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "bots_stats": [],
+            "summary": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
+            "ui_compatible_summary": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+            "total_bots": 0,
             "last_updated": datetime.now().isoformat()
         }
 
@@ -3151,53 +3634,41 @@ def get_ai_tasks(db: Session = Depends(get_db)):
 
 @app.post("/api/ai/reprocess-all")
 async def reprocess_all_posts(db: Session = Depends(get_db)):
-    """Перезапустить AI обработку для всех постов + автозапуск AI Orchestrator"""
+    """✅ МУЛЬТИТЕНАНТНЫЙ ПЕРЕЗАПУСК: Очистить все AI результаты + автозапуск AI Orchestrator"""
     try:
-        # Сбрасываем статус всех постов на "pending"
-        updated_count = db.query(PostCache).update(
-            {"processing_status": "pending"},
-            synchronize_session=False
-        )
+        # ✅ ПРАВИЛЬНАЯ МУЛЬТИТЕНАНТНАЯ АРХИТЕКТУРА:
+        # 1. НЕ трогаем posts_cache.processing_status (он глобальный, управляется AI Orchestrator)
+        # 2. Удаляем только записи из processed_data (мультитенантные результаты)
+        # 3. AI Orchestrator автоматически увидит все посты как "необработанные" для каждого бота
         
-        # Очищаем все AI результаты
+        # Подсчитываем AI результаты для удаления
         deleted_results = db.query(ProcessedData).count()
+        
+        # Удаляем все AI результаты (мультитенантные статусы автоматически удалятся)
         db.query(ProcessedData).delete(synchronize_session=False)
         
         db.commit()
         
         # 🚀 АВТОЗАПУСК AI ORCHESTRATOR
-        import subprocess
-        import os
-        import sys
-        
-        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
-        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
-        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
-        
         ai_start_success = False
         ai_message = ""
         
-        try:
-            if os.path.exists(orchestrator_path):
-                # Запускаем в фоне без ожидания (Popen без communicate)
-                process = subprocess.Popen([
-                    sys.executable, orchestrator_path, "--mode", "single"
-                ], cwd=project_root,  # Меняем рабочую директорию на корень проекта
-                   stdout=subprocess.DEVNULL, 
-                   stderr=subprocess.DEVNULL)
-                
-                ai_start_success = True
-                ai_message = "AI Orchestrator запущен автоматически"
-            else:
-                ai_message = f"AI Orchestrator не найден: {orchestrator_path}"
-        except Exception as e:
-            ai_message = f"Ошибка автозапуска AI: {str(e)}"
+        if deleted_results > 0:
+            try:
+                # Вызываем существующую функцию trigger_ai_processing
+                trigger_response = await trigger_ai_processing()
+                ai_start_success = trigger_response.get("success", False)
+                ai_message = "AI Orchestrator запущен автоматически через trigger_ai_processing"
+            except Exception as e:
+                ai_message = f"Ошибка автозапуска AI через trigger_ai_processing: {str(e)}"
+        else:
+            ai_message = "Нет AI результатов для очистки, автозапуск не требуется"
         
         return {
             "success": True,
-            "message": "Перезапуск AI обработки инициирован",
-            "posts_reset": updated_count,
+            "message": "✅ Мультитенантный перезапуск AI обработки инициирован",
             "ai_results_cleared": deleted_results,
+            "multitenant_architecture": True,  # Маркер новой архитектуры
             "ai_auto_start": ai_start_success,
             "ai_message": ai_message
         }
@@ -3441,7 +3912,7 @@ def stop_ai_processing(db: Session = Depends(get_db)):
 
 @app.delete("/api/ai/clear-results")
 async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db)):
-    """Очистить все AI результаты И сбросить статусы постов + автозапуск AI Orchestrator"""
+    """✅ МУЛЬТИТЕНАНТНАЯ ОЧИСТКА: Удалить все AI результаты + автозапуск AI Orchestrator"""
     if not confirm:
         return {
             "success": False,
@@ -3453,16 +3924,12 @@ async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db))
         # Подсчитываем количество записей для удаления
         total_results = db.query(ProcessedData).count()
         
-        # Сбрасываем ВСЕ посты со статусом "completed" И "processing" на "pending"
-        # (поскольку если удаляем все AI результаты, то все обработанные/обрабатывающиеся посты должны стать pending)
-        posts_updated = db.query(PostCache).filter(
-            PostCache.processing_status.in_(["completed", "processing"])
-        ).update(
-            {"processing_status": "pending"},
-            synchronize_session=False
-        )
+        # ✅ ПРАВИЛЬНАЯ МУЛЬТИТЕНАНТНАЯ АРХИТЕКТУРА:
+        # 1. НЕ трогаем posts_cache.processing_status (он глобальный)
+        # 2. Удаляем только записи из processed_data (мультитенантные результаты)
+        # 3. AI Orchestrator автоматически увидит посты как "необработанные" для каждого бота
         
-        # Удаляем все AI результаты ПОСЛЕ сброса статусов
+        # Удаляем все AI результаты (мультитенантные статусы автоматически удалятся)
         db.query(ProcessedData).delete(synchronize_session=False)
         
         db.commit()
@@ -3471,7 +3938,7 @@ async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db))
         ai_orchestrator_triggered = False
         trigger_error = None
         
-        if posts_updated > 0:
+        if total_results > 0:
             try:
                 # Вызываем существующую функцию trigger_ai_processing
                 trigger_response = await trigger_ai_processing()
@@ -3483,17 +3950,17 @@ async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db))
         result = {
             "success": True,
             "deleted_results": total_results,
-            "reset_posts": posts_updated,
+            "multitenant_architecture": True,  # Маркер новой архитектуры
             "ai_orchestrator_triggered": ai_orchestrator_triggered
         }
         
         if ai_orchestrator_triggered:
-            result["message"] = f"Удалено {total_results} AI результатов, сброшено {posts_updated} статусов постов. AI Orchestrator запущен автоматически."
-        elif posts_updated > 0:
-            result["message"] = f"Удалено {total_results} AI результатов, сброшено {posts_updated} статусов постов. Ошибка автозапуска AI Orchestrator: {trigger_error or 'Неизвестная ошибка'}"
+            result["message"] = f"✅ Удалено {total_results} AI результатов (мультитенантная архитектура). AI Orchestrator запущен автоматически."
+        elif total_results > 0:
+            result["message"] = f"✅ Удалено {total_results} AI результатов (мультитенантная архитектура). Ошибка автозапуска AI Orchestrator: {trigger_error or 'Неизвестная ошибка'}"
             result["trigger_error"] = trigger_error
         else:
-            result["message"] = f"Удалено {total_results} AI результатов, статусы постов не изменились"
+            result["message"] = "✅ Нет AI результатов для удаления (мультитенантная архитектура)"
         
         return result
         
@@ -3603,42 +4070,27 @@ async def generate_digest_preview(bot_id: int, db: Session = Depends(get_db)):
             import os
             sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
             
-            from ai_services.orchestrator import AIOrchestrator, Post as AIPost, Bot as AIBot
+            from ai_services.orchestrator_v4 import AIOrchestrator
             
             # Создаем AI Orchestrator
             orchestrator = AIOrchestrator(backend_url="http://localhost:8000")
             
-            # Конвертируем посты в формат AI Orchestrator
-            ai_posts = []
-            for post in unprocessed_posts:
-                ai_post = AIPost(
-                    id=post.id,
-                    text=post.content,
-                    caption=post.title or "",
-                    views=post.views,
-                    date=post.post_date,
-                    channel_id=post.channel_telegram_id,
-                    message_id=post.telegram_message_id
-                )
-                ai_posts.append(ai_post)
-            
-            # Создаем объект бота для AI Orchestrator
-            ai_bot = AIBot(
-                id=bot.id,
-                name=bot.name,
-                categorization_prompt=bot.categorization_prompt or "",
-                summarization_prompt=bot.summarization_prompt or "",
-                max_posts_per_digest=bot.max_posts_per_digest,
-                max_summary_length=bot.max_summary_length
-            )
-            
-            # Запускаем AI обработку
+            # Запускаем AI обработку для конкретного бота через orchestrator_v4
             try:
-                ai_results = await orchestrator.process_posts_for_bot(ai_posts, ai_bot)
-                if ai_results:
-                    # Сохраняем результаты
-                    await orchestrator.save_ai_results(ai_results)
-                    print(f"✅ AI обработка завершена: {len(ai_results)} результатов сохранено")
+                # Создаем словарь бота для AI Orchestrator v4.0
+                bot_data = {
+                    "id": bot.id,
+                    "name": bot.name,
+                    "categorization_prompt": bot.categorization_prompt or "",
+                    "summarization_prompt": bot.summarization_prompt or "",
+                    "status": bot.status
+                }
+                
+                # Запускаем AI обработку для конкретного бота
+                processed_count = await orchestrator.process_bot(bot_data)
+                
+                if processed_count > 0:
+                    print(f"✅ AI обработка завершена: {processed_count} постов обработано")
                 else:
                     print("⚠️ AI обработка не дала результатов")
             except Exception as e:
@@ -3720,22 +4172,59 @@ async def trigger_ai_processing():
     import sys
     
     try:
-        # Проверяем есть ли необработанные посты
+        # 🔧 ИСПРАВЛЕНО: Используем мультитенантную логику для подсчета необработанных постов
         db = next(get_db())
-        pending_count = db.query(PostCache).filter(PostCache.processing_status == 'pending').count()
         
-        if pending_count == 0:
+        # Находим активные боты
+        active_bots = db.query(PublicBot).filter(
+            PublicBot.status.in_(['active', 'development'])
+        ).all()
+        
+        if not active_bots:
             return {
                 "success": True,
-                "message": "Нет постов для обработки",
+                "message": "Нет активных ботов для обработки",
+                "pending_posts": 0
+            }
+        
+        # Собираем каналы всех активных ботов
+        active_channel_ids = set()
+        for bot in active_bots:
+            bot_channels = db.query(BotChannel).filter(
+                BotChannel.public_bot_id == bot.id,
+                BotChannel.is_active == True
+            ).all()
+            for bot_channel in bot_channels:
+                active_channel_ids.add(bot_channel.channel_id)
+        
+        if not active_channel_ids:
+            return {
+                "success": True,
+                "message": "У активных ботов нет каналов для обработки",
+                "pending_posts": 0
+            }
+        
+        # Получаем telegram_id каналов
+        channels = db.query(Channel).filter(Channel.id.in_(active_channel_ids)).all()
+        active_telegram_ids = [ch.telegram_id for ch in channels]
+        
+        # Считаем все посты из каналов активных ботов
+        total_posts = db.query(PostCache).filter(
+            PostCache.channel_telegram_id.in_(active_telegram_ids)
+        ).count()
+        
+        if total_posts == 0:
+            return {
+                "success": True,
+                "message": "Нет постов в каналах активных ботов",
                 "pending_posts": 0
             }
         
         # Добавляем команду в очередь для AI Orchestrator (если он работает в continuous режиме)
         trigger_command = {
             "command_type": "trigger_processing",
-            "message": f"Запрос обработки {pending_count} постов",
-            "pending_posts": pending_count
+            "message": f"Запрос обработки {total_posts} постов для {len(active_bots)} активных ботов",
+            "pending_posts": total_posts
         }
         orchestrator_commands.append({
             "id": len(orchestrator_commands) + 1,
@@ -3743,9 +4232,9 @@ async def trigger_ai_processing():
             **trigger_command
         })
         
-        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
-        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
-        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
+        # Путь к AI Orchestrator v4.0 (Backend запускается из backend/ папки)  
+        project_root = os.path.dirname(os.getcwd())  # Поднимаемся на уровень выше backend/
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v4.py")
         
         # Проверяем существование файла
         if not os.path.exists(orchestrator_path):
@@ -3755,17 +4244,17 @@ async def trigger_ai_processing():
                 "path": orchestrator_path
             }
         
-        # Запускаем AI Orchestrator в фоне без ожидания (fallback для single режима)
+        # Запускаем AI Orchestrator в ФОНОВОМ режиме (continuous mode)
         process = subprocess.Popen([
-            sys.executable, orchestrator_path, "--mode", "single"
-        ], cwd=project_root,  # Меняем рабочую директорию на корень проекта
+            sys.executable, orchestrator_path, "--mode", "continuous"
+        ], cwd=project_root,  # Рабочая директория = корень проекта
            stdout=subprocess.DEVNULL, 
            stderr=subprocess.DEVNULL)
         
         return {
             "success": True,
-            "message": f"AI обработка запущена для {pending_count} постов",
-            "pending_posts": pending_count,
+            "message": f"AI обработка запущена для {total_posts} постов",
+            "pending_posts": total_posts,
             "process_id": process.pid,
             "command_queued": True
         }
@@ -3845,8 +4334,8 @@ def reprocess_multiple_channels_with_auto_start(request: dict, db: Session = Dep
         import os
         import sys
         
-        # Путь к AI Orchestrator (исправляем путь - выходим из backend/)
-        project_root = os.path.dirname(os.getcwd())  # Выходим из backend/ в корень проекта
+        # Путь к AI Orchestrator (Backend запускается из backend/ папки)
+        project_root = os.path.dirname(os.getcwd())  # Поднимаемся на уровень выше backend/
         orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator.py")
         
         ai_start_success = False
@@ -3890,7 +4379,7 @@ def reprocess_multiple_channels_with_auto_start(request: dict, db: Session = Dep
 # 🚀 НОВЫЙ ENDPOINT: Детальная статистика AI сервисов
 @app.get("/api/ai/detailed-status")
 def get_detailed_ai_status(db: Session = Depends(get_db)):
-    """Получить детальную статистику AI сервисов как в мониторинге"""
+    """Получить детальную статистику AI сервисов (МУЛЬТИТЕНАНТНЫЕ СТАТУСЫ)"""
     try:
         # 1. Находим активные боты и их каналы (та же логика что в /api/ai/status)
         active_bots = db.query(PublicBot).filter(
@@ -3914,17 +4403,31 @@ def get_detailed_ai_status(db: Session = Depends(get_db)):
         else:
             active_telegram_ids = []
         
-        # 2. Базовая статистика постов (только для постов активных ботов)
-        posts_stats = {}
-        for status in ['pending', 'processing', 'completed', 'failed']:
-            if active_telegram_ids:
-                count = db.query(PostCache).filter(
-                    PostCache.processing_status == status,
+        # 2. 🚀 МУЛЬТИТЕНАНТНАЯ статистика постов (только для постов активных ботов)
+        active_bot_ids = [bot.id for bot in active_bots]
+        multitenant_stats = {}
+        for status in ['pending', 'categorized', 'summarized', 'completed', 'failed']:
+            if active_telegram_ids and active_bot_ids:
+                # Считаем уникальные посты с мультитенантными статусами
+                count = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    ProcessedData.processing_status == status,
+                    ProcessedData.public_bot_id.in_(active_bot_ids),
                     PostCache.channel_telegram_id.in_(active_telegram_ids)
-                ).count()
+                ).distinct().count()
             else:
                 count = 0
-            posts_stats[status] = count
+            multitenant_stats[status] = count
+        
+        # Создаем совместимую с UI статистику
+        processing_count = multitenant_stats.get('categorized', 0) + multitenant_stats.get('summarized', 0)
+        posts_stats = {
+            'pending': multitenant_stats.get('pending', 0),
+            'processing': processing_count,
+            'completed': multitenant_stats.get('completed', 0),
+            'failed': multitenant_stats.get('failed', 0)
+        }
         
         # Всего постов назначенных активным ботам
         if active_telegram_ids:
@@ -3939,21 +4442,60 @@ def get_detailed_ai_status(db: Session = Depends(get_db)):
             completed_posts = posts_stats.get('completed', 0)
             progress_percentage = round((completed_posts / total_posts) * 100, 2)
         
-        # 3. Статистика по каналам (только активные каналы)
+        # 3. 🚀 МУЛЬТИТЕНАНТНАЯ статистика по каналам (только активные каналы)
         channels_detailed = []
-        if active_telegram_ids:
+        if active_telegram_ids and active_bot_ids:
             for telegram_id in active_telegram_ids:
-                # Считаем статистику для каждого канала отдельно
+                # Считаем мультитенантную статистику для каждого канала
                 channel_total_posts = db.query(PostCache).filter(PostCache.channel_telegram_id == telegram_id).count()
-                pending = db.query(PostCache).filter(PostCache.channel_telegram_id == telegram_id, PostCache.processing_status == 'pending').count()
-                processing = db.query(PostCache).filter(PostCache.channel_telegram_id == telegram_id, PostCache.processing_status == 'processing').count()
-                completed = db.query(PostCache).filter(PostCache.channel_telegram_id == telegram_id, PostCache.processing_status == 'completed').count()
-                failed = db.query(PostCache).filter(PostCache.channel_telegram_id == telegram_id, PostCache.processing_status == 'failed').count()
+                
+                # Мультитенантные статусы для канала
+                pending = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    PostCache.channel_telegram_id == telegram_id,
+                    ProcessedData.processing_status == 'pending',
+                    ProcessedData.public_bot_id.in_(active_bot_ids)
+                ).distinct().count()
+                
+                categorized = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    PostCache.channel_telegram_id == telegram_id,
+                    ProcessedData.processing_status == 'categorized',
+                    ProcessedData.public_bot_id.in_(active_bot_ids)
+                ).distinct().count()
+                
+                summarized = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    PostCache.channel_telegram_id == telegram_id,
+                    ProcessedData.processing_status == 'summarized',
+                    ProcessedData.public_bot_id.in_(active_bot_ids)
+                ).distinct().count()
+                
+                completed = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    PostCache.channel_telegram_id == telegram_id,
+                    ProcessedData.processing_status == 'completed',
+                    ProcessedData.public_bot_id.in_(active_bot_ids)
+                ).distinct().count()
+                
+                failed = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    PostCache.channel_telegram_id == telegram_id,
+                    ProcessedData.processing_status == 'failed',
+                    ProcessedData.public_bot_id.in_(active_bot_ids)
+                ).distinct().count()
                 
                 # Получаем информацию о канале
                 channel = db.query(Channel).filter(Channel.telegram_id == telegram_id).first()
                 channel_name = channel.title or channel.channel_name if channel else f'Channel {telegram_id}'
                 channel_username = channel.username if channel else None
+                
+                processing_count = categorized + summarized  # Промежуточные статусы
                 
                 channels_detailed.append({
                     'telegram_id': telegram_id,
@@ -3961,14 +4503,15 @@ def get_detailed_ai_status(db: Session = Depends(get_db)):
                     'username': channel_username,
                     'total_posts': channel_total_posts,
                     'pending': pending,
-                    'processing': processing,
+                    'processing': processing_count,  # Для совместимости с UI
+                    'categorized': categorized,  # Новый статус
+                    'summarized': summarized,   # Новый статус
                     'completed': completed,
                     'failed': failed,
                     'progress': round(completed / max(channel_total_posts, 1) * 100, 1)
                 })
         
         # 4. Статистика AI результатов по ботам (только активные боты)
-        active_bot_ids = [bot.id for bot in active_bots]
         
         if active_bot_ids:
             ai_results_by_bot = db.query(
@@ -4047,7 +4590,8 @@ def get_detailed_ai_status(db: Session = Depends(get_db)):
         
         return {
             # Базовая статистика (только активные боты)
-            "posts_stats": posts_stats,
+            "posts_stats": posts_stats,  # Совместимая с UI статистика
+            "multitenant_stats": multitenant_stats,  # Полная мультитенантная статистика
             "total_posts": total_posts,  # Посты назначенные активным ботам
             "total_posts_in_system": total_posts_in_system,  # Все посты в системе
             "progress_percentage": progress_percentage,
@@ -4078,6 +4622,7 @@ def get_detailed_ai_status(db: Session = Depends(get_db)):
         return {
             "error": str(e),
             "posts_stats": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
+            "multitenant_stats": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
             "total_posts": 0,
             "total_posts_in_system": 0,
             "progress_percentage": 0,
@@ -4121,8 +4666,8 @@ async def receive_orchestrator_status(status_data: dict):
 
 @app.get("/api/ai/orchestrator-live-status")
 async def get_orchestrator_live_status():
-    """Получение текущего статуса AI Orchestrator"""
-    global orchestrator_status_cache
+    """Получение детального статуса AI Orchestrator с диагностикой"""
+    global orchestrator_status_cache, orchestrator_process
     
     try:
         # Проверяем актуальность статуса (если старше 2 минут - считаем неактивным)
@@ -4141,13 +4686,31 @@ async def get_orchestrator_live_status():
             except Exception as e:
                 print(f"⚠️ Ошибка парсинга времени статуса: {e}")
         
+        # Проверяем статус фонового процесса
+        background_process_info = {
+            "is_running": orchestrator_process is not None and orchestrator_process.poll() is None,
+            "process_id": orchestrator_process.pid if orchestrator_process and orchestrator_process.poll() is None else None,
+            "managed_by_backend": True
+        }
+        
+        # Расширенная диагностика
+        diagnostics = {
+            "heartbeat_active": is_active,
+            "heartbeat_age_seconds": int((current_time - datetime.fromisoformat(orchestrator_status_cache["timestamp"].replace('Z', '+00:00')).replace(tzinfo=None)).total_seconds()) if orchestrator_status_cache["timestamp"] else None,
+            "background_process": background_process_info,
+            "overall_health": "HEALTHY" if (is_active or background_process_info["is_running"]) else "UNHEALTHY",
+            "connection_method": "BACKGROUND_PROCESS" if background_process_info["is_running"] else "HEARTBEAT_ONLY"
+        }
+        
         return {
-            "orchestrator_active": is_active,
-            "status": orchestrator_status_cache["status"] if is_active else "INACTIVE",
+            "orchestrator_active": is_active or background_process_info["is_running"],
+            "status": orchestrator_status_cache["status"] if is_active else ("BACKGROUND_RUNNING" if background_process_info["is_running"] else "INACTIVE"),
             "last_update": orchestrator_status_cache["timestamp"],
             "stats": orchestrator_status_cache["stats"],
             "details": orchestrator_status_cache["details"],
-            "time_since_update": int((current_time - datetime.fromisoformat(orchestrator_status_cache["timestamp"].replace('Z', '+00:00')).replace(tzinfo=None)).total_seconds()) if orchestrator_status_cache["timestamp"] else None
+            "time_since_update": diagnostics["heartbeat_age_seconds"],
+            "diagnostics": diagnostics,
+            "background_control": background_process_info
         }
         
     except Exception as e:
@@ -4155,7 +4718,11 @@ async def get_orchestrator_live_status():
         return {
             "orchestrator_active": False,
             "status": "ERROR",
-            "error": str(e)
+            "error": str(e),
+            "diagnostics": {
+                "overall_health": "ERROR",
+                "connection_method": "NONE"
+            }
         }
 
 # === AI ORCHESTRATOR COMMANDS ===
@@ -4197,6 +4764,223 @@ async def mark_command_processed(command_id: int):
 
 # === КОНЕЦ AI ORCHESTRATOR COMMANDS ===
 
+# === AI ORCHESTRATOR BACKGROUND CONTROL ===
+
+# Глобальная переменная для хранения процесса AI Orchestrator
+orchestrator_process = None
+orchestrator_logs = []  # Буфер для хранения логов (последние 100 записей)
+
+@app.post("/api/ai/orchestrator/start-background")
+async def start_orchestrator_background():
+    """Запуск AI Orchestrator в фоновом режиме"""
+    global orchestrator_process
+    import subprocess
+    import os
+    import sys
+    
+    try:
+        # Проверяем, не запущен ли уже процесс
+        if orchestrator_process and orchestrator_process.poll() is None:
+            return {
+                "success": False,
+                "message": "AI Orchestrator уже запущен в фоновом режиме",
+                "status": "already_running",
+                "process_id": orchestrator_process.pid
+            }
+        
+        # Путь к AI Orchestrator (Backend запускается из backend/ папки)
+        project_root = os.path.dirname(os.getcwd())  # Поднимаемся на уровень выше backend/
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v4.py")
+        
+        if not os.path.exists(orchestrator_path):
+            return {
+                "success": False,
+                "message": "AI Orchestrator не найден",
+                "path": orchestrator_path,
+                "status": "not_found"
+            }
+        
+        # Запускаем AI Orchestrator в continuous режиме
+        orchestrator_process = subprocess.Popen(
+            [sys.executable, orchestrator_path, "--mode", "continuous"],
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # Line buffered
+            universal_newlines=True
+        )
+        
+        # Добавляем лог о запуске
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": "INFO",
+            "message": f"AI Orchestrator запущен в фоновом режиме (PID: {orchestrator_process.pid})"
+        }
+        orchestrator_logs.append(log_entry)
+        
+        return {
+            "success": True,
+            "message": "AI Orchestrator успешно запущен в фоновом режиме",
+            "status": "started",
+            "process_id": orchestrator_process.pid
+        }
+        
+    except Exception as e:
+        error_msg = f"Ошибка при запуске AI Orchestrator: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        # Добавляем лог об ошибке
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": "ERROR",
+            "message": error_msg
+        }
+        orchestrator_logs.append(log_entry)
+        
+        return {
+            "success": False,
+            "message": error_msg,
+            "status": "error"
+        }
+
+@app.post("/api/ai/orchestrator/stop-background")
+async def stop_orchestrator_background():
+    """Остановка AI Orchestrator фонового режима"""
+    global orchestrator_process
+    
+    try:
+        if not orchestrator_process or orchestrator_process.poll() is not None:
+            return {
+                "success": False,
+                "message": "AI Orchestrator не запущен в фоновом режиме",
+                "status": "not_running"
+            }
+        
+        # Graceful остановка
+        orchestrator_process.terminate()
+        
+        # Ждем завершения процесса (максимум 10 секунд)
+        try:
+            orchestrator_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # Принудительная остановка если не остановился gracefully
+            orchestrator_process.kill()
+            orchestrator_process.wait()
+        
+        # Добавляем лог об остановке
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": "INFO",
+            "message": f"AI Orchestrator остановлен (PID: {orchestrator_process.pid})"
+        }
+        orchestrator_logs.append(log_entry)
+        
+        process_id = orchestrator_process.pid
+        orchestrator_process = None
+        
+        return {
+            "success": True,
+            "message": "AI Orchestrator успешно остановлен",
+            "status": "stopped",
+            "process_id": process_id
+        }
+        
+    except Exception as e:
+        error_msg = f"Ошибка при остановке AI Orchestrator: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        # Добавляем лог об ошибке
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": "ERROR",
+            "message": error_msg
+        }
+        orchestrator_logs.append(log_entry)
+        
+        return {
+            "success": False,
+            "message": error_msg,
+            "status": "error"
+        }
+
+@app.post("/api/ai/orchestrator/restart")
+async def restart_orchestrator():
+    """Перезапуск AI Orchestrator"""
+    try:
+        # Сначала останавливаем
+        stop_result = await stop_orchestrator_background()
+        
+        # Небольшая пауза перед запуском
+        import asyncio
+        await asyncio.sleep(2)
+        
+        # Затем запускаем
+        start_result = await start_orchestrator_background()
+        
+        if start_result["success"]:
+            return {
+                "success": True,
+                "message": "AI Orchestrator успешно перезапущен",
+                "status": "restarted",
+                "stop_result": stop_result,
+                "start_result": start_result
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Ошибка при перезапуске AI Orchestrator",
+                "status": "restart_failed",
+                "stop_result": stop_result,
+                "start_result": start_result
+            }
+            
+    except Exception as e:
+        error_msg = f"Ошибка при перезапуске AI Orchestrator: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        return {
+            "success": False,
+            "message": error_msg,
+            "status": "error"
+        }
+
+@app.get("/api/ai/orchestrator/logs")
+async def get_orchestrator_logs(limit: int = 50):
+    """Получение логов AI Orchestrator"""
+    global orchestrator_logs
+    
+    try:
+        # Ограничиваем количество логов (берем последние)
+        recent_logs = orchestrator_logs[-limit:] if len(orchestrator_logs) > limit else orchestrator_logs
+        
+        # Также проверяем статус процесса
+        process_info = {
+            "is_running": orchestrator_process is not None and orchestrator_process.poll() is None,
+            "process_id": orchestrator_process.pid if orchestrator_process and orchestrator_process.poll() is None else None
+        }
+        
+        return {
+            "success": True,
+            "logs": recent_logs,
+            "total_logs": len(orchestrator_logs),
+            "process_info": process_info,
+            "retrieved_at": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        error_msg = f"Ошибка при получении логов: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        return {
+            "success": False,
+            "message": error_msg,
+            "logs": [],
+            "process_info": {"is_running": False, "process_id": None}
+        }
+
+# === КОНЕЦ AI ORCHESTRATOR BACKGROUND CONTROL ===
+
 # === МУЛЬТИТЕНАНТНАЯ ОЧИСТКА ДАННЫХ ===
 
 @app.delete("/api/data/clear-all")
@@ -4219,22 +5003,16 @@ async def clear_all_data(
             "timestamp": datetime.now().isoformat()
         }
         
-        # 1. Очистка AI результатов
+        # 1. Очистка AI результатов (МУЛЬТИТЕНАНТНАЯ АРХИТЕКТУРА)
         if include_ai_results:
             ai_results_count = db.query(func.count(ProcessedData.id)).scalar()
             db.query(ProcessedData).delete()
             deleted_stats["processed_data"] = ai_results_count
             
-            # Сбрасываем статус обработки всех постов на "pending"
-            posts_reset_count = db.query(PostCache).filter(
-                PostCache.processing_status != "pending"
-            ).count()
-            
-            db.query(PostCache).filter(
-                PostCache.processing_status != "pending"
-            ).update({"processing_status": "pending"}, synchronize_session=False)
-            
-            deleted_stats["posts_reset_to_pending"] = posts_reset_count
+            # В мультитенантной архитектуре нет глобального processing_status
+            # Статусы хранятся в processed_data.processing_status для каждого бота
+            # Поэтому просто удаляем AI результаты, статусы сбрасываются автоматически
+            deleted_stats["posts_reset_to_pending"] = 0  # Не применимо в мультитенантной архитектуре
             
         # 2. Очистка кэша постов
         if include_posts:
@@ -4306,18 +5084,9 @@ async def clear_data_by_channel(
                 
                 deleted_stats["processed_data"] = ai_count
                 
-                # Сбрасываем статус обработки постов канала на "pending"
-                posts_reset_count = db.query(PostCache).filter(
-                    PostCache.channel_telegram_id == channel.telegram_id,
-                    PostCache.processing_status != "pending"
-                ).count()
-                
-                db.query(PostCache).filter(
-                    PostCache.channel_telegram_id == channel.telegram_id,
-                    PostCache.processing_status != "pending"
-                ).update({"processing_status": "pending"}, synchronize_session=False)
-                
-                deleted_stats["posts_reset_to_pending"] = posts_reset_count
+                # В мультитенантной архитектуре статусы хранятся в processed_data
+                # Удаление AI результатов автоматически "сбрасывает" статусы
+                deleted_stats["posts_reset_to_pending"] = 0  # Не применимо в мультитенантной архитектуре
         
         # 2. Очистка постов
         if include_posts:

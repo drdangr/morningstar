@@ -1,7 +1,12 @@
+import sys
+import os
+# Добавляем путь к ai_services для корректных импортов
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from loguru import logger
-from ai_services.models.post import ProcessedPost
+from models.post import ProcessedPost
 
 class ProcessingMetrics:
     """Утилита для работы с метриками обработки"""
