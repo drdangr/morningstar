@@ -3231,9 +3231,51 @@ def get_ai_results(
     return query.offset(skip).limit(limit).all()
 
 @app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
-def get_unprocessed_posts(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
-    """✅ ПРАВИЛЬНАЯ АРХИТЕКТУРА: Возвращаем ВСЕ посты из общего пула, AI Orchestrator сам решает что обрабатывать"""
-    return db.query(PostCache).order_by(PostCache.collected_at.asc()).limit(limit).all()
+def get_unprocessed_posts(
+    limit: int = Query(100, ge=1, le=500),
+    channel_telegram_ids: Optional[str] = Query(None, description="Comma-separated list of channel telegram IDs"),
+    bot_id: Optional[int] = Query(None, description="Bot ID for filtering processed posts"),
+    require_categorization: Optional[bool] = Query(None, description="Only posts that need categorization"),
+    require_summarization: Optional[bool] = Query(None, description="Only posts that need summarization"),
+    db: Session = Depends(get_db)
+):
+    """✅ УНИВЕРСАЛЬНЫЙ ENDPOINT для v4 и v5: Поддержка фильтрации для параллельной архитектуры"""
+    
+    # Базовый запрос
+    query = db.query(PostCache)
+    
+    # Фильтр по каналам
+    if channel_telegram_ids:
+        try:
+            channel_ids_list = [int(cid.strip()) for cid in channel_telegram_ids.split(',') if cid.strip()]
+            if channel_ids_list:
+                query = query.filter(PostCache.channel_telegram_id.in_(channel_ids_list))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Некорректные channel_telegram_ids"
+            )
+    
+    # Если указан bot_id и требуется специфическая фильтрация
+    if bot_id and (require_categorization or require_summarization):
+        # Получаем processed_data для данного бота
+        processed_query = db.query(ProcessedData.post_id).filter(ProcessedData.public_bot_id == bot_id)
+        
+        if require_categorization:
+            # Только посты которые НЕ категоризированы
+            categorized_post_ids = processed_query.filter(ProcessedData.is_categorized == True).subquery()
+            query = query.filter(~PostCache.id.in_(categorized_post_ids))
+        
+        elif require_summarization:
+            # Только посты которые категоризированы, но НЕ саммаризированы
+            ready_for_summary = processed_query.filter(
+                ProcessedData.is_categorized == True,
+                ProcessedData.is_summarized == False
+            ).subquery()
+            query = query.filter(PostCache.id.in_(ready_for_summary))
+    
+    # Возвращаем результат
+    return query.order_by(PostCache.collected_at.asc()).limit(limit).all()
 
 # === MULTITENANT STATUS ENDPOINTS ===
 @app.get("/api/ai/results/batch-status")
