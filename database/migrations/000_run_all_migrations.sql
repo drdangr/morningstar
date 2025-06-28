@@ -54,6 +54,12 @@ SELECT log_migration('005_create_multitenant_users');
 \i 006_create_llm_management.sql
 SELECT log_migration('006_create_llm_management');
 
+-- Run migration 012: Add processing_status to processed_data
+\i 012_add_processing_status_to_processed_data.sql
+
+-- Run migration 013: Add boolean flags to processed_data
+\i 013_add_boolean_flags_to_processed_data.sql
+
 -- Создание первого default PublicBot
 INSERT INTO public_bots (
     bot_name, 
@@ -195,4 +201,6 @@ COMMIT;
 \echo '1. Update Backend API models to support multi-tenant schema'
 \echo '2. Create Python AI Services (SummarizationService + CategorizationService)'
 \echo '3. Archive and remove N8N workflows'
-\echo '4. Test the new architecture with real data' 
+\echo '4. Test the new architecture with real data'
+
+-- All migrations completed 

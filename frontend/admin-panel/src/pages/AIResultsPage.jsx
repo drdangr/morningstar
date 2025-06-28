@@ -652,29 +652,58 @@ const AIResultsPage = () => {
                 ))}
               </Grid>
 
-              {/* Детальная мультитенантная статистика */}
-              {aiServicesStats?.multitenant_stats && (
+              {/* Детальная статистика по флагам */}
+              {aiServicesStats?.flags_stats && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Промежуточные статусы: categorized + summarized
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={6} md={3}>
+                      <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'info.50' }}>
+                        <Typography variant="h5" color="info.main">
+                          {aiServicesStats.flags_stats.categorized || 0}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Категоризовано
+                        </Typography>
+                      </Paper>
+                    </Grid>
+                    <Grid item xs={6} md={3}>
+                      <Paper sx={{ p: 1.5, textAlign: 'center', bgcolor: 'primary.50' }}>
+                        <Typography variant="h5" color="primary.main">
+                          {aiServicesStats.flags_stats.summarized || 0}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Суммировано
+                        </Typography>
+                      </Paper>
+                    </Grid>
+                  </Grid>
+                </Box>
+              )}
+
+              {/* Детальная мультитенантная статистика по статусам */}
+              {aiServicesStats?.posts_stats && (
                 <Box>
                   <Typography variant="subtitle2" gutterBottom>
                     Детальная статистика по статусам:
                   </Typography>
                   <Grid container spacing={2}>
-                    {Object.entries(aiServicesStats.multitenant_stats).map(([status, count]) => (
-                      <Grid item xs={6} md={2} key={status}>
+                    {Object.entries(aiServicesStats.posts_stats).map(([status, count]) => (
+                      <Grid item xs={6} md={3} key={status}>
                         <Paper sx={{ p: 1, textAlign: 'center', bgcolor: 'grey.50' }}>
                           <Typography variant="h6" color={
                             status === 'completed' ? 'success.main' :
                             status === 'failed' ? 'error.main' :
-                            status === 'categorized' ? 'info.main' :
-                            status === 'summarized' ? 'primary.main' :
+                            status === 'processing' ? 'info.main' :
                             'warning.main'
                           }>
                             {count}
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
                             {status === 'pending' ? 'Ожидает' :
-                             status === 'categorized' ? 'Категоризовано' :
-                             status === 'summarized' ? 'Суммировано' :
+                             status === 'processing' ? 'Обрабатывается' :
                              status === 'completed' ? 'Завершено' :
                              status === 'failed' ? 'Ошибки' : status}
                           </Typography>
@@ -840,14 +869,14 @@ const AIResultsPage = () => {
                               </Typography>
                             </Box>
                           </ListItem>
-                          {/* Новые мультитенантные статусы */}
-                          {detailedAIStatus.multitenant_stats && (
+                          {/* Новые статистики на основе флагов */}
+                          {detailedAIStatus.flags_stats && (
                             <>
                               <ListItem>
                                 <Box display="flex" justifyContent="space-between" width="100%">
                                   <Typography variant="body2">↳ Категоризовано:</Typography>
                                   <Typography variant="body2" fontWeight="bold" color="info.main">
-                                    {detailedAIStatus.multitenant_stats.categorized || 0}
+                                    {detailedAIStatus.flags_stats.categorized || 0}
                                   </Typography>
                                 </Box>
                               </ListItem>
@@ -855,7 +884,7 @@ const AIResultsPage = () => {
                                 <Box display="flex" justifyContent="space-between" width="100%">
                                   <Typography variant="body2">↳ Суммировано:</Typography>
                                   <Typography variant="body2" fontWeight="bold" color="primary.main">
-                                    {detailedAIStatus.multitenant_stats.summarized || 0}
+                                    {detailedAIStatus.flags_stats.summarized || 0}
                                   </Typography>
                                 </Box>
                               </ListItem>

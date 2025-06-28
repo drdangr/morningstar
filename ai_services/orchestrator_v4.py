@@ -2,6 +2,12 @@
 """
 AI Orchestrator v4.0 - Полная переработка с нуля
 Батчевая обработка + Мультитенантность + Правильная архитектура
++
++Новая архитектура статусов (с 26 июня 2025):
++- Используются булевые флаги is_categorized, is_summarized в processed_data
++- Статус рассчитывается автоматически: 0 флагов → pending, 1 флаг → processing, все флаги → completed
++- Оркестратор только сообщает какой сервис завершил работу через sync-status endpoint
++- Backend сам управляет всей логикой статусов
 """
 
 import sys
@@ -26,8 +32,6 @@ logger = logging.getLogger('AIOrchestrator_v4')
 class ProcessingStatus(Enum):
     PENDING = "pending"
     PROCESSING = "processing"
-    CATEGORIZED = "categorized"
-    SUMMARIZED = "summarized"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -85,12 +89,15 @@ class AIOrchestrator:
             logger.error(f"❌ Ошибка инициализации AI сервисов: {e}")
             return False
     
-    async def run_single_batch(self):
+    async def run_single_batch(self, skip_initialization: bool = False):
         """Запуск одного батча обработки"""
         logger.info("🔄 Запуск одного батча AI обработки")
         
-        if not await self.initialize_ai_services():
-            return False
+        # Проверяем, инициализированы ли AI сервисы, если нет - инициализируем
+        # В continuous режиме пропускаем повторную инициализацию
+        if not skip_initialization and (self.categorization_service is None or self.summarization_service is None):
+            if not await self.initialize_ai_services():
+                return False
         
         active_bots = await self.get_active_bots()
         if not active_bots:
@@ -154,11 +161,49 @@ class AIOrchestrator:
             return saved_count
         else:
             logger.warning(f"⚠️ Нет результатов для сохранения")
-            # Помечаем как failed только если обработка не удалась
-            post_ids = [post['id'] for post in posts]
-            await self.update_multitenant_status(post_ids, bot_id, ProcessingStatus.FAILED)
+            # Новая логика: не трогаем статусы, Backend сам управляет через флаги
+            # Посты остаются в текущем статусе для повторной обработки
             return 0
     
+    async def _get_posts_status(self, post_ids: List[int], bot_id: int) -> Dict[int, Dict[str, Any]]:
+        """Возвращает словарь post_id → {status, is_categorized, is_summarized} для указанного бота.
+        В случае ошибки все статусы считаются not_found (то есть требуют обработки).
+        
+        Новая логика с флагами:
+        - Если запись существует, возвращаем её processing_status и флаги
+        - Backend сам управляет статусами через флаги is_categorized/is_summarized
+        """
+        if not post_ids:
+            return {}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.backend_url}/api/ai/results/batch-status",
+                    params={
+                        "post_ids": ",".join(map(str, post_ids)),
+                        "bot_id": bot_id,
+                    },
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        statuses = {}
+                        for s in data.get("statuses", []):
+                            statuses[s["post_id"]] = {
+                                "status": s.get("status", "not_found"),
+                                "is_categorized": s.get("is_categorized", False),
+                                "is_summarized": s.get("is_summarized", False)
+                            }
+                        return statuses
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось получить статусы постов: {e}")
+
+        # fallback
+        return {
+            pid: {"status": "not_found", "is_categorized": False, "is_summarized": False}
+            for pid in post_ids
+        }
+
     async def process_posts_batch(self, posts: List[Dict], bot: Dict, categories: List[Dict]) -> List[ProcessingResult]:
         """🚀 БАТЧЕВАЯ ОБРАБОТКА ПОСТОВ"""
         logger.info(f"🚀 БАТЧЕВАЯ обработка {len(posts)} постов")
@@ -195,36 +240,103 @@ class AIOrchestrator:
             
             logger.info(f"📝 Подготовлено {len(post_objects)} валидных постов")
             
-            # БАТЧЕВАЯ КАТЕГОРИЗАЦИЯ
-            logger.info("🔄 Запуск батчевой категоризации...")
-            categorization_results = await self.categorization_service.process_with_bot_config(
-                posts=post_objects,
-                bot_id=bot['id']
-            )
-            logger.info(f"✅ Категоризация завершена: {len(categorization_results)} результатов")
+            # Получаем текущие статусы постов (мультитенантно)
+            post_ids = [p["id"] for p in valid_posts]
+            current_statuses = await self._get_posts_status(post_ids, bot["id"])
+
+            # --- Категоризация ---
+            posts_for_cat: List[Post] = []
+            idx_map_cat: List[int] = []  # индекс valid_posts → позиция в cat result
+            for idx, vp in enumerate(valid_posts):
+                status_info = current_statuses.get(vp["id"], {"status": "not_found", "is_categorized": False, "is_summarized": False})
+                
+                # Категоризируем только посты которые еще НЕ категоризированы
+                if not status_info.get("is_categorized", False):
+                    posts_for_cat.append(post_objects[idx])
+                    idx_map_cat.append(idx)
+                else:
+                    logger.debug(f"Пропускаем категоризацию поста {vp['id']} - уже категоризирован")
+
+            categorization_raw_results: List[Dict[str, Any]] = [{}] * len(valid_posts)
+
+            if posts_for_cat:
+                logger.info(f"🔄 Категоризация {len(posts_for_cat)} постов (будет пропущено {len(valid_posts)-len(posts_for_cat)})")
+                cat_res = await self.categorization_service.process_with_bot_config(posts_for_cat, bot["id"])
+                for local_i, global_idx in enumerate(idx_map_cat):
+                    categorization_raw_results[global_idx] = cat_res[local_i] if local_i < len(cat_res) else {}
+
+                # Обновляем статусы ТОЛЬКО для успешно категоризированных постов
+                successful_cat_post_ids = []
+                for local_i, global_idx in enumerate(idx_map_cat):
+                    if local_i < len(cat_res) and cat_res[local_i]:
+                        # Проверяем что результат не пустой и содержит категорию
+                        result = cat_res[local_i]
+                        if result.get('category_name') and result.get('relevance_score', 0) > 0:
+                            successful_cat_post_ids.append(valid_posts[global_idx]["id"])
+                        else:
+                            logger.warning(f"⚠️ Пост {valid_posts[global_idx]['id']} не получил категорию")
+                
+                if successful_cat_post_ids:
+                    logger.info(f"✅ Успешно категоризировано {len(successful_cat_post_ids)} из {len(posts_for_cat)} постов")
+                    await self.sync_service_status(successful_cat_post_ids, bot["id"], "categorizer")
+                else:
+                    logger.warning(f"⚠️ Ни один пост не был успешно категоризирован")
+            else:
+                logger.info("ℹ️ Все посты уже категоризированы, шаг пропущен")
+
+            # --- Саммаризация ---
+            # ОБНОВЛЯЕМ СТАТУСЫ после категоризации для корректной фильтрации
+            updated_statuses = await self._get_posts_status(post_ids, bot["id"])
             
-            # Обновляем статусы
-            post_ids = [post['id'] for post in valid_posts]
-            await self.update_multitenant_status(post_ids, bot['id'], ProcessingStatus.CATEGORIZED)
-            
-            # БАТЧЕВАЯ САММАРИЗАЦИЯ
-            logger.info("🔄 Запуск батчевой саммаризации...")
-            summarization_results = await self.summarization_service.process_batch(
-                texts=post_texts,
-                language=bot.get('default_language', 'ru'),
-                custom_prompt=bot.get('summarization_prompt')
-            )
-            logger.info(f"✅ Саммаризация завершена: {len(summarization_results)} результатов")
-            
-            # Обновляем статусы
-            await self.update_multitenant_status(post_ids, bot['id'], ProcessingStatus.SUMMARIZED)
-            
+            texts_for_sum: List[str] = []
+            idx_map_sum: List[int] = []
+            for idx, vp in enumerate(valid_posts):
+                status_info = updated_statuses.get(vp["id"], {"status": "not_found", "is_categorized": False, "is_summarized": False})
+                
+                # Саммаризируем только посты которые еще НЕ саммаризированы
+                if not status_info.get("is_summarized", False):
+                    texts_for_sum.append(post_texts[idx])
+                    idx_map_sum.append(idx)
+                else:
+                    logger.debug(f"Пропускаем саммаризацию поста {vp['id']} - уже саммаризирован")
+
+            summarization_raw_results: List[Dict[str, Any]] = [{}] * len(valid_posts)
+
+            if texts_for_sum:
+                logger.info(f"🔄 Саммаризация {len(texts_for_sum)} постов (будет пропущено {len(valid_posts)-len(texts_for_sum)})")
+                sum_res = await self.summarization_service.process_batch(
+                    texts=texts_for_sum,
+                    language=bot.get("default_language", "ru"),
+                    custom_prompt=bot.get("summarization_prompt"),
+                )
+                for local_i, global_idx in enumerate(idx_map_sum):
+                    summarization_raw_results[global_idx] = sum_res[local_i] if local_i < len(sum_res) else {}
+
+                # Обновляем статусы ТОЛЬКО для успешно саммаризированных постов
+                successful_sum_post_ids = []
+                for local_i, global_idx in enumerate(idx_map_sum):
+                    if local_i < len(sum_res) and sum_res[local_i]:
+                        # Проверяем что результат не пустой и содержит саммари
+                        result = sum_res[local_i]
+                        if result.get('summary') and len(result.get('summary', '').strip()) > 10:
+                            successful_sum_post_ids.append(valid_posts[global_idx]["id"])
+                        else:
+                            logger.warning(f"⚠️ Пост {valid_posts[global_idx]['id']} не получил саммари")
+                
+                if successful_sum_post_ids:
+                    logger.info(f"✅ Успешно саммаризировано {len(successful_sum_post_ids)} из {len(texts_for_sum)} постов")
+                    await self.sync_service_status(successful_sum_post_ids, bot["id"], "summarizer")
+                else:
+                    logger.warning(f"⚠️ Ни один пост не был успешно саммаризирован")
+            else:
+                logger.info("ℹ️ Все посты уже саммаризированы, шаг пропущен")
+
             # ОБЪЕДИНЯЕМ РЕЗУЛЬТАТЫ
             results = []
             for i, post_data in enumerate(valid_posts):
                 try:
-                    categorization_result = categorization_results[i] if i < len(categorization_results) else {}
-                    summarization_result = summarization_results[i] if i < len(summarization_results) else {}
+                    categorization_result = categorization_raw_results[i]
+                    summarization_result = summarization_raw_results[i]
                     
                     result = ProcessingResult(
                         post_id=post_data['id'],
@@ -309,8 +421,8 @@ class AIOrchestrator:
                             saved_count = len(saved_results)
                             logger.info(f"✅ Сохранено {saved_count} AI результатов")
                             
-                            # ИСПРАВЛЕНО: Backend уже устанавливает статус completed при сохранении
-                            # Дополнительное обновление не требуется
+                            # Новая логика: Backend обновляет флаги через sync-status
+                            # Статус completed устанавливается автоматически когда все флаги = true
                         else:
                             error_text = await response.text()
                             logger.error(f"❌ Ошибка сохранения: HTTP {response.status}")
@@ -318,9 +430,9 @@ class AIOrchestrator:
             
             # Помечаем неуспешные результаты как failed
             if failed_post_ids:
-                bot_id = results[0].bot_id
-                await self.update_multitenant_status(failed_post_ids, bot_id, ProcessingStatus.FAILED)
-                logger.warning(f"⚠️ {len(failed_post_ids)} постов помечены как failed")
+                # Новая логика: не трогаем статусы для failed постов
+                # Backend сам управляет статусами через флаги
+                logger.warning(f"⚠️ {len(failed_post_ids)} постов не удалось обработать")
             
             return saved_count
             
@@ -353,6 +465,34 @@ class AIOrchestrator:
                         
         except Exception as e:
             logger.error(f"❌ Ошибка обновления статусов: {e}")
+    
+    async def sync_service_status(self, post_ids: List[int], bot_id: int, service: str):
+        """Синхронизация статуса сервиса через новый endpoint sync-status"""
+        if not post_ids:
+            return
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{self.backend_url}/api/ai/results/sync-status",
+                    json={
+                        "post_ids": post_ids,
+                        "bot_id": bot_id,
+                        "service": service
+                    },
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Статус {service} синхронизирован для {len(post_ids)} постов")
+                        logger.debug(f"   Результат: {data}")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Ошибка синхронизации {service}: HTTP {response.status}")
+                        logger.error(f"   Детали: {error_text}")
+                        
+        except Exception as e:
+            logger.error(f"❌ Ошибка sync-status для {service}: {e}")
     
     async def get_active_bots(self) -> List[Dict[str, Any]]:
         """Получение активных ботов"""
@@ -432,18 +572,25 @@ class AIOrchestrator:
                 ) as response:
                     if response.status == 200:
                         status_data = await response.json()
-                        processed_post_ids = set()
+                        posts_to_process = []
                         
-                        for status_info in status_data.get('statuses', []):
-                            if status_info['status'] != 'not_found':
-                                processed_post_ids.add(status_info['post_id'])
+                        # Создаем словарь статусов для быстрого поиска
+                        status_map = {
+                            s["post_id"]: s.get("status", "not_found")
+                            for s in status_data.get("statuses", [])
+                        }
                         
-                        unprocessed_posts = [
-                            post for post in bot_posts 
-                            if post['id'] not in processed_post_ids
-                        ]
+                        # Обрабатываем только посты со статусами not_found, pending, processing
+                        # НЕ обрабатываем посты со статусом completed
+                        for post in bot_posts:
+                            post_status = status_map.get(post['id'], 'not_found')
+                            if post_status in ['not_found', 'pending', 'processing']:
+                                posts_to_process.append(post)
+                            else:
+                                logger.debug(f"Пропускаем пост {post['id']} со статусом '{post_status}'")
                         
-                        return unprocessed_posts[:self.batch_size]
+                        logger.info(f"📊 Найдено {len(posts_to_process)} постов для обработки из {len(bot_posts)} (статусы: not_found/pending/processing)")
+                        return posts_to_process[:self.batch_size]
                     else:
                         logger.error(f"❌ Ошибка проверки статусов: HTTP {response.status}")
                         return bot_posts[:self.batch_size]
@@ -557,8 +704,8 @@ async def main():
                         "status": "processing_started"
                     })
                     
-                    # Запускаем один батч обработки
-                    success = await orchestrator.run_single_batch()
+                    # Запускаем один батч обработки (пропускаем инициализацию - уже выполнена)
+                    success = await orchestrator.run_single_batch(skip_initialization=True)
                     
                     if success:
                         logger.info(f"✅ Цикл #{cycle_count} завершен успешно")

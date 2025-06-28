@@ -1782,7 +1782,9 @@ def get_posts_cache_with_ai(
         ProcessedData.categories.label('ai_categories'),
         ProcessedData.metrics.label('ai_metrics'),
         ProcessedData.processed_at.label('ai_processed_at'),
-        ProcessedData.processing_version.label('ai_processing_version')
+        ProcessedData.processing_version.label('ai_processing_version'),
+        ProcessedData.is_categorized.label('ai_is_categorized'),
+        ProcessedData.is_summarized.label('ai_is_summarized')
     ).outerjoin(
         ProcessedData, 
         PostCache.id == ProcessedData.post_id
@@ -1909,7 +1911,9 @@ def get_posts_cache_with_ai(
             "ai_urgency": ai_urgency,
             "ai_significance": ai_significance,
             "ai_processed_at": row.ai_processed_at,
-            "ai_processing_version": row.ai_processing_version
+            "ai_processing_version": row.ai_processing_version,
+            "ai_is_categorized": row.ai_is_categorized,
+            "ai_is_summarized": row.ai_is_summarized
         }
         posts_with_ai.append(post_data)
     
@@ -3026,7 +3030,9 @@ class ProcessedData(Base):
     metrics = Column(JSONB if USE_POSTGRESQL else Text, nullable=False)
     processed_at = Column(DateTime, default=func.now())
     processing_version = Column(String, default="v3.1")
-    processing_status = Column(String, default="pending", nullable=False)  # Добавлено: мультитенантный статус
+    processing_status = Column(String, default="pending", nullable=False)  # Итоговый агрегированный статус
+    is_categorized = Column(Boolean, default=False, nullable=False)
+    is_summarized = Column(Boolean, default=False, nullable=False)
     __table_args__ = (UniqueConstraint('post_id', 'public_bot_id', name='uq_processed_post_bot'),)
 
 # Создание таблиц БД - выполняется в конце после всех определений
@@ -3053,12 +3059,47 @@ class AIResultResponse(AIResultCreate):
     class Config:
         from_attributes = True
 
+# === Новый запрос для синхронизации статусов ===
+class SyncStatusRequest(BaseModel):
+    post_ids: List[int]
+    bot_id: int
+    service: str  # 'categorizer' | 'summarizer'
+
 # === API ENDPOINTS ДЛЯ AI SERVICE ===
 @app.post("/api/ai/results", response_model=AIResultResponse, status_code=status.HTTP_201_CREATED)
 def create_ai_result(result: AIResultCreate, db: Session = Depends(get_db)):
     existing = db.query(ProcessedData).filter_by(post_id=result.post_id, public_bot_id=result.public_bot_id).first()
     if existing:
         raise HTTPException(status_code=409, detail="Result already exists")
+    
+    # Определяем флаги на основе содержимого
+    # Проверяем, что categories содержит реальные данные
+    has_valid_categories = False
+    if result.categories:
+        for key, value in result.categories.items():
+            if value and str(value).strip():
+                has_valid_categories = True
+                break
+    
+    # Проверяем, что summaries содержит реальные данные
+    has_valid_summaries = False
+    if result.summaries:
+        for key, value in result.summaries.items():
+            if value and str(value).strip():
+                has_valid_summaries = True
+                break
+    
+    is_categorized = has_valid_categories
+    is_summarized = has_valid_summaries
+    
+    # Пересчитываем статус на основе флагов
+    if not is_categorized and not is_summarized:
+        processing_status = "pending"
+    elif is_categorized and is_summarized:
+        processing_status = "completed"
+    else:
+        processing_status = "processing"
+    
     record = ProcessedData(
         post_id=result.post_id,
         public_bot_id=result.public_bot_id,
@@ -3066,12 +3107,12 @@ def create_ai_result(result: AIResultCreate, db: Session = Depends(get_db)):
         categories=result.categories if USE_POSTGRESQL else json.dumps(result.categories, ensure_ascii=False),
         metrics=result.metrics if USE_POSTGRESQL else json.dumps(result.metrics, ensure_ascii=False),
         processing_version=result.processing_version,
+        is_categorized=is_categorized,
+        is_summarized=is_summarized,
+        processing_status=processing_status
     )
     db.add(record)
-    # Обновляем статус поста
-    post = db.query(PostCache).filter_by(id=result.post_id).first()
-    if post:
-        post.processing_status = "completed"
+    # Больше не трогаем глобальный статус в posts_cache (мультитенантность)
     db.commit()
     db.refresh(record)
     return record
@@ -3085,13 +3126,45 @@ def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends
         # Проверяем существующую запись
         existing_record = db.query(ProcessedData).filter_by(post_id=res.post_id, public_bot_id=res.public_bot_id).first()
         
+        # Определяем флаги на основе содержимого
+        # Проверяем, что categories содержит реальные данные
+        has_valid_categories = False
+        if res.categories:
+            # Проверяем наличие хотя бы одной непустой категории
+            for key, value in res.categories.items():
+                if value and str(value).strip():
+                    has_valid_categories = True
+                    break
+        
+        # Проверяем, что summaries содержит реальные данные
+        has_valid_summaries = False
+        if res.summaries:
+            # Проверяем наличие хотя бы одного непустого summary
+            for key, value in res.summaries.items():
+                if value and str(value).strip():
+                    has_valid_summaries = True
+                    break
+        
+        is_categorized = has_valid_categories
+        is_summarized = has_valid_summaries
+        
+        # Пересчитываем статус на основе флагов
+        if not is_categorized and not is_summarized:
+            processing_status = "pending"
+        elif is_categorized and is_summarized:
+            processing_status = "completed"
+        else:
+            processing_status = "processing"
+        
         if existing_record:
             # ОБНОВЛЯЕМ существующую запись
             existing_record.summaries = res.summaries if USE_POSTGRESQL else json.dumps(res.summaries, ensure_ascii=False)
             existing_record.categories = res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False)
             existing_record.metrics = res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False)
             existing_record.processing_version = res.processing_version
-            existing_record.processing_status = "completed"
+            existing_record.is_categorized = is_categorized
+            existing_record.is_summarized = is_summarized
+            existing_record.processing_status = processing_status
             existing_record.processed_at = func.now()
             updated_records.append(existing_record)
         else:
@@ -3103,15 +3176,14 @@ def create_ai_results_batch(results: List[AIResultCreate], db: Session = Depends
                 categories=res.categories if USE_POSTGRESQL else json.dumps(res.categories, ensure_ascii=False),
                 metrics=res.metrics if USE_POSTGRESQL else json.dumps(res.metrics, ensure_ascii=False),
                 processing_version=res.processing_version,
-                processing_status="completed"
+                is_categorized=is_categorized,
+                is_summarized=is_summarized,
+                processing_status=processing_status
             )
             db.add(r)
             created_records.append(r)
         
-        # Обновляем статус поста в posts_cache (legacy)
-        post = db.query(PostCache).filter_by(id=res.post_id).first()
-        if post:
-            post.processing_status = "completed"
+        # Больше не трогаем глобальный статус в posts_cache (мультитенантность)
     
     db.commit()
     
@@ -3208,7 +3280,9 @@ def get_ai_results_batch_status(
                 "post_id": result.post_id,
                 "bot_id": result.public_bot_id,
                 "status": result.processing_status,
-                "processed_at": result.processed_at.isoformat() if result.processed_at else None
+                "processed_at": result.processed_at.isoformat() if result.processed_at else None,
+                "is_categorized": result.is_categorized,
+                "is_summarized": result.is_summarized
             }
         
         # Добавляем отсутствующие посты как "not_found"
@@ -3361,6 +3435,118 @@ def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="AI result not found")
     return result
 
+@app.put("/api/ai/results/sync-status")
+def sync_ai_service_status(request: SyncStatusRequest, db: Session = Depends(get_db)):
+    """🔧 НОВЫЙ: Синхронизация статуса AI сервиса с атомарным обновлением флагов и пересчётом статуса"""
+    try:
+        # Валидация сервиса
+        valid_services = ["categorizer", "summarizer"]
+        if request.service not in valid_services:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Недопустимый сервис. Допустимые: {valid_services}"
+            )
+        
+        # Проверяем существование бота
+        bot = db.query(PublicBot).filter(PublicBot.id == request.bot_id).first()
+        if not bot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Бот с ID {request.bot_id} не найден"
+            )
+        
+        # Получаем или создаем записи processed_data для этих постов и бота
+        existing_records = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(request.post_ids),
+            ProcessedData.public_bot_id == request.bot_id
+        ).all()
+        
+        existing_post_ids = {record.post_id for record in existing_records}
+        missing_post_ids = set(request.post_ids) - existing_post_ids
+        
+        # Создаем записи для отсутствующих постов
+        created_count = 0
+        if missing_post_ids:
+            for post_id in missing_post_ids:
+                # Проверяем что пост существует
+                post_exists = db.query(PostCache).filter(PostCache.id == post_id).first()
+                if post_exists:
+                    new_record = ProcessedData(
+                        post_id=post_id,
+                        public_bot_id=request.bot_id,
+                        summaries={},
+                        categories={},
+                        metrics={},
+                        is_categorized=(request.service == "categorizer"),
+                        is_summarized=(request.service == "summarizer"),
+                        processing_status="processing"  # Один сервис завершил = processing
+                    )
+                    db.add(new_record)
+                    created_count += 1
+        
+        # Обновляем флаги и статус существующих записей
+        updated_count = 0
+        for record in existing_records:
+            # Выставляем соответствующий флаг
+            if request.service == "categorizer":
+                record.is_categorized = True
+            elif request.service == "summarizer":
+                record.is_summarized = True
+            
+            # Пересчитываем статус на основе флагов
+            if not record.is_categorized and not record.is_summarized:
+                record.processing_status = "pending"
+            elif record.is_categorized and record.is_summarized:
+                record.processing_status = "completed"
+            else:
+                record.processing_status = "processing"
+            
+            updated_count += 1
+        
+        db.commit()
+        
+        # Получаем статистику после обновления
+        stats = db.query(
+            ProcessedData.processing_status,
+            func.count(ProcessedData.id).label('count')
+        ).filter(
+            ProcessedData.public_bot_id == request.bot_id
+        ).group_by(ProcessedData.processing_status).all()
+        
+        status_counts = {
+            "pending": 0,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0
+        }
+        for stat in stats:
+            if stat.processing_status in status_counts:
+                status_counts[stat.processing_status] = stat.count
+        
+        total_affected = created_count + updated_count
+        logger.info(f"✅ Синхронизирован статус сервиса '{request.service}' для {total_affected} постов бота {request.bot_id}")
+        
+        return {
+            "message": f"Синхронизирован статус сервиса '{request.service}' для {total_affected} постов",
+            "service": request.service,
+            "bot_id": request.bot_id,
+            "affected_count": total_affected,
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "status_distribution": status_counts,
+            "requested_posts": len(request.post_ids)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка синхронизации статуса сервиса: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка синхронизации статуса: {str(e)}"
+        )
+
 # === AI MANAGEMENT ENDPOINTS ===
 @app.get("/api/ai/status")
 def get_ai_status(db: Session = Depends(get_db)):
@@ -3437,6 +3623,28 @@ def get_ai_status(db: Session = Depends(get_db)):
         total_ai_results = db.query(ProcessedData).count()
         results_per_post = round(total_ai_results / max(total_assignable_posts, 1), 2)
         
+        # 🔧 НОВОЕ: Статистика по флагам для активных ботов
+        flags_stats = {}
+        if active_bot_ids:
+            # Считаем посты с is_categorized = true
+            categorized_count = db.query(ProcessedData).filter(
+                ProcessedData.public_bot_id.in_(active_bot_ids),
+                ProcessedData.is_categorized == True
+            ).count()
+            
+            # Считаем посты с is_summarized = true
+            summarized_count = db.query(ProcessedData).filter(
+                ProcessedData.public_bot_id.in_(active_bot_ids),
+                ProcessedData.is_summarized == True
+            ).count()
+            
+            flags_stats = {
+                "categorized": categorized_count,
+                "summarized": summarized_count
+            }
+        else:
+            flags_stats = {"categorized": 0, "summarized": 0}
+        
         # Статистика ботов
         total_bots = db.query(PublicBot).count()
         active_bots_count = db.query(PublicBot).filter(PublicBot.status == 'active').count()
@@ -3446,6 +3654,7 @@ def get_ai_status(db: Session = Depends(get_db)):
         return {
             "posts_stats": posts_stats,  # Совместимая с UI статистика
             "multitenant_stats": multitenant_stats,  # Полная мультитенантная статистика
+            "flags_stats": flags_stats,  # 🔧 НОВОЕ: Статистика по флагам
             "total_posts": total_assignable_posts,  # Посты назначенные активным ботам
             "total_posts_in_system": total_posts_in_system,  # Все посты в системе
             "progress_percentage": progress_percentage,  # Прогресс от назначенных постов
@@ -3467,6 +3676,7 @@ def get_ai_status(db: Session = Depends(get_db)):
             "error": str(e),
             "posts_stats": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
             "multitenant_stats": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
+            "flags_stats": {"categorized": 0, "summarized": 0},
             "total_posts": 0,
             "progress_percentage": 0,
             "ai_results_stats": {"total_results": 0, "results_per_post": 0},
@@ -3487,14 +3697,14 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
         if not active_bots:
             return {
                 "bots_stats": [],
-                "summary": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
+                "summary": {"pending": 0, "processing": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
                 "ui_compatible_summary": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
                 "total_bots": 0,
                 "last_updated": datetime.now().isoformat()
             }
         
         bots_detailed = []
-        summary_stats = {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
+        summary_stats = {"pending": 0, "processing": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
         
         for bot in active_bots:
             # Получаем каналы бота
@@ -3510,7 +3720,9 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
                 
                 # Статистика по статусам для этого бота
                 bot_stats = {}
-                for status in ['pending', 'categorized', 'summarized', 'completed', 'failed']:
+                
+                # Подсчитываем по статусам
+                for status in ['pending', 'processing', 'completed', 'failed']:
                     count = db.query(PostCache.id).join(
                         ProcessedData, PostCache.id == ProcessedData.post_id
                     ).filter(
@@ -3519,7 +3731,35 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
                         PostCache.channel_telegram_id.in_(channel_telegram_ids)
                     ).distinct().count()
                     bot_stats[status] = count
-                    summary_stats[status] += count
+                
+                # Подсчитываем по флагам (для детальной статистики)
+                categorized_count = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    ProcessedData.is_categorized == True,
+                    ProcessedData.public_bot_id == bot.id,
+                    PostCache.channel_telegram_id.in_(channel_telegram_ids)
+                ).distinct().count()
+                
+                summarized_count = db.query(PostCache.id).join(
+                    ProcessedData, PostCache.id == ProcessedData.post_id
+                ).filter(
+                    ProcessedData.is_summarized == True,
+                    ProcessedData.public_bot_id == bot.id,
+                    PostCache.channel_telegram_id.in_(channel_telegram_ids)
+                ).distinct().count()
+                
+                # Добавляем флаги в статистику
+                bot_stats['categorized'] = categorized_count
+                bot_stats['summarized'] = summarized_count
+                
+                # Суммируем для общей статистики
+                summary_stats['pending'] += bot_stats.get('pending', 0)
+                summary_stats['processing'] += bot_stats.get('processing', 0)
+                summary_stats['completed'] += bot_stats.get('completed', 0)
+                summary_stats['failed'] += bot_stats.get('failed', 0)
+                summary_stats['categorized'] += categorized_count
+                summary_stats['summarized'] += summarized_count
                 
                 # Общее количество постов для бота
                 total_bot_posts = db.query(PostCache).filter(
@@ -3530,15 +3770,14 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
                 if total_bot_posts > 0:
                     progress = round((bot_stats['completed'] / total_bot_posts) * 100, 2)
             else:
-                bot_stats = {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
+                bot_stats = {"pending": 0, "processing": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0}
                 total_bot_posts = 0
                 progress = 0
             
             # UI-совместимая статистика для бота
-            processing_count = bot_stats.get('categorized', 0) + bot_stats.get('summarized', 0)
             ui_compatible_stats = {
                 "pending": bot_stats.get('pending', 0),
-                "processing": processing_count,
+                "processing": bot_stats.get('processing', 0),
                 "completed": bot_stats.get('completed', 0),
                 "failed": bot_stats.get('failed', 0)
             }
@@ -3555,10 +3794,9 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
             })
         
         # UI-совместимая суммарная статистика
-        total_processing = summary_stats.get('categorized', 0) + summary_stats.get('summarized', 0)
         ui_compatible_summary = {
             "pending": summary_stats.get('pending', 0),
-            "processing": total_processing,
+            "processing": summary_stats.get('processing', 0),
             "completed": summary_stats.get('completed', 0),
             "failed": summary_stats.get('failed', 0)
         }
@@ -3587,7 +3825,7 @@ def get_multitenant_ai_status(db: Session = Depends(get_db)):
         return {
             "error": str(e),
             "bots_stats": [],
-            "summary": {"pending": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
+            "summary": {"pending": 0, "processing": 0, "categorized": 0, "summarized": 0, "completed": 0, "failed": 0},
             "ui_compatible_summary": {"pending": 0, "processing": 0, "completed": 0, "failed": 0},
             "total_bots": 0,
             "last_updated": datetime.now().isoformat()
