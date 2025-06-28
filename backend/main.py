@@ -4350,14 +4350,14 @@ async def generate_digest_preview(bot_id: int, db: Session = Depends(get_db)):
             import os
             sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
             
-            from ai_services.orchestrator_v4 import AIOrchestrator
+            from ai_services.orchestrator_v5_parallel import AIOrchestrator
             
             # Создаем AI Orchestrator
             orchestrator = AIOrchestrator(backend_url="http://localhost:8000")
             
-            # Запускаем AI обработку для конкретного бота через orchestrator_v4
+            # Запускаем AI обработку для конкретного бота через orchestrator_v5_parallel
             try:
-                # Создаем словарь бота для AI Orchestrator v4.0
+                # Создаем словарь бота для AI Orchestrator v5
                 bot_data = {
                     "id": bot.id,
                     "name": bot.name,
@@ -4512,9 +4512,9 @@ async def trigger_ai_processing():
             **trigger_command
         })
         
-        # Путь к AI Orchestrator v4.0 (Backend запускается из backend/ папки)  
+        # Путь к AI Orchestrator v5 (Backend запускается из backend/ папки)  
         project_root = os.path.dirname(os.getcwd())  # Поднимаемся на уровень выше backend/
-        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v4.py")
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v5_parallel.py")
         
         # Проверяем существование файла
         if not os.path.exists(orchestrator_path):
@@ -4524,9 +4524,10 @@ async def trigger_ai_processing():
                 "path": orchestrator_path
             }
         
-        # Запускаем AI Orchestrator в ФОНОВОМ режиме (continuous mode)
+        # Запускаем AI Orchestrator v5 в ФОНОВОМ режиме (parallel mode)
+        # ИСПРАВЛЕНО: используем правильный синтаксис аргументов для v5
         process = subprocess.Popen([
-            sys.executable, orchestrator_path, "--mode", "continuous"
+            sys.executable, orchestrator_path, "parallel"  # v5 принимает mode без --mode
         ], cwd=project_root,  # Рабочая директория = корень проекта
            stdout=subprocess.DEVNULL, 
            stderr=subprocess.DEVNULL)
@@ -5068,27 +5069,39 @@ async def start_orchestrator_background():
                 "process_id": orchestrator_process.pid
             }
         
-        # Путь к AI Orchestrator (Backend запускается из backend/ папки)
+        # Путь к AI Orchestrator v5 (Backend запускается из backend/ папки)
         project_root = os.path.dirname(os.getcwd())  # Поднимаемся на уровень выше backend/
-        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v4.py")
+        orchestrator_path = os.path.join(project_root, "ai_services", "orchestrator_v5_parallel.py")
+        
+        # ОТЛАДОЧНАЯ ИНФОРМАЦИЯ
+        debug_info = {
+            "backend_cwd": os.getcwd(),
+            "project_root": project_root,
+            "orchestrator_path": orchestrator_path,
+            "file_exists": os.path.exists(orchestrator_path),
+            "python_executable": sys.executable,
+            "ai_services_exists": os.path.exists(os.path.join(project_root, "ai_services")),
+            "ai_services_contents": os.listdir(os.path.join(project_root, "ai_services")) if os.path.exists(os.path.join(project_root, "ai_services")) else []
+        }
+        print(f"🔍 DEBUG: {debug_info}")
         
         if not os.path.exists(orchestrator_path):
             return {
                 "success": False,
                 "message": "AI Orchestrator не найден",
                 "path": orchestrator_path,
-                "status": "not_found"
+                "status": "not_found",
+                "debug": debug_info
             }
         
-        # Запускаем AI Orchestrator в continuous режиме
+        # Запускаем AI Orchestrator v5 в parallel режиме
+        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: используем DEVNULL вместо PIPE чтобы избежать блокировки
         orchestrator_process = subprocess.Popen(
-            [sys.executable, orchestrator_path, "--mode", "continuous"],
+            [sys.executable, orchestrator_path, "parallel"],
             cwd=project_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,  # Line buffered
-            universal_newlines=True
+            stdout=subprocess.DEVNULL,  # Не блокируем процесс буферизацией
+            stderr=subprocess.DEVNULL,  # Логи идут в файл через logging в самом orchestrator
+            text=True
         )
         
         # Добавляем лог о запуске

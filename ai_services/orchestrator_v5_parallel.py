@@ -113,17 +113,90 @@ class AIOrchestrator:
             logger.error("❌ Не удалось инициализировать AI сервисы")
             return False
         
-        # Запускаем оба worker цикла параллельно
+        # Запускаем все worker циклы параллельно включая heartbeat
         try:
             await asyncio.gather(
                 self.categorization_worker(),
                 self.summarization_worker(),
+                self.heartbeat_worker(),
                 return_exceptions=True
             )
         except KeyboardInterrupt:
             logger.info("⏹️ Получен сигнал остановки")
         except Exception as e:
             logger.error(f"❌ Ошибка в параллельных worker циклах: {e}")
+
+    async def heartbeat_worker(self):
+        """Worker для отправки heartbeat статуса в Backend API"""
+        logger.info("💓 Запуск Heartbeat Worker")
+        
+        while True:
+            try:
+                # Собираем статистику
+                status_data = await self.collect_status_data()
+                
+                # Отправляем статус в Backend
+                await self.send_heartbeat(status_data)
+                
+                # Отправляем heartbeat каждые 15 секунд
+                await asyncio.sleep(15)
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка в Heartbeat Worker: {e}")
+                await asyncio.sleep(30)  # Большая пауза при ошибке
+
+    async def collect_status_data(self) -> Dict[str, Any]:
+        """Собирает данные о текущем статусе AI Orchestrator"""
+        async with self.workers_lock:
+            categorization_active = self.categorization_is_running
+            summarization_active = self.summarization_is_running
+        
+        # Получаем статистику из Backend API
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.backend_url}/api/ai/status") as response:
+                    if response.status == 200:
+                        ai_stats = await response.json()
+                    else:
+                        ai_stats = {}
+        except:
+            ai_stats = {}
+        
+        return {
+            "orchestrator_active": True,
+            "status": "ACTIVE" if (categorization_active or summarization_active) else "IDLE",
+            "workers": {
+                "categorization": {
+                    "active": categorization_active,
+                    "status": "RUNNING" if categorization_active else "WAITING"
+                },
+                "summarization": {
+                    "active": summarization_active,
+                    "status": "RUNNING" if summarization_active else "WAITING"
+                }
+            },
+            "stats": ai_stats.get("flags_stats", {}),
+            "version": "v5.0_parallel_workers",
+            "timestamp": datetime.now().isoformat(),
+            "backend_url": self.backend_url,
+            "batch_size": self.batch_size
+        }
+
+    async def send_heartbeat(self, status_data: Dict[str, Any]):
+        """Отправляет heartbeat статус в Backend API"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.backend_url}/api/ai/orchestrator-status",
+                    json=status_data,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        logger.debug("💓 Heartbeat отправлен успешно")
+                    else:
+                        logger.warning(f"⚠️ Heartbeat ошибка: {response.status}")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка отправки heartbeat: {e}")
 
     async def categorization_worker(self):
         """Worker цикл для категоризации"""
@@ -220,10 +293,12 @@ class AIOrchestrator:
                 async with session.get(f"{self.backend_url}/api/ai/status") as response:
                     if response.status == 200:
                         data = await response.json()
-                        # Проверяем есть ли посты со статусом not_found или pending
-                        # или посты с is_categorized=false
+                        # Проверяем количество некатегоризированных постов
                         flags_stats = data.get("flags_stats", {})
-                        uncategorized = flags_stats.get("uncategorized", 0)
+                        categorized = flags_stats.get("categorized", 0)
+                        total_posts = data.get("total_posts", 0)
+                        uncategorized = total_posts - categorized
+                        logger.debug(f"🏷️ Проверка категоризации: {categorized}/{total_posts} (осталось: {uncategorized})")
                         return uncategorized > 0
         except Exception as e:
             logger.warning(f"⚠️ Ошибка проверки некатегоризированных постов: {e}")
@@ -238,9 +313,12 @@ class AIOrchestrator:
                 async with session.get(f"{self.backend_url}/api/ai/status") as response:
                     if response.status == 200:
                         data = await response.json()
-                        # Проверяем есть ли посты с is_summarized=false
+                        # Проверяем количество несаммаризированных постов (независимо от категоризации)
                         flags_stats = data.get("flags_stats", {})
-                        unsummarized = flags_stats.get("unsummarized", 0)
+                        summarized = flags_stats.get("summarized", 0)
+                        total_posts = data.get("total_posts", 0)
+                        unsummarized = total_posts - summarized
+                        logger.debug(f"📝 Проверка саммаризации: {summarized}/{total_posts} (осталось: {unsummarized})")
                         return unsummarized > 0
         except Exception as e:
             logger.warning(f"⚠️ Ошибка проверки несаммаризированных постов: {e}")
@@ -273,9 +351,7 @@ class AIOrchestrator:
                         # Обрабатываем категоризацию
                         await self.process_categorization_batch(posts, bot)
                         
-                        # Обновляем флаг категоризации
-                        post_ids = [p['id'] for p in posts]
-                        await self.sync_service_status(post_ids, bot['id'], 'categorization')
+                        # Флаг категоризации обновляется в process_categorization_batch
                         
                 except Exception as e:
                     logger.error(f"❌ Ошибка категоризации для бота '{bot['name']}': {e}")
@@ -317,9 +393,7 @@ class AIOrchestrator:
                         # Обрабатываем саммаризацию
                         await self.process_summarization_batch(posts, bot)
                         
-                        # Обновляем флаг саммаризации
-                        post_ids = [p['id'] for p in posts]
-                        await self.sync_service_status(post_ids, bot['id'], 'summarization')
+                        # Флаг саммаризации обновляется в process_summarization_batch
                         
                 except Exception as e:
                     logger.error(f"❌ Ошибка саммаризации для бота '{bot['name']}': {e}")
@@ -455,8 +529,9 @@ class AIOrchestrator:
                     logger.info(f"✅ Категоризация: сохранено {saved_count} результатов")
                     
                     # Обновляем флаги категоризации
-                    post_ids = [result.get('post_id', 0) for result in results]
-                    await self.sync_service_status(post_ids, bot['id'], 'categorization')
+                    post_ids = [result.get('post_id', 0) for result in results if result.get('post_id')]
+                    if post_ids:
+                        await self.sync_service_status(post_ids, bot['id'], 'categorization')
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки категоризации: {e}")
@@ -507,8 +582,9 @@ class AIOrchestrator:
                         logger.info(f"✅ Саммаризация: сохранено {saved_count} результатов")
                         
                         # Обновляем флаги саммаризации
-                        post_ids = [post['id'] for post in processed_posts]
-                        await self.sync_service_status(post_ids, bot['id'], 'summarization')
+                        post_ids = [post['id'] for post in processed_posts if post.get('id')]
+                        if post_ids:
+                            await self.sync_service_status(post_ids, bot['id'], 'summarization')
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки саммаризации: {e}")
@@ -581,17 +657,17 @@ class AIOrchestrator:
             return 0
         
         try:
-            # Преобразуем результаты в формат для API
+            # Преобразуем результаты в формат для API (Backend ожидает summaries и categories)
             results_data = []
             for result in results:
                 result_dict = {
                     "post_id": result.post_id,
                     "public_bot_id": result.bot_id,
-                    "categorization_result": result.categories,
-                    "summarization_result": result.summaries,
+                    "categories": result.categories,  # ✅ Исправлено: categorization_result → categories
+                    "summaries": result.summaries,   # ✅ Исправлено: summarization_result → summaries
                     "metrics": result.metrics,
-                    "processing_version": result.processing_version,
-                    "success": result.success
+                    "processing_version": result.processing_version
+                    # Убрано поле "success" - Backend его не ожидает
                 }
                 
                 if result.error_message:
@@ -626,7 +702,9 @@ class AIOrchestrator:
                 async with session.get(f"{self.backend_url}/api/public-bots") as response:
                     if response.status == 200:
                         bots = await response.json()  # Endpoint возвращает список напрямую
+                        # Фильтруем активных ботов по status (не по is_active, так как оно может быть некорректным)
                         active_bots = [bot for bot in bots if bot.get("status") == "active"]
+                        logger.info(f"🔍 Найдено {len(active_bots)} активных ботов из {len(bots)} общих")
                         return active_bots
                     else:
                         logger.error(f"❌ Ошибка получения ботов: {response.status}")
