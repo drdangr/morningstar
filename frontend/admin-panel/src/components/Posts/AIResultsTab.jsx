@@ -362,8 +362,8 @@ function AIResultsTab({ stats, onStatsUpdate }) {
           Фильтры AI результатов
         </Typography>
         
-        <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} sm={6} md={3}>
+        <Box display="flex" gap={2} alignItems="center" flexWrap="wrap">
+          <Box sx={{ width: '150px' }}>
             <TextField
               fullWidth
               label="Поиск по содержимому"
@@ -373,15 +373,15 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary' }} />
               }}
             />
-          </Grid>
+          </Box>
           
-          <Grid item xs={12} sm={6} md={3}>
+          <Box sx={{ width: '180px' }}>
             <FormControl fullWidth>
-              <InputLabel>Канал</InputLabel>
+              <InputLabel>Каналы</InputLabel>
               <Select
                 value={channelFilter}
                 onChange={(e) => setChannelFilter(e.target.value)}
-                label="Канал"
+                label="Каналы"
               >
                 <MenuItem value="">Все каналы</MenuItem>
                 {stats?.channels?.map((channel) => (
@@ -391,24 +391,24 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 ))}
               </Select>
             </FormControl>
-          </Grid>
+          </Box>
           
-          <Grid item xs={12} sm={6} md={3}>
+          <Box sx={{ width: '180px' }}>
             <FormControl fullWidth>
-              <InputLabel>AI Статус</InputLabel>
+              <InputLabel>AI Статусы</InputLabel>
               <Select
                 value={aiStatusFilter}
                 onChange={(e) => setAiStatusFilter(e.target.value)}
-                label="AI Статус"
+                label="AI Статусы"
               >
                 <MenuItem value="all">Все результаты</MenuItem>
                 <MenuItem value="processed">Обработанные</MenuItem>
                 <MenuItem value="unprocessed">Необработанные</MenuItem>
               </Select>
             </FormControl>
-          </Grid>
+          </Box>
           
-          <Grid item xs={12} sm={6} md={3}>
+          <Box sx={{ flex: 1, minWidth: '180px' }}>
             <Box display="flex" gap={1}>
               <Button
                 variant="outlined"
@@ -426,8 +426,8 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 Обновить
               </Button>
             </Box>
-          </Grid>
-        </Grid>
+          </Box>
+        </Box>
       </Paper>
 
       {/* Предупреждение если бот не выбран */}
@@ -476,17 +476,17 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                   <React.Fragment key={post.id}>
                     <TableRow hover>
                       <TableCell>
-                        <Box sx={{ maxWidth: 250 }}>
+                        <Box sx={{ maxWidth: 500 }}>
                           <Typography variant="body2" fontWeight="bold" gutterBottom>
                             {channelInfo.title}
                           </Typography>
                           {post.title && (
                             <Typography variant="body2" color="primary" gutterBottom>
-                              {truncateText(post.title, 40)}
+                              {truncateText(post.title, 20)}
                             </Typography>
                           )}
                           <Typography variant="body2" color="text.secondary">
-                            {truncateText(cleanMarkdownText(post.content), 60)}
+                            {truncateText(cleanMarkdownText(post.content), 30)}
                           </Typography>
                           <Box display="flex" gap={1} mt={1}>
                             <Chip label={`👁 ${formatViews(post.views)}`} size="small" />
@@ -510,10 +510,10 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                       </TableCell>
                       
                       <TableCell>
-                        <Box sx={{ maxWidth: 300 }}>
+                        <Box sx={{ maxWidth: 600 }}>
                           {post.ai_summary ? (
                             <Typography variant="body2">
-                              {truncateText(post.ai_summary, 100)}
+                              {truncateText(post.ai_summary, 50)}
                             </Typography>
                           ) : (
                             <Typography variant="body2" color="text.secondary">
