@@ -29,7 +29,8 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
-  Snackbar
+  Snackbar,
+  Collapse
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -40,7 +41,9 @@ import {
   Schedule as ScheduleIcon,
   Delete as DeleteIcon,
   Warning as WarningIcon,
-  Storage as StorageIcon
+  Storage as StorageIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon
 } from '@mui/icons-material';
 
 // Определяем API URL динамически
@@ -71,6 +74,9 @@ function RawPostsTab({ stats, onStatsUpdate }) {
   const [dateTo, setDateTo] = useState(null);
   const [sortBy, setSortBy] = useState('collected_at');
   const [sortOrder, setSortOrder] = useState('desc');
+
+  // Состояние для разворачивания постов
+  const [expandedPosts, setExpandedPosts] = useState({});
 
   // Загрузка размера данных
   const loadDataSize = async () => {
@@ -223,6 +229,13 @@ function RawPostsTab({ stats, onStatsUpdate }) {
       setClearingOrphans(false);
       setOrphanConfirmDialog(false);
     }
+  };
+
+  const togglePostExpansion = (postId) => {
+    setExpandedPosts((prevExpandedPosts) => ({
+      ...prevExpandedPosts,
+      [postId]: !prevExpandedPosts[postId]
+    }));
   };
 
   return (
@@ -393,20 +406,19 @@ function RawPostsTab({ stats, onStatsUpdate }) {
               <TableCell>Просмотры</TableCell>
               <TableCell>Дата поста</TableCell>
               <TableCell>Собрано</TableCell>
-              <TableCell>Статус</TableCell>
               <TableCell>Действия</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={7} align="center">
                   <CircularProgress />
                 </TableCell>
               </TableRow>
             ) : posts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={7} align="center">
                   <Typography color="text.secondary">
                     Нет данных для отображения
                   </Typography>
@@ -415,96 +427,173 @@ function RawPostsTab({ stats, onStatsUpdate }) {
             ) : (
               posts.map((post) => {
                 const channelInfo = getChannelInfo(post.channel_telegram_id);
+                const isExpanded = expandedPosts[post.id];
                 
                 return (
-                  <TableRow key={post.id} hover>
-                    <TableCell>{post.id}</TableCell>
-                    
-                    <TableCell>
-                      <Box>
-                        <Typography variant="body2" fontWeight="bold">
-                          {channelInfo.title}
-                        </Typography>
-                        {channelInfo.username && (
-                          <Typography variant="caption" color="text.secondary">
-                            @{channelInfo.username}
+                  <React.Fragment key={post.id}>
+                    <TableRow hover>
+                      <TableCell>{post.id}</TableCell>
+                      
+                      <TableCell>
+                        <Box>
+                          <Typography variant="body2" fontWeight="bold">
+                            {channelInfo.title}
                           </Typography>
-                        )}
-                        <Typography variant="caption" display="block" color="text.secondary">
-                          ID: {post.channel_telegram_id}
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                    
-                    <TableCell>
-                      <Box sx={{ maxWidth: 600 }}>
-                        {post.title && (
-                          <Typography variant="body2" fontWeight="bold" gutterBottom>
-                            {truncateText(post.title, 25)}
+                          {channelInfo.username && (
+                            <Typography variant="caption" color="text.secondary">
+                              @{channelInfo.username}
+                            </Typography>
+                          )}
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            ID: {post.channel_telegram_id}
                           </Typography>
-                        )}
-                        <Typography variant="body2" color="text.secondary">
-                          {truncateText(cleanMarkdownText(post.content), 50)}
+                        </Box>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Box sx={{ maxWidth: 600 }}>
+                          {post.title && (
+                            <Typography variant="body2" fontWeight="bold" gutterBottom>
+                              {truncateText(post.title, 25)}
+                            </Typography>
+                          )}
+                          <Typography variant="body2" color="text.secondary">
+                            {truncateText(cleanMarkdownText(post.content), 50)}
+                          </Typography>
+                          {post.media_urls && post.media_urls.length > 0 && (
+                            <Chip 
+                              label={`📎 ${post.media_urls.length} медиа`} 
+                              size="small" 
+                              sx={{ mt: 1 }} 
+                            />
+                          )}
+                        </Box>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatViews(post.views)}
                         </Typography>
-                        {post.media_urls && post.media_urls.length > 0 && (
-                          <Chip 
-                            label={`📎 ${post.media_urls.length} медиа`} 
-                            size="small" 
-                            sx={{ mt: 1 }} 
-                          />
-                        )}
-                      </Box>
-                    </TableCell>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(post.post_date)}
+                        </Typography>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(post.collected_at)}
+                        </Typography>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Box display="flex" gap={1}>
+                          <Tooltip title="Просмотр в Telegram">
+                            <IconButton
+                              size="small"
+                              onClick={() => window.open(`https://t.me/c/${Math.abs(post.channel_telegram_id)}/1${post.telegram_message_id}`, '_blank')}
+                            >
+                              <LinkIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title={isExpanded ? "Свернуть" : "Развернуть"}>
+                            <IconButton size="small" onClick={() => togglePostExpansion(post.id)}>
+                              {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
                     
-                    <TableCell>
-                      <Typography variant="body2">
-                        {formatViews(post.views)}
-                      </Typography>
-                    </TableCell>
-                    
-                    <TableCell>
-                      <Typography variant="body2">
-                        {formatDate(post.post_date)}
-                      </Typography>
-                    </TableCell>
-                    
-                    <TableCell>
-                      <Typography variant="body2">
-                        {formatDate(post.collected_at)}
-                      </Typography>
-                    </TableCell>
-                    
-                    <TableCell>
-                      <Chip 
-                        label={post.processing_status || 'pending'} 
-                        size="small"
-                        color={
-                          post.processing_status === 'completed' ? 'success' :
-                          post.processing_status === 'processing' ? 'warning' :
-                          post.processing_status === 'failed' ? 'error' :
-                          'default'
-                        }
-                      />
-                    </TableCell>
-                    
-                    <TableCell>
-                      <Box display="flex" gap={1}>
-                        <Tooltip title="Просмотр в Telegram">
-                          <IconButton
-                            size="small"
-                            onClick={() => window.open(`https://t.me/c/${Math.abs(post.channel_telegram_id)}/1${post.telegram_message_id}`, '_blank')}
-                          >
-                            <LinkIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Детали поста">
-                          <IconButton size="small">
-                            <ViewIcon />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
+                    {/* Расширенная информация о посте */}
+                    <TableRow>
+                      <TableCell colSpan={7} sx={{ py: 0 }}>
+                        <Collapse in={isExpanded} timeout="auto" unmountOnExit>
+                          <Box sx={{ p: 2, bgcolor: 'grey.50' }}>
+                            <Grid container spacing={2}>
+                              <Grid item xs={12} md={8}>
+                                <Typography variant="subtitle2" gutterBottom>
+                                  Полный текст поста:
+                                </Typography>
+                                {post.title && (
+                                  <Typography variant="h6" gutterBottom>
+                                    {post.title}
+                                  </Typography>
+                                )}
+                                <Typography variant="body2" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
+                                  {post.content || 'Нет содержимого'}
+                                </Typography>
+                                
+                                {post.media_urls && post.media_urls.length > 0 && (
+                                  <Box>
+                                    <Typography variant="subtitle2" gutterBottom>
+                                      Медиа файлы ({post.media_urls.length}):
+                                    </Typography>
+                                    {post.media_urls.slice(0, 5).map((url, index) => (
+                                      <Chip 
+                                        key={index}
+                                        label={`📎 Файл ${index + 1}`} 
+                                        size="small" 
+                                        sx={{ mr: 1, mb: 1 }}
+                                        onClick={() => window.open(url, '_blank')}
+                                        clickable
+                                      />
+                                    ))}
+                                    {post.media_urls.length > 5 && (
+                                      <Typography variant="caption" color="text.secondary">
+                                        И еще {post.media_urls.length - 5} файлов...
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                )}
+                              </Grid>
+                              
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="subtitle2" gutterBottom>
+                                  Техническая информация:
+                                </Typography>
+                                
+                                <Box display="flex" flexDirection="column" gap={1}>
+                                  <Typography variant="body2">
+                                    <strong>ID поста:</strong> {post.id}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    <strong>Telegram ID:</strong> {post.telegram_message_id}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    <strong>Канал ID:</strong> {post.channel_telegram_id}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    <strong>Просмотры:</strong> {formatViews(post.views)}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    <strong>Дата поста:</strong> {formatDate(post.post_date)}
+                                  </Typography>
+                                  <Typography variant="body2">
+                                    <strong>Собрано:</strong> {formatDate(post.collected_at)}
+                                  </Typography>
+                                </Box>
+                                
+                                <Box mt={2}>
+                                  <Button
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<LinkIcon />}
+                                    onClick={() => window.open(`https://t.me/c/${Math.abs(post.channel_telegram_id)}/1${post.telegram_message_id}`, '_blank')}
+                                    fullWidth
+                                  >
+                                    Открыть в Telegram
+                                  </Button>
+                                </Box>
+                              </Grid>
+                            </Grid>
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
                 );
               })
             )}
