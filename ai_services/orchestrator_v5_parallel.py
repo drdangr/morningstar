@@ -546,10 +546,10 @@ class AIOrchestrator:
                 for post in posts:
                     # Получаем данные из processed_data для этого поста и бота
                     processed_data = await self.get_processed_data(post['id'], bot['id'])
-                    if processed_data and processed_data.get('categorization_result'):
+                    if processed_data and processed_data.get('categories'):
                         processed_posts.append({
                             **post,
-                            'categories': processed_data['categorization_result']
+                            'categories': processed_data['categories']
                         })
                 
                 if processed_posts:

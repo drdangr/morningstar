@@ -67,12 +67,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware для админ-панели
+# CORS middleware для админ-панели (исправленная версия)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite dev server
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
+    allow_credentials=False,  # Убираем credentials для совместимости
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1753,6 +1753,7 @@ def get_posts_cache_with_ai(
     channel_telegram_id: Optional[int] = None,
     processing_status: Optional[str] = None,
     ai_status: Optional[str] = None,  # all, processed, unprocessed
+    bot_id: Optional[int] = None,  # 🚀 НОВЫЙ ФИЛЬТР для мультитенантности
     search: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -1776,7 +1777,6 @@ def get_posts_cache_with_ai(
         PostCache.post_date,
         PostCache.collected_at,
         PostCache.userbot_metadata,
-        PostCache.processing_status,
         # AI результаты из processed_data (могут быть NULL)
         ProcessedData.summaries.label('ai_summaries'),
         ProcessedData.categories.label('ai_categories'),
@@ -1790,13 +1790,17 @@ def get_posts_cache_with_ai(
         PostCache.id == ProcessedData.post_id
     )
     
+    # 🚀 НОВЫЙ ФИЛЬТР: по bot_id (мультитенантность)
+    if bot_id:
+        query = query.filter(ProcessedData.public_bot_id == bot_id)
+    
     # Фильтр по каналу
     if channel_telegram_id:
         query = query.filter(PostCache.channel_telegram_id == channel_telegram_id)
     
-    # Фильтр по статусу обработки постов
-    if processing_status:
-        query = query.filter(PostCache.processing_status == processing_status)
+    # Фильтр по статусу обработки постов (УБРАНО: processing_status больше нет в PostCache)
+    # if processing_status:
+    #     query = query.filter(PostCache.processing_status == processing_status)
     
     # Фильтр по статусу AI обработки
     if ai_status == "processed":
@@ -1875,8 +1879,8 @@ def get_posts_cache_with_ai(
                     categories = row.ai_categories if isinstance(row.ai_categories, dict) else json.loads(row.ai_categories)
                 else:
                     categories = json.loads(row.ai_categories)
-                # Исправленный парсинг: сначала пробуем ru, потом primary, потом старые форматы
-                ai_category = categories.get('ru') or categories.get('primary') or categories.get('category') or categories.get('primary_category')
+                # ИСПРАВЛЕНО: используем правильное поле category_name из реальной структуры БД
+                ai_category = categories.get('category_name') or categories.get('ru') or categories.get('primary') or categories.get('category')
             except (json.JSONDecodeError, AttributeError):
                 pass
         
@@ -1892,6 +1896,19 @@ def get_posts_cache_with_ai(
             except (json.JSONDecodeError, AttributeError):
                 pass
         
+        # ДОПОЛНИТЕЛЬНО: если метрики не найдены в metrics, попробуем взять из categories
+        if not ai_importance and row.ai_categories:
+            try:
+                if USE_POSTGRESQL:
+                    categories = row.ai_categories if isinstance(row.ai_categories, dict) else json.loads(row.ai_categories)
+                else:
+                    categories = json.loads(row.ai_categories)
+                ai_importance = categories.get('importance')
+                ai_urgency = categories.get('urgency')
+                ai_significance = categories.get('significance')
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
         post_data = {
             "id": row.id,
             "channel_telegram_id": row.channel_telegram_id,
@@ -1903,7 +1920,7 @@ def get_posts_cache_with_ai(
             "post_date": row.post_date,
             "collected_at": row.collected_at,
             "userbot_metadata": row.userbot_metadata if USE_POSTGRESQL else (json.loads(row.userbot_metadata) if row.userbot_metadata else {}),
-            "processing_status": row.processing_status,
+            # УБРАНО: "processing_status": row.processing_status,  # Заменено мультитенантными статусами
             # AI результаты
             "ai_summary": ai_summary,
             "ai_category": ai_category,
@@ -1931,6 +1948,12 @@ def get_posts_stats(db: Session = Depends(get_db)):
     # Общая статистика
     total_posts = db.query(PostCache).count()
     
+    # Размер всей базы данных (включая posts_cache, processed_data и все остальные таблицы)
+    total_size_mb = get_database_size()
+    
+    # Последнее обновление - максимальное время collected_at
+    last_updated = db.query(sql_func.max(PostCache.collected_at)).scalar()
+    
     # Статистика по каналам с дополнительной информацией
     channel_stats = db.query(
         PostCache.channel_telegram_id,
@@ -1942,11 +1965,12 @@ def get_posts_stats(db: Session = Depends(get_db)):
         PostCache.channel_telegram_id
     ).all()
     
-    # Статистика по статусам обработки
-    status_stats = db.query(
-        PostCache.processing_status,
-        sql_func.count(PostCache.id).label('count')
-    ).group_by(PostCache.processing_status).all()
+    # Статистика по статусам обработки (убрано для двухтабной архитектуры)
+    # status_stats = db.query(
+    #     PostCache.processing_status,
+    #     sql_func.count(PostCache.id).label('count')
+    # ).group_by(PostCache.processing_status).all()
+    status_stats = []  # Пустой список для совместимости
     
     # Получаем информацию о каналах из основной таблицы
     channel_info = {}
@@ -1961,6 +1985,8 @@ def get_posts_stats(db: Session = Depends(get_db)):
     
     return {
         "total_posts": total_posts,
+        "total_size_mb": total_size_mb,  # Полный размер БД в МБ
+        "last_updated": last_updated,    # Время последнего обновления
         "channels": [
             {
                 "telegram_id": stat.channel_telegram_id,
@@ -1975,11 +2001,7 @@ def get_posts_stats(db: Session = Depends(get_db)):
             for stat in channel_stats
         ],
         "processing_status": [
-            {
-                "status": stat.processing_status,
-                "count": stat.count
-            }
-            for stat in status_stats
+            # Убрано для двухтабной архитектуры - статусы теперь в processed_data
         ]
     }
 
