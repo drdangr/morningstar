@@ -37,12 +37,77 @@ import {
   Info as InfoIcon,
   Public as GlobalIcon,
   SmartToy as BotTemplateIcon,
+  SmartToy,
   Schedule as ScheduleIcon
 } from '@mui/icons-material';
 
 import BotTemplateSettings from '../components/BotTemplateSettings';
 
 const API_BASE_URL = 'http://localhost:8000';
+
+// Доступные модели OpenAI с характеристиками
+const AVAILABLE_MODELS = {
+  'gpt-4o-mini': {
+    name: 'GPT-4o Mini',
+    description: 'Быстрая и экономичная модель, идеальна для категоризации',
+    cost_per_1k_tokens: 0.00015,
+    speed: 'Быстро',
+    quality: 'Высокое',
+    recommended_for: ['categorization', 'analysis']
+  },
+  'gpt-4o': {
+    name: 'GPT-4o',
+    description: 'Высококачественная модель для сложных задач',
+    cost_per_1k_tokens: 0.005,
+    speed: 'Средне',
+    quality: 'Очень высокое',
+    recommended_for: ['summarization', 'complex_analysis']
+  },
+  'gpt-3.5-turbo': {
+    name: 'GPT-3.5 Turbo',
+    description: 'Быстрая модель для простых задач',
+    cost_per_1k_tokens: 0.0005,
+    speed: 'Очень быстро',
+    quality: 'Среднее',
+    recommended_for: ['simple_tasks']
+  },
+  'gpt-4': {
+    name: 'GPT-4',
+    description: 'Мощная модель для сложных задач (дорогая)',
+    cost_per_1k_tokens: 0.03,
+    speed: 'Медленно',
+    quality: 'Максимальное',
+    recommended_for: ['complex_reasoning']
+  }
+};
+
+// AI Сервисы для которых можно выбирать модели
+const AI_SERVICES = {
+  categorization: {
+    name: 'Категоризация',
+    description: 'Определение категорий для постов',
+    current_model: 'gpt-4o-mini',
+    recommended_model: 'gpt-4o-mini',
+    max_tokens: 1000,
+    temperature: 0.3
+  },
+  summarization: {
+    name: 'Суммаризация',
+    description: 'Создание кратких резюме постов',
+    current_model: 'gpt-4o',
+    recommended_model: 'gpt-4o',
+    max_tokens: 2000,
+    temperature: 0.7
+  },
+  analysis: {
+    name: 'Анализ',
+    description: 'Глубокий анализ контента',
+    current_model: 'gpt-4o-mini',
+    recommended_model: 'gpt-4o-mini',
+    max_tokens: 1500,
+    temperature: 0.5
+  }
+};
 
 // Конфигурация табов
 const TABS_CONFIG = {
@@ -67,6 +132,12 @@ const SETTING_CATEGORIES = {
     icon: <AIIcon />,
     color: 'primary',
     description: 'Управление искусственным интеллектом и языковыми моделями'
+  },
+  llm_models: {
+    title: 'Выбор LLM Моделей',
+    icon: <SmartToy />,
+    color: 'warning',
+    description: 'Настройка различных моделей для разных AI сервисов'
   },
   digest: {
     title: 'Настройки Дайджестов',
@@ -203,6 +274,147 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
   }
 };
 
+// Компонент для выбора LLM моделей для AI сервисов
+const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, onParameterChange, disabled }) => {
+  const handleModelChange = (event) => {
+    onModelChange(serviceKey, event.target.value);
+  };
+
+  const handleParameterChange = (paramName, value) => {
+    onParameterChange(serviceKey, paramName, value);
+  };
+
+  const calculateMonthlyCost = (model) => {
+    const modelInfo = AVAILABLE_MODELS[model];
+    if (!modelInfo) return 0;
+    
+    // Примерная оценка: 1000 запросов в месяц, используем max_tokens сервиса
+    const monthlyTokens = 1000 * (service.max_tokens || 500);
+    return (monthlyTokens / 1000) * modelInfo.cost_per_1k_tokens;
+  };
+
+  return (
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardContent>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+          <Box>
+            <Typography variant="h6" gutterBottom>
+              {service.name}
+            </Typography>
+            <Typography variant="body2" color="textSecondary" gutterBottom>
+              {service.description}
+            </Typography>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            {service.recommended_model === currentModel && (
+              <Chip label="Рекомендуемая" size="small" color="success" />
+            )}
+            <Chip 
+              label={`~$${calculateMonthlyCost(currentModel).toFixed(3)}/мес`} 
+              size="small" 
+              color="info" 
+            />
+          </Box>
+        </Box>
+
+        <Grid container spacing={2}>
+          {/* Выбор модели */}
+          <Grid item xs={12}>
+            <FormControl fullWidth sx={{ mb: 2 }}>
+              <InputLabel>Выберите модель</InputLabel>
+              <Select
+                value={currentModel}
+                onChange={handleModelChange}
+                disabled={disabled}
+                label="Выберите модель"
+              >
+                {Object.entries(AVAILABLE_MODELS).map(([modelKey, modelInfo]) => (
+                  <MenuItem key={modelKey} value={modelKey}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                      <Box>
+                        <Typography variant="body1">{modelInfo.name}</Typography>
+                        <Typography variant="caption" color="textSecondary">
+                          {modelInfo.description}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                        <Chip label={modelInfo.speed} size="small" variant="outlined" />
+                        <Chip label={modelInfo.quality} size="small" variant="outlined" />
+                        <Typography variant="caption" color="primary">
+                          ${modelInfo.cost_per_1k_tokens.toFixed(5)}/1k
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Grid>
+
+          {/* Настройки параметров */}
+          <Grid item xs={12} md={6}>
+            <TextField
+              fullWidth
+              type="number"
+              label="Максимальное количество токенов"
+              value={service.max_tokens || 1000}
+              onChange={(e) => handleParameterChange('max_tokens', parseInt(e.target.value))}
+              disabled={disabled}
+              inputProps={{ min: 100, max: 8000, step: 100 }}
+              helperText="От 100 до 8000 токенов"
+            />
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <TextField
+              fullWidth
+              type="number"
+              label="Температура (креативность)"
+              value={service.temperature || 0.5}
+              onChange={(e) => handleParameterChange('temperature', parseFloat(e.target.value))}
+              disabled={disabled}
+              inputProps={{ min: 0, max: 2, step: 0.1 }}
+              helperText="От 0.0 (точность) до 2.0 (креативность)"
+            />
+          </Grid>
+        </Grid>
+
+        {AVAILABLE_MODELS[currentModel] && (
+          <Box sx={{ p: 2, bgcolor: 'grey.50', borderRadius: 1, mt: 2 }}>
+            <Typography variant="subtitle2" gutterBottom>
+              Характеристики выбранной модели:
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="textSecondary">Скорость</Typography>
+                <Typography variant="body2">{AVAILABLE_MODELS[currentModel].speed}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="textSecondary">Качество</Typography>
+                <Typography variant="body2">{AVAILABLE_MODELS[currentModel].quality}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="textSecondary">Стоимость/1k токенов</Typography>
+                <Typography variant="body2">${AVAILABLE_MODELS[currentModel].cost_per_1k_tokens.toFixed(5)}</Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="textSecondary">Месячная оценка</Typography>
+                <Typography variant="body2">${calculateMonthlyCost(currentModel).toFixed(3)}</Typography>
+              </Grid>
+            </Grid>
+            
+            <Box sx={{ mt: 2, p: 1, bgcolor: 'info.light', borderRadius: 1 }}>
+              <Typography variant="caption" color="info.contrastText">
+                💡 С текущими настройками: {service.max_tokens} токенов × температура {service.temperature}
+              </Typography>
+            </Box>
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 function LLMSettingsPage() {
   const [activeTab, setActiveTab] = useState('global');
   const [settings, setSettings] = useState([]);
@@ -214,6 +426,42 @@ function LLMSettingsPage() {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [expandedCategory, setExpandedCategory] = useState('ai');
+  
+  // Состояние для LLM моделей
+  const [llmModels, setLlmModels] = useState(AI_SERVICES);
+  const [changedLlmModels, setChangedLlmModels] = useState({});
+
+  // Обработчик изменения модели для AI сервиса
+  const handleLlmModelChange = (serviceKey, newModel) => {
+    setLlmModels(prev => ({
+      ...prev,
+      [serviceKey]: {
+        ...prev[serviceKey],
+        current_model: newModel
+      }
+    }));
+    
+    setChangedLlmModels(prev => ({
+      ...prev,
+      [`ai_${serviceKey}_model`]: newModel
+    }));
+  };
+
+  // Обработчик изменения параметров AI сервиса
+  const handleLlmParameterChange = (serviceKey, paramName, value) => {
+    setLlmModels(prev => ({
+      ...prev,
+      [serviceKey]: {
+        ...prev[serviceKey],
+        [paramName]: value
+      }
+    }));
+    
+    setChangedLlmModels(prev => ({
+      ...prev,
+      [`ai_${serviceKey}_${paramName}`]: value.toString()
+    }));
+  };
 
   // Загрузка глобальных настроек
   const loadSettings = async () => {
@@ -224,6 +472,24 @@ function LLMSettingsPage() {
       const response = await fetch(`${API_BASE_URL}/api/settings`);
       const data = await response.json();
       setSettings(data);
+      
+      // Загружаем LLM модели из системных переменных
+      const llmModelSettings = {};
+      Object.keys(AI_SERVICES).forEach(serviceKey => {
+        const modelSetting = data.find(s => s.key === `ai_${serviceKey}_model`);
+        const tokensSetting = data.find(s => s.key === `ai_${serviceKey}_max_tokens`);
+        const tempSetting = data.find(s => s.key === `ai_${serviceKey}_temperature`);
+        
+        llmModelSettings[serviceKey] = {
+          ...AI_SERVICES[serviceKey],
+          current_model: modelSetting?.value || AI_SERVICES[serviceKey].current_model,
+          max_tokens: tokensSetting ? parseInt(tokensSetting.value) : AI_SERVICES[serviceKey].max_tokens,
+          temperature: tempSetting ? parseFloat(tempSetting.value) : AI_SERVICES[serviceKey].temperature
+        };
+      });
+      
+      setLlmModels(llmModelSettings);
+      
     } catch (err) {
       setError('Ошибка загрузки настроек: ' + err.message);
     } finally {
@@ -270,31 +536,7 @@ function LLMSettingsPage() {
       if (!templateSettings) return [];
       
       return [
-        // AI Settings
-        {
-          key: 'default_ai_model',
-          description: 'Модель AI по умолчанию для новых ботов',
-          value: templateSettings.default_ai_model,
-          value_type: 'string',
-          is_editable: true,
-          category: 'ai'
-        },
-        {
-          key: 'default_max_tokens',
-          description: 'Максимальное количество токенов для новых ботов',
-          value: templateSettings.default_max_tokens,
-          value_type: 'integer',
-          is_editable: true,
-          category: 'ai'
-        },
-        {
-          key: 'default_temperature',
-          description: 'Температура AI для новых ботов (0.0-2.0)',
-          value: templateSettings.default_temperature,
-          value_type: 'float',
-          is_editable: true,
-          category: 'ai'
-        },
+        // AI Settings - оставляем только промпты
         {
           key: 'default_categorization_prompt',
           description: 'Промпт для категоризации постов по умолчанию',
@@ -363,14 +605,39 @@ function LLMSettingsPage() {
         }
       ];
     }
-    return settings; // Глобальные настройки
+    
+    // Для глобальных настроек фильтруем настройки AI категории
+    // Показываем только нужные настройки, скрываем новые LLM переменные
+    const filteredSettings = settings.filter(setting => {
+      // Скрываем новые LLM переменные (управляются через аккордеон "Выбор LLM Моделей")
+      const llmVariables = [
+        'ai_categorization_model', 'ai_categorization_max_tokens', 'ai_categorization_temperature',
+        'ai_summarization_model', 'ai_summarization_max_tokens', 'ai_summarization_temperature',
+        'ai_analysis_model', 'ai_analysis_max_tokens', 'ai_analysis_temperature'
+      ];
+      
+      if (llmVariables.includes(setting.key)) {
+        return false;
+      }
+      
+      // Для категории AI показываем только нужные настройки
+      if (setting.category === 'ai') {
+        const allowedAiSettings = ['MAX_POSTS_FOR_AI_ANALYSIS', 'MAX_SUMMARY_LENGTH'];
+        return allowedAiSettings.includes(setting.key);
+      }
+      
+      return true;
+    });
+    
+    return filteredSettings;
   };
 
   // Сохранение всех изменений
   const handleSaveAll = async () => {
     const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
+    const totalChanges = Object.keys(currentChanges).length + (activeTab === 'global' ? Object.keys(changedLlmModels).length : 0);
     
-    if (Object.keys(currentChanges).length === 0) {
+    if (totalChanges === 0) {
       setSuccessMessage('Нет изменений для сохранения');
       return;
     }
@@ -379,6 +646,32 @@ function LLMSettingsPage() {
     setError('');
 
     try {
+      // Сохраняем изменения LLM моделей (только для глобального таба)
+      if (activeTab === 'global' && Object.keys(changedLlmModels).length > 0) {
+        const savePromises = Object.entries(changedLlmModels).map(async ([settingKey, newValue]) => {
+          const setting = settings.find(s => s.key === settingKey);
+          if (!setting) {
+            console.warn(`Настройка ${settingKey} не найдена в БД`);
+            return;
+          }
+
+          const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: newValue }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Ошибка сохранения ${settingKey}`);
+          }
+          return response.json();
+        });
+        
+        await Promise.all(savePromises);
+        setChangedLlmModels({});
+        console.log('✅ LLM настройки сохранены:', Object.keys(changedLlmModels));
+      }
+
       if (activeTab === 'template') {
         // Сохраняем шаблонные настройки через Bot Templates API
         const updateData = {};
@@ -403,30 +696,32 @@ function LLMSettingsPage() {
         await loadTemplateSettings();
       } else {
         // Сохраняем глобальные настройки
-        const savePromises = Object.entries(changedSettings).map(async ([key, { value }]) => {
-          const setting = settings.find(s => s.key === key);
-          if (!setting) return;
+        if (Object.keys(changedSettings).length > 0) {
+          const savePromises = Object.entries(changedSettings).map(async ([key, { value }]) => {
+            const setting = settings.find(s => s.key === key);
+            if (!setting) return;
 
-          const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ value }),
+            const response = await fetch(`${API_BASE_URL}/api/settings/${setting.id}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ value }),
+            });
+
+            if (!response.ok) {
+              throw new Error(`Ошибка сохранения ${key}`);
+            }
+
+            return response.json();
           });
 
-          if (!response.ok) {
-            throw new Error(`Ошибка сохранения ${key}`);
-          }
-
-          return response.json();
-        });
-
-        await Promise.all(savePromises);
+          await Promise.all(savePromises);
+          setChangedSettings({});
+          await loadSettings();
+        }
         
-        setSuccessMessage(`Сохранено ${Object.keys(changedSettings).length} настроек`);
-        setChangedSettings({});
-        await loadSettings();
+        setSuccessMessage(`Сохранено ${totalChanges} изменений`);
       }
     } catch (err) {
       setError('Ошибка сохранения: ' + err.message);
@@ -441,6 +736,9 @@ function LLMSettingsPage() {
       setChangedTemplateSettings({});
     } else {
       setChangedSettings({});
+      setChangedLlmModels({});
+      // Сбрасываем LLM модели к исходному состоянию
+      setLlmModels(AI_SERVICES);
     }
     setSuccessMessage('Изменения сброшены');
   };
@@ -479,6 +777,7 @@ function LLMSettingsPage() {
   };
 
   const currentChanges = activeTab === 'template' ? changedTemplateSettings : changedSettings;
+  const totalChanges = Object.keys(currentChanges).length + (activeTab === 'global' ? Object.keys(changedLlmModels).length : 0);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -496,7 +795,7 @@ function LLMSettingsPage() {
           <Tooltip title="Сбросить изменения">
             <IconButton 
               onClick={handleResetChanges} 
-              disabled={Object.keys(currentChanges).length === 0}
+              disabled={totalChanges === 0}
             >
               <RestoreIcon />
             </IconButton>
@@ -505,10 +804,10 @@ function LLMSettingsPage() {
             variant="contained"
             startIcon={<SaveIcon />}
             onClick={handleSaveAll}
-            disabled={saving || Object.keys(currentChanges).length === 0}
+            disabled={saving || totalChanges === 0}
             sx={{ ml: 1 }}
           >
-            {saving ? 'Сохранение...' : `Сохранить (${Object.keys(currentChanges).length})`}
+            {saving ? 'Сохранение...' : `Сохранить (${totalChanges})`}
           </Button>
         </Box>
       </Box>
@@ -541,12 +840,12 @@ function LLMSettingsPage() {
       )}
 
       {/* Информация об изменениях */}
-      {Object.keys(currentChanges).length > 0 && (
+      {totalChanges > 0 && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <InfoIcon />
             <Typography>
-              Изменено настроек: {Object.keys(currentChanges).length}. 
+              Изменено настроек: {totalChanges}. 
               Не забудьте сохранить изменения.
             </Typography>
           </Box>
@@ -562,6 +861,82 @@ function LLMSettingsPage() {
           {Object.entries(SETTING_CATEGORIES).map(([categoryKey, categoryConfig]) => {
         const categorySettings = groupedSettings[categoryKey] || [];
         const changesCount = getChangesCount(categoryKey);
+        
+        // Специальная обработка для категории LLM Models
+        if (categoryKey === 'llm_models') {
+          const llmChangesCount = Object.keys(changedLlmModels).length;
+          
+          return (
+            <Accordion
+              key={categoryKey}
+              expanded={expandedCategory === categoryKey}
+              onChange={() => setExpandedCategory(expandedCategory === categoryKey ? '' : categoryKey)}
+              sx={{ mb: 2 }}
+            >
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                  {categoryConfig.icon}
+                  <Box sx={{ flexGrow: 1 }}>
+                    <Typography variant="h6">
+                      {categoryConfig.title}
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      {categoryConfig.description}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip 
+                      label={`${Object.keys(AI_SERVICES).length} сервисов`} 
+                      size="small" 
+                      color={categoryConfig.color}
+                      variant="outlined"
+                    />
+                    {llmChangesCount > 0 && (
+                      <Chip 
+                        label={`${llmChangesCount} изменений`} 
+                        size="small" 
+                        color="warning"
+                      />
+                    )}
+                  </Box>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box sx={{ mb: 2 }}>
+                  <Alert severity="info">
+                    Выберите оптимальные модели для каждого AI сервиса. 
+                    Рекомендации основаны на реальных тестах производительности и стоимости.
+                  </Alert>
+                </Box>
+                
+                {Object.entries(llmModels).map(([serviceKey, service]) => (
+                  <LLMModelSelector
+                    key={serviceKey}
+                    serviceKey={serviceKey}
+                    service={service}
+                    currentModel={service.current_model}
+                    onModelChange={handleLlmModelChange}
+                    onParameterChange={handleLlmParameterChange}
+                    disabled={loading || saving}
+                  />
+                ))}
+                
+                {llmChangesCount > 0 && (
+                  <Box sx={{ mt: 2, p: 2, bgcolor: 'warning.light', borderRadius: 1 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Планируемые изменения:
+                    </Typography>
+                    {Object.entries(changedLlmModels).map(([serviceKey, newModel]) => (
+                      <Typography key={serviceKey} variant="body2">
+                        • {AI_SERVICES[serviceKey].name}: {AI_SERVICES[serviceKey].current_model} → {newModel}
+                      </Typography>
+                    ))}
+                  </Box>
+                )}
+              </AccordionDetails>
+            </Accordion>
+          );
+        }
         
         if (categorySettings.length === 0) return null;
 

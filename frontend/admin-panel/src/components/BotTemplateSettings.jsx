@@ -124,9 +124,6 @@ const BotTemplateSettings = () => {
 
   const resetToDefaults = () => {
     const defaultSettings = {
-      default_ai_model: 'gpt-4o-mini',
-      default_max_tokens: 4000,
-      default_temperature: 0.7,
       default_categorization_prompt: 'Анализируй посты и определи их категорию...',
       default_summarization_prompt: 'Создай краткое резюме поста...',
       default_max_posts_per_digest: 15,
@@ -220,51 +217,10 @@ const BotTemplateSettings = () => {
               <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <AIIcon />
                 AI и LLM Настройки
-                <Chip label="5 настроек" size="small" color="primary" variant="outlined" />
+                <Chip label="2 настройки" size="small" color="primary" variant="outlined" />
               </Typography>
               
               <Grid container spacing={2}>
-                <Grid item xs={12} md={6}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>AI Модель по умолчанию</InputLabel>
-                    <Select
-                      value={settings.default_ai_model || ''}
-                      onChange={(e) => handleSettingChange('default_ai_model', e.target.value)}
-                      label="AI Модель по умолчанию"
-                    >
-                      {AI_MODELS.map((model) => (
-                        <MenuItem key={model} value={model}>
-                          {model}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                <Grid item xs={12} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    label="Макс. токенов"
-                    value={settings.default_max_tokens || ''}
-                    onChange={(e) => handleSettingChange('default_max_tokens', parseInt(e.target.value))}
-                    inputProps={{ min: 1000, max: 8000 }}
-                  />
-                </Grid>
-                
-                <Grid item xs={12} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    label="Температура"
-                    value={settings.default_temperature || ''}
-                    onChange={(e) => handleSettingChange('default_temperature', parseFloat(e.target.value))}
-                    inputProps={{ min: 0, max: 2, step: 0.1 }}
-                  />
-                </Grid>
-                
                 <Grid item xs={12}>
                   <Grid container spacing={2}>
                     <Grid item xs={12} md={6}>
