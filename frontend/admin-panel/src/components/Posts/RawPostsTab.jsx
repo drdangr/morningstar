@@ -72,7 +72,7 @@ function RawPostsTab({ stats, onStatsUpdate }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [dateFrom, setDateFrom] = useState(null);
   const [dateTo, setDateTo] = useState(null);
-  const [sortBy, setSortBy] = useState('collected_at');
+  const [sortBy, setSortBy] = useState('post_date');
   const [sortOrder, setSortOrder] = useState('desc');
 
   // Состояние для разворачивания постов
