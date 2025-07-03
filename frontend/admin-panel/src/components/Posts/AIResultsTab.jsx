@@ -125,6 +125,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
       
       if (search) params.append('search', search);
       if (channelFilter) params.append('channel_telegram_id', channelFilter);
+      if (categoryFilter) params.append('ai_category', categoryFilter);
       if (dateFrom) params.append('date_from', dateFrom.toISOString());
       if (dateTo) params.append('date_to', dateTo.toISOString());
 
@@ -153,7 +154,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
     if (selectedBotId) {
       loadAIResults();
     }
-  }, [page, rowsPerPage, selectedBotId, search, channelFilter, aiStatusFilter, dateFrom, dateTo, sortBy, sortOrder]);
+  }, [page, rowsPerPage, selectedBotId, search, channelFilter, categoryFilter, aiStatusFilter, dateFrom, dateTo, sortBy, sortOrder]);
 
   // Загрузка ботов и AI статистики при монтировании
   useEffect(() => {
@@ -253,6 +254,16 @@ function AIResultsTab({ stats, onStatsUpdate }) {
   const formatAIMetric = (value) => {
     if (value === null || value === undefined) return 'N/A';
     return typeof value === 'number' ? value.toFixed(1) : value;
+  };
+
+  // Получение уникальных категорий из загруженных постов
+  const getUniqueCategories = () => {
+    const categories = posts
+      .filter(post => post.ai_category && post.ai_category.trim() !== '')
+      .map(post => post.ai_category.trim())
+      .filter((category, index, array) => array.indexOf(category) === index)
+      .sort();
+    return categories;
   };
 
   const selectedBot = aiStats?.bots_stats.find(bot => bot.bot_id === parseInt(selectedBotId));
@@ -386,6 +397,24 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 {stats?.channels?.map((channel) => (
                   <MenuItem key={channel.telegram_id} value={channel.telegram_id}>
                     {channel.title || channel.channel_name} ({channel.posts_count})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+          
+          <Box sx={{ width: '180px' }}>
+            <FormControl fullWidth>
+              <InputLabel>AI Категории</InputLabel>
+              <Select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                label="AI Категории"
+              >
+                <MenuItem value="">Все категории</MenuItem>
+                {getUniqueCategories().map((category) => (
+                  <MenuItem key={category} value={category}>
+                    {category}
                   </MenuItem>
                 ))}
               </Select>

@@ -1755,6 +1755,7 @@ def get_posts_cache_with_ai(
     channel_telegram_id: Optional[int] = None,
     processing_status: Optional[str] = None,
     ai_status: Optional[str] = None,  # all, processed, unprocessed
+    ai_category: Optional[str] = None,  # фильтр по AI категории
     bot_id: Optional[int] = None,  # 🚀 НОВЫЙ ФИЛЬТР для мультитенантности
     search: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -1810,6 +1811,15 @@ def get_posts_cache_with_ai(
     elif ai_status == "unprocessed":
         query = query.filter(ProcessedData.id.is_(None))
     # ai_status == "all" - без дополнительного фильтра
+    
+    # Фильтр по AI категории
+    if ai_category:
+        if USE_POSTGRESQL:
+            # PostgreSQL: фильтруем по JSONB полю categories
+            query = query.filter(ProcessedData.categories['category_name'].astext == ai_category)
+        else:
+            # SQLite: фильтруем через JSON_EXTRACT
+            query = query.filter(ProcessedData.categories.like(f'%"category_name": "{ai_category}"%'))
     
     # Поиск по содержимому
     if search:
@@ -1872,6 +1882,15 @@ def get_posts_cache_with_ai(
         count_query = count_query.filter(ProcessedData.id.isnot(None))
     elif ai_status == "unprocessed":
         count_query = count_query.filter(ProcessedData.id.is_(None))
+    
+    # Фильтр по AI категории в count запросе
+    if ai_category:
+        if USE_POSTGRESQL:
+            # PostgreSQL: фильтруем по JSONB полю categories
+            count_query = count_query.filter(ProcessedData.categories['category_name'].astext == ai_category)
+        else:
+            # SQLite: фильтруем через JSON_EXTRACT
+            count_query = count_query.filter(ProcessedData.categories.like(f'%"category_name": "{ai_category}"%'))
     
     if search:
         search_pattern = f"%{search}%"
