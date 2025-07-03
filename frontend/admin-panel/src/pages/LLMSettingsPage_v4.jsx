@@ -275,13 +275,18 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
 };
 
 // Компонент для выбора LLM моделей для AI сервисов
-const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, onParameterChange, disabled }) => {
+const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, onParameterChange, disabled, settings }) => {
   const handleModelChange = (event) => {
     onModelChange(serviceKey, event.target.value);
   };
 
   const handleParameterChange = (paramName, value) => {
     onParameterChange(serviceKey, paramName, value);
+  };
+
+  // Специальная обработка для настроек из config_settings
+  const handleSpecialSettingChange = (settingKey, value) => {
+    onParameterChange('special', settingKey, value);
   };
 
   const calculateMonthlyCost = (model) => {
@@ -292,6 +297,10 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
     const monthlyTokens = 1000 * (service.max_tokens || 500);
     return (monthlyTokens / 1000) * modelInfo.cost_per_1k_tokens;
   };
+
+  // Получаем текущее значение MAX_SUMMARY_LENGTH из settings
+  const maxSummaryLengthSetting = settings?.find(s => s.key === 'MAX_SUMMARY_LENGTH');
+  const maxSummaryLength = maxSummaryLengthSetting?.value || 500;
 
   return (
     <Card variant="outlined" sx={{ mb: 2 }}>
@@ -377,6 +386,23 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
               helperText="От 0.0 (точность) до 2.0 (креативность)"
             />
           </Grid>
+
+          {/* Специальное поле для суммаризации */}
+          {serviceKey === 'summarization' && (
+            <Grid item size={12}>
+              <TextField
+                fullWidth
+                type="number"
+                label="Максимальная длина резюме (символы)"
+                value={maxSummaryLength}
+                onChange={(e) => handleSpecialSettingChange('MAX_SUMMARY_LENGTH', parseInt(e.target.value))}
+                disabled={disabled}
+                inputProps={{ min: 100, max: 2000, step: 50 }}
+                helperText="Максимальное количество символов в резюме поста"
+                sx={{ mt: 1 }}
+              />
+            </Grid>
+          )}
         </Grid>
 
         {AVAILABLE_MODELS[currentModel] && (
@@ -406,6 +432,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
             <Box sx={{ mt: 2, p: 1, bgcolor: 'info.light', borderRadius: 1 }}>
               <Typography variant="caption" color="info.contrastText">
                 💡 С текущими настройками: {service.max_tokens} токенов × температура {service.temperature}
+                {serviceKey === 'summarization' && ` × резюме до ${maxSummaryLength} символов`}
               </Typography>
             </Box>
           </Box>
@@ -449,6 +476,15 @@ function LLMSettingsPage() {
 
   // Обработчик изменения параметров AI сервиса
   const handleLlmParameterChange = (serviceKey, paramName, value) => {
+    // Специальная обработка для настроек из config_settings
+    if (serviceKey === 'special') {
+      setChangedLlmModels(prev => ({
+        ...prev,
+        [paramName]: value.toString()
+      }));
+      return;
+    }
+
     setLlmModels(prev => ({
       ...prev,
       [serviceKey]: {
@@ -613,7 +649,8 @@ function LLMSettingsPage() {
       const llmVariables = [
         'ai_categorization_model', 'ai_categorization_max_tokens', 'ai_categorization_temperature',
         'ai_summarization_model', 'ai_summarization_max_tokens', 'ai_summarization_temperature',
-        'ai_analysis_model', 'ai_analysis_max_tokens', 'ai_analysis_temperature'
+        'ai_analysis_model', 'ai_analysis_max_tokens', 'ai_analysis_temperature',
+        'MAX_SUMMARY_LENGTH'
       ];
       
       if (llmVariables.includes(setting.key)) {
@@ -622,7 +659,7 @@ function LLMSettingsPage() {
       
       // Для категории AI показываем только нужные настройки
       if (setting.category === 'ai') {
-        const allowedAiSettings = ['MAX_POSTS_FOR_AI_ANALYSIS', 'MAX_SUMMARY_LENGTH'];
+        const allowedAiSettings = ['MAX_POSTS_FOR_AI_ANALYSIS'];
         return allowedAiSettings.includes(setting.key);
       }
       
@@ -922,6 +959,7 @@ function LLMSettingsPage() {
                     onModelChange={handleLlmModelChange}
                     onParameterChange={handleLlmParameterChange}
                     disabled={loading || saving}
+                    settings={settings}
                   />
                 ))}
                 
@@ -931,6 +969,15 @@ function LLMSettingsPage() {
                       Планируемые изменения:
                     </Typography>
                     {Object.entries(changedLlmModels).map(([settingKey, newValue]) => {
+                      // Специальная обработка для MAX_SUMMARY_LENGTH
+                      if (settingKey === 'MAX_SUMMARY_LENGTH') {
+                        return (
+                          <Typography key={settingKey} variant="body2">
+                            • Суммаризация (макс. длина резюме): {newValue} символов
+                          </Typography>
+                        );
+                      }
+
                       // Парсим serviceKey из полного ключа настройки (ai_categorization_model → categorization)
                       const match = settingKey.match(/^ai_([^_]+)_/);
                       const serviceKey = match ? match[1] : settingKey.replace('ai_', '').split('_')[0];
