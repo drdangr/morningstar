@@ -55,9 +55,9 @@ class ProcessingResult:
     error_message: Optional[str] = None
 
 class AIOrchestrator:
-    def __init__(self, backend_url: str = "http://localhost:8000", batch_size: int = 30):
+    def __init__(self, backend_url: str = "http://localhost:8000", batch_size: int = None):
         self.backend_url = backend_url
-        self.batch_size = batch_size
+        self.batch_size = batch_size  # Может быть None - будет загружен из настроек
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         
         if not self.openai_api_key:
@@ -80,15 +80,42 @@ class AIOrchestrator:
         
         logger.info(f"🚀 AI Orchestrator v5.0 инициализирован (Параллельная архитектура)")
         logger.info(f"   Backend URL: {backend_url}")
-        logger.info(f"   Размер батча: {batch_size}")
+        logger.info(f"   Размер батча: {batch_size if batch_size else 'будет загружен из настроек'}")
         logger.info(f"   Макс батчей за цикл: {self.max_batches_per_cycle}")
         logger.info(f"   SettingsManager: инициализирован для динамической загрузки LLM настроек")
     
+    async def _get_batch_size_from_settings(self) -> int:
+        """Получение размера батча из настроек Backend API (MAX_POSTS_FOR_AI_ANALYSIS)"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.backend_url}/api/settings") as response:
+                    if response.status == 200:
+                        settings = await response.json()
+                        for setting in settings:
+                            if setting.get('key') == 'MAX_POSTS_FOR_AI_ANALYSIS':
+                                batch_size = int(setting.get('value', 30))
+                                logger.info(f"📦 Размер батча из настроек MAX_POSTS_FOR_AI_ANALYSIS: {batch_size}")
+                                return batch_size
+                        
+                        logger.warning("⚠️ Настройка 'MAX_POSTS_FOR_AI_ANALYSIS' не найдена, используем 30")
+                        return 30
+                    else:
+                        logger.error(f"❌ Ошибка получения настроек: HTTP {response.status}")
+                        return 30
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса настроек: {str(e)}")
+            return 30
+
     async def initialize_ai_services(self):
         """Инициализация AI сервисов с динамическими настройками из SettingsManager"""
         try:
             from services.categorization import CategorizationService
             from services.summarization import SummarizationService
+            
+            # Получаем размер батча из настроек если не задан
+            if self.batch_size is None:
+                self.batch_size = await self._get_batch_size_from_settings()
+                logger.info(f"📦 Размер батча получен из настроек: {self.batch_size}")
             
             # Загружаем настройки LLM из SettingsManager
             logger.info("📥 Загружаем LLM настройки из SettingsManager...")
@@ -102,7 +129,7 @@ class AIOrchestrator:
             self.categorization_service = CategorizationService(
                 openai_api_key=self.openai_api_key,
                 backend_url=self.backend_url,
-                batch_size=self.batch_size,
+                batch_size=self.batch_size,  # Используем размер батча из настроек
                 settings_manager=self.settings_manager  # Передаем SettingsManager
             )
             
@@ -113,7 +140,7 @@ class AIOrchestrator:
                 settings_manager=self.settings_manager  # Передаем SettingsManager
             )
             
-            logger.info("✅ AI сервисы инициализированы с динамическими LLM настройками")
+            logger.info(f"✅ AI сервисы инициализированы с размером батча: {self.batch_size}")
             return True
             
         except Exception as e:
