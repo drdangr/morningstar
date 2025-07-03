@@ -71,7 +71,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [dateFrom, setDateFrom] = useState(null);
   const [dateTo, setDateTo] = useState(null);
-  const [sortBy, setSortBy] = useState('collected_at');
+  const [sortBy, setSortBy] = useState('post_date');
   const [sortOrder, setSortOrder] = useState('desc');
 
   // Загрузка AI статистики
@@ -494,12 +494,25 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                         </Box>
                       </TableCell>
                       
-                      <TableCell>
+                      <TableCell sx={{ maxWidth: 120 }}>
                         {post.ai_category ? (
                           <Chip 
                             label={post.ai_category} 
                             color="primary" 
                             icon={<CategoryIcon />}
+                            sx={{ 
+                              whiteSpace: 'normal',
+                              wordBreak: 'normal',
+                              overflowWrap: 'break-word',
+                              height: 'auto',
+                              '& .MuiChip-label': {
+                                whiteSpace: 'normal',
+                                wordBreak: 'normal',
+                                overflowWrap: 'break-word',
+                                lineHeight: 1.2,
+                                padding: '4px 8px'
+                              }
+                            }}
                           />
                         ) : (
                           <Typography variant="body2" color="text.secondary">
