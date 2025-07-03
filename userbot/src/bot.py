@@ -506,8 +506,7 @@ class MorningStarUserbot:
                 "content": post.get("text", ""),
                 "media_urls": [post.get("url")] if post.get("url") else [],  # Массив URL, не JSON строка
                 "views": post.get("views", 0),
-                "post_date": post.get("date"),
-                "processing_status": "pending"
+                "post_date": post.get("date")
             }
             posts_batch["posts"].append(post_cache)
 

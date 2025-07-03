@@ -526,18 +526,9 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                       <TableCell>
                         <Box display="flex" flexDirection="column" gap={0.5}>
                           {post.ai_importance && (
-                            <Box display="flex" alignItems="center" gap={1}>
-                              <Typography variant="caption">Важность:</Typography>
-                              <Rating 
-                                value={post.ai_importance / 2} 
-                                max={5} 
-                                size="small" 
-                                readOnly 
-                              />
-                              <Typography variant="caption">
-                                {formatAIMetric(post.ai_importance)}
-                              </Typography>
-                            </Box>
+                            <Typography variant="caption" color="text.secondary">
+                              Важность: {formatAIMetric(post.ai_importance)}
+                            </Typography>
                           )}
                           {post.ai_urgency && (
                             <Typography variant="caption" color="text.secondary">
@@ -567,20 +558,20 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                       
                       <TableCell>
                         <Box display="flex" gap={1}>
-                          <Tooltip title="Просмотр в Telegram">
-                            <IconButton
-                              size="small"
-                              onClick={() => window.open(`https://t.me/c/${Math.abs(post.channel_telegram_id)}/1${post.telegram_message_id}`, '_blank')}
-                            >
-                              <LinkIcon />
-                            </IconButton>
-                          </Tooltip>
                           <Tooltip title={isExpanded ? "Свернуть" : "Развернуть"}>
                             <IconButton
                               size="small"
                               onClick={() => togglePostExpansion(post.id)}
                             >
                               {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Просмотр в Telegram">
+                            <IconButton
+                              size="small"
+                              onClick={() => window.open(`https://t.me/c/${Math.abs(post.channel_telegram_id)}/1${post.telegram_message_id}`, '_blank')}
+                            >
+                              <LinkIcon />
                             </IconButton>
                           </Tooltip>
                         </Box>

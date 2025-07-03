@@ -592,7 +592,6 @@ class PostCacheBase(BaseModel):
     views: int = 0
     post_date: datetime
     userbot_metadata: Optional[Dict[str, Any]] = {}  # JSONB объект
-    processing_status: str = "pending"
 
 class PostCacheCreate(PostCacheBase):
     pass
@@ -1648,6 +1647,9 @@ def create_posts_batch(batch: PostsBatchCreate, db: Session = Depends(get_db)):
             
             # Создаем новый пост
             post_dict = post_data.model_dump()
+            # Убираем processing_status так как мы убрали глобальные статусы
+            post_dict.pop("processing_status", None)
+            
             # Добавляем metadata от userbot - ищем по различным ключам
             metadata = {}
             if batch.channels_metadata:
