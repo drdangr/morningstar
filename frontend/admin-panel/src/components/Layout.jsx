@@ -34,7 +34,7 @@ const menuItems = [
   { text: 'Categories', icon: <TopicIcon />, path: '/categories' },
   { text: 'Channels', icon: <ChannelsIcon />, path: '/channels' },
   { text: 'Public Bots', icon: <PublicBotsIcon />, path: '/public-bots' },
-  { text: 'Userbot', icon: <PostsCacheIcon />, path: '/posts-cache' },
+  { text: 'Post Cache Monitor', icon: <PostsCacheIcon />, path: '/posts-cache' },
   { text: 'LLM Settings', icon: <LLMSettingsIcon />, path: '/settings' },
   { text: 'AI Results', icon: <AIResultsIcon />, path: '/ai-results' },
 ];
