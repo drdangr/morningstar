@@ -1854,6 +1854,49 @@ def get_posts_cache_with_ai(
     # Выполняем запрос
     results = query.offset(skip).limit(limit).all()
     
+    # ИСПРАВЛЕНО: отдельный count запрос для правильной пагинации
+    # Создаем count запрос с теми же фильтрами, но без offset/limit
+    count_query = db.query(PostCache.id).outerjoin(
+        ProcessedData, 
+        PostCache.id == ProcessedData.post_id
+    )
+    
+    # Применяем те же фильтры что и к основному запросу
+    if bot_id:
+        count_query = count_query.filter(ProcessedData.public_bot_id == bot_id)
+    
+    if channel_telegram_id:
+        count_query = count_query.filter(PostCache.channel_telegram_id == channel_telegram_id)
+    
+    if ai_status == "processed":
+        count_query = count_query.filter(ProcessedData.id.isnot(None))
+    elif ai_status == "unprocessed":
+        count_query = count_query.filter(ProcessedData.id.is_(None))
+    
+    if search:
+        search_pattern = f"%{search}%"
+        count_query = count_query.filter(
+            PostCache.content.ilike(search_pattern) |
+            PostCache.title.ilike(search_pattern)
+        )
+    
+    if date_from:
+        try:
+            date_from_obj = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            count_query = count_query.filter(PostCache.post_date >= date_from_obj)
+        except ValueError:
+            pass
+    
+    if date_to:
+        try:
+            date_to_obj = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+            count_query = count_query.filter(PostCache.post_date <= date_to_obj)
+        except ValueError:
+            pass
+    
+    # Получаем общее количество записей
+    total_count = count_query.count()
+    
     # Преобразуем результаты в удобный формат
     posts_with_ai = []
     for row in results:
@@ -1955,7 +1998,7 @@ def get_posts_cache_with_ai(
     
     return {
         "posts": posts_with_ai,
-        "total_count": len(posts_with_ai),  # Для простоты, в реальности нужен отдельный count запрос
+        "total_count": total_count,  # ИСПРАВЛЕНО: правильный count запрос для пагинации
         "has_ai_results": any(post["ai_summary"] is not None for post in posts_with_ai)
     }
 

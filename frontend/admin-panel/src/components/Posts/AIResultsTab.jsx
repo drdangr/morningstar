@@ -311,7 +311,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                   AI результатов
                 </Typography>
                 <Typography variant="h6">
-                  {posts.filter(p => p.ai_summary || p.ai_category).length} из {posts.length}
+                  {selectedBot?.multitenant_stats?.completed || 0}
                 </Typography>
               </CardContent>
             </Card>
@@ -324,7 +324,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                   Полностью обработано
                 </Typography>
                 <Typography variant="h6">
-                  {posts.filter(p => p.ai_is_categorized && p.ai_is_summarized).length}
+                  {selectedBot?.multitenant_stats?.completed || 0}
                 </Typography>
               </CardContent>
             </Card>
@@ -334,13 +334,12 @@ function AIResultsTab({ stats, onStatsUpdate }) {
             <Card>
               <CardContent>
                 <Typography color="text.secondary" gutterBottom>
-                  Средняя важность
+                  В обработке
                 </Typography>
                 <Typography variant="h6">
-                  {posts.length > 0 ? 
-                    (posts.filter(p => p.ai_importance).reduce((sum, p) => sum + (p.ai_importance || 0), 0) / 
-                     posts.filter(p => p.ai_importance).length).toFixed(1) : 
-                    'N/A'
+                  {selectedBot?.multitenant_stats ? 
+                    (selectedBot.multitenant_stats.pending + selectedBot.multitenant_stats.processing) : 
+                    0
                   }
                 </Typography>
               </CardContent>
