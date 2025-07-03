@@ -1,11 +1,118 @@
-import React from 'react';
-import { Box, Typography, TextField, FormControl, InputLabel, Select, MenuItem } from '@mui/material';
+import React, { useState, useEffect } from 'react';
+import { 
+  Box, 
+  Typography, 
+  TextField, 
+  FormControl, 
+  InputLabel, 
+  Select, 
+  MenuItem, 
+  Alert,
+  CircularProgress,
+  Chip
+} from '@mui/material';
+import apiService from '../services/api';
 
 const BotGeneralSettings = ({ bot, onBotUpdate }) => {
+  const [tokenValidation, setTokenValidation] = useState({
+    status: null, // null, 'validating', 'valid', 'invalid'
+    message: '',
+    botInfo: null
+  });
+  
+  const [debounceTimer, setDebounceTimer] = useState(null);
+
+  // Debounced token validation
+  useEffect(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    
+    const token = bot?.bot_token;
+    if (token && token.length > 10) {
+      const timer = setTimeout(() => {
+        validateTokenAndUpdateBot(token);
+      }, 1000); // 1 секунда задержки
+      
+      setDebounceTimer(timer);
+    } else {
+      setTokenValidation({
+        status: null,
+        message: '',
+        botInfo: null
+      });
+    }
+    
+    return () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+    };
+  }, [bot?.bot_token]);
+
+  const validateTokenAndUpdateBot = async (token) => {
+    setTokenValidation({
+      status: 'validating',
+      message: 'Проверка токена...',
+      botInfo: null
+    });
+
+    try {
+      const response = await apiService.post('/telegram-bot/validate-token', {
+        bot_token: token
+      });
+
+      if (response.valid) {
+        setTokenValidation({
+          status: 'valid',
+          message: 'Токен валиден',
+          botInfo: response.bot_info
+        });
+
+        // Автоматически обновляем имя бота
+        if (response.bot_info && response.bot_info.first_name) {
+          handleChange('name', response.bot_info.first_name);
+        }
+      } else {
+        setTokenValidation({
+          status: 'invalid',
+          message: response.error || 'Неверный токен',
+          botInfo: null
+        });
+      }
+    } catch (error) {
+      setTokenValidation({
+        status: 'invalid',
+        message: `Ошибка при проверке токена: ${error.message}`,
+        botInfo: null
+      });
+    }
+  };
+
   const handleChange = (field, value) => {
     if (onBotUpdate) {
       onBotUpdate({ ...bot, [field]: value });
     }
+  };
+
+  const getTokenValidationColor = () => {
+    switch (tokenValidation.status) {
+      case 'valid':
+        return 'success';
+      case 'invalid':
+        return 'error';
+      case 'validating':
+        return 'info';
+      default:
+        return 'default';
+    }
+  };
+
+  const getTokenValidationIcon = () => {
+    if (tokenValidation.status === 'validating') {
+      return <CircularProgress size={16} />;
+    }
+    return null;
   };
 
   return (
@@ -19,6 +126,9 @@ const BotGeneralSettings = ({ bot, onBotUpdate }) => {
         fullWidth
         value={bot?.name || ''}
         onChange={(e) => handleChange('name', e.target.value)}
+        helperText={tokenValidation.botInfo && tokenValidation.botInfo.first_name 
+          ? `Имя из Telegram: ${tokenValidation.botInfo.first_name}` 
+          : 'Имя будет автоматически обновлено при вводе токена'}
       />
       
       <TextField
@@ -30,12 +140,49 @@ const BotGeneralSettings = ({ bot, onBotUpdate }) => {
         onChange={(e) => handleChange('description', e.target.value)}
       />
       
-      <TextField
-        label="Telegram Bot Token"
-        fullWidth
-        value={bot?.bot_token || ''}
-        onChange={(e) => handleChange('bot_token', e.target.value)}
-      />
+      <Box>
+        <TextField
+          label="Telegram Bot Token"
+          fullWidth
+          value={bot?.bot_token || ''}
+          onChange={(e) => handleChange('bot_token', e.target.value)}
+          helperText="Токен будет автоматически проверен через 1 секунду после ввода"
+        />
+        
+        {tokenValidation.status && (
+          <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Chip
+              label={tokenValidation.message}
+              color={getTokenValidationColor()}
+              size="small"
+              icon={getTokenValidationIcon()}
+            />
+            {tokenValidation.botInfo && (
+              <Chip
+                label={`@${tokenValidation.botInfo.username}`}
+                color="primary"
+                size="small"
+                variant="outlined"
+              />
+            )}
+          </Box>
+        )}
+        
+        {tokenValidation.status === 'valid' && tokenValidation.botInfo && (
+          <Alert severity="success" sx={{ mt: 1 }}>
+            ✅ Бот найден: <strong>{tokenValidation.botInfo.first_name}</strong>
+            {tokenValidation.botInfo.username && (
+              <span> (@{tokenValidation.botInfo.username})</span>
+            )}
+          </Alert>
+        )}
+        
+        {tokenValidation.status === 'invalid' && (
+          <Alert severity="error" sx={{ mt: 1 }}>
+            ❌ {tokenValidation.message}
+          </Alert>
+        )}
+      </Box>
       
       <TextField
         label="Приветственное сообщение"

@@ -16,6 +16,8 @@ import json
 from urllib.parse import quote_plus
 import subprocess
 import logging
+import aiohttp
+import asyncio
 
 # Настройка логгера
 logging.basicConfig(level=logging.INFO)
@@ -2484,13 +2486,164 @@ def create_public_bot(bot: PublicBotCreate, db: Session = Depends(get_db)):
 @app.get("/api/public-bots/{bot_id}", response_model=PublicBotResponse)
 def get_public_bot(bot_id: int, db: Session = Depends(get_db)):
     """Получить публичного бота по ID"""
-    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
-    if not bot:
+    db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not db_bot:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Бот не найден"
         )
-    return bot
+    return db_bot
+
+@app.post("/api/telegram-bot/validate-token")
+async def validate_telegram_bot_token(request: dict):
+    """Валидация токена Telegram бота и получение информации о боте"""
+    bot_token = request.get("bot_token")
+    if not bot_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле bot_token обязательно"
+        )
+    
+    # Проверяем формат токена
+    if not bot_token or len(bot_token.split(':')) != 2:
+        return {
+            "valid": False,
+            "error": "Неверный формат токена. Ожидается формат: BOT_ID:TOKEN"
+        }
+    
+    try:
+        # Делаем запрос к Telegram Bot API
+        telegram_api_url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(telegram_api_url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    if data.get("ok") and "result" in data:
+                        bot_info = data["result"]
+                        
+                        return {
+                            "valid": True,
+                            "bot_info": {
+                                "id": bot_info.get("id"),
+                                "username": bot_info.get("username"),
+                                "first_name": bot_info.get("first_name"),
+                                "is_bot": bot_info.get("is_bot"),
+                                "can_join_groups": bot_info.get("can_join_groups"),
+                                "can_read_all_group_messages": bot_info.get("can_read_all_group_messages"),
+                                "supports_inline_queries": bot_info.get("supports_inline_queries")
+                            }
+                        }
+                    else:
+                        return {
+                            "valid": False,
+                            "error": "Telegram API вернул ошибку"
+                        }
+                elif response.status == 401:
+                    return {
+                        "valid": False,
+                        "error": "Неверный токен бота"
+                    }
+                else:
+                    return {
+                        "valid": False,
+                        "error": f"Ошибка Telegram API: {response.status}"
+                    }
+                    
+    except asyncio.TimeoutError:
+        return {
+            "valid": False,
+            "error": "Превышено время ожидания ответа от Telegram API"
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": f"Ошибка при валидации токена: {str(e)}"
+        }
+
+@app.post("/api/public-bots/{bot_id}/sync-telegram-data")
+async def sync_bot_telegram_data(bot_id: int, request: dict, db: Session = Depends(get_db)):
+    """Синхронизация данных бота с Telegram API"""
+    bot_token = request.get("bot_token")
+    if not bot_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поле bot_token обязательно"
+        )
+    
+    # Проверяем существование бота
+    db_bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not db_bot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Бот не найден"
+        )
+    
+    try:
+        # Валидируем токен и получаем данные бота
+        telegram_api_url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(telegram_api_url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    if data.get("ok") and "result" in data:
+                        bot_info = data["result"]
+                        
+                        # Обновляем имя бота и токен
+                        old_name = db_bot.name
+                        new_name = bot_info.get("first_name", "")
+                        
+                        if new_name:
+                            db_bot.name = new_name
+                        db_bot.bot_token = bot_token
+                        
+                        db.commit()
+                        db.refresh(db_bot)
+                        
+                        return {
+                            "success": True,
+                            "message": f"Данные бота обновлены",
+                            "old_name": old_name,
+                            "new_name": new_name,
+                            "bot_info": {
+                                "id": bot_info.get("id"),
+                                "username": bot_info.get("username"),
+                                "first_name": bot_info.get("first_name"),
+                                "is_bot": bot_info.get("is_bot")
+                            }
+                        }
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Telegram API вернул ошибку"
+                        )
+                elif response.status == 401:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Неверный токен бота"
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Ошибка Telegram API: {response.status}"
+                    )
+                    
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT,
+            detail="Превышено время ожидания ответа от Telegram API"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при синхронизации данных бота: {str(e)}"
+        )
 
 @app.put("/api/public-bots/{bot_id}", response_model=PublicBotResponse)
 def update_public_bot(bot_id: int, bot_update: PublicBotUpdate, db: Session = Depends(get_db)):
