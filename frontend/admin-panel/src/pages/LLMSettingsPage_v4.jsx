@@ -319,7 +319,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
 
         <Grid container spacing={2}>
           {/* Выбор модели */}
-          <Grid item xs={12}>
+          <Grid item size={12}>
             <FormControl fullWidth sx={{ mb: 2 }}>
               <InputLabel>Выберите модель</InputLabel>
               <Select
@@ -352,7 +352,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
           </Grid>
 
           {/* Настройки параметров */}
-          <Grid item xs={12} md={6}>
+          <Grid item size={{ xs: 12, md: 6 }}>
             <TextField
               fullWidth
               type="number"
@@ -365,7 +365,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
             />
           </Grid>
 
-          <Grid item xs={12} md={6}>
+          <Grid item size={{ xs: 12, md: 6 }}>
             <TextField
               fullWidth
               type="number"
@@ -385,19 +385,19 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
               Характеристики выбранной модели:
             </Typography>
             <Grid container spacing={2}>
-              <Grid item xs={6} sm={3}>
+              <Grid item size={{ xs: 6, sm: 3 }}>
                 <Typography variant="caption" color="textSecondary">Скорость</Typography>
                 <Typography variant="body2">{AVAILABLE_MODELS[currentModel].speed}</Typography>
               </Grid>
-              <Grid item xs={6} sm={3}>
+              <Grid item size={{ xs: 6, sm: 3 }}>
                 <Typography variant="caption" color="textSecondary">Качество</Typography>
                 <Typography variant="body2">{AVAILABLE_MODELS[currentModel].quality}</Typography>
               </Grid>
-              <Grid item xs={6} sm={3}>
+              <Grid item size={{ xs: 6, sm: 3 }}>
                 <Typography variant="caption" color="textSecondary">Стоимость/1k токенов</Typography>
                 <Typography variant="body2">${AVAILABLE_MODELS[currentModel].cost_per_1k_tokens.toFixed(5)}</Typography>
               </Grid>
-              <Grid item xs={6} sm={3}>
+              <Grid item size={{ xs: 6, sm: 3 }}>
                 <Typography variant="caption" color="textSecondary">Месячная оценка</Typography>
                 <Typography variant="body2">${calculateMonthlyCost(currentModel).toFixed(3)}</Typography>
               </Grid>
@@ -753,7 +753,7 @@ function LLMSettingsPage() {
   }, [activeTab]);
 
   // Группировка настроек по категориям
-  const currentSettings = getCurrentSettings();
+  const currentSettings = getCurrentSettings() || [];
   const groupedSettings = currentSettings.reduce((acc, setting) => {
     const category = setting.category || 'system';
     if (!acc[category]) acc[category] = [];
@@ -788,17 +788,21 @@ function LLMSettingsPage() {
         
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Tooltip title="Перезагрузить настройки">
-            <IconButton onClick={activeTab === 'template' ? loadTemplateSettings : loadSettings} disabled={loading}>
-              <RefreshIcon />
-            </IconButton>
+            <span>
+              <IconButton onClick={activeTab === 'template' ? loadTemplateSettings : loadSettings} disabled={loading}>
+                <RefreshIcon />
+              </IconButton>
+            </span>
           </Tooltip>
           <Tooltip title="Сбросить изменения">
-            <IconButton 
-              onClick={handleResetChanges} 
-              disabled={totalChanges === 0}
-            >
-              <RestoreIcon />
-            </IconButton>
+            <span>
+              <IconButton 
+                onClick={handleResetChanges} 
+                disabled={totalChanges === 0}
+              >
+                <RestoreIcon />
+              </IconButton>
+            </span>
           </Tooltip>
           <Button
             variant="contained"
@@ -926,11 +930,24 @@ function LLMSettingsPage() {
                     <Typography variant="subtitle2" gutterBottom>
                       Планируемые изменения:
                     </Typography>
-                    {Object.entries(changedLlmModels).map(([serviceKey, newModel]) => (
-                      <Typography key={serviceKey} variant="body2">
-                        • {AI_SERVICES[serviceKey].name}: {AI_SERVICES[serviceKey].current_model} → {newModel}
-                      </Typography>
-                    ))}
+                    {Object.entries(changedLlmModels).map(([settingKey, newValue]) => {
+                      // Парсим serviceKey из полного ключа настройки (ai_categorization_model → categorization)
+                      const match = settingKey.match(/^ai_([^_]+)_/);
+                      const serviceKey = match ? match[1] : settingKey.replace('ai_', '').split('_')[0];
+                      const service = AI_SERVICES[serviceKey];
+                      
+                      if (!service) return null;
+                      
+                      const paramType = settingKey.includes('_model') ? 'модель' : 
+                                       settingKey.includes('_max_tokens') ? 'макс. токены' : 
+                                       settingKey.includes('_temperature') ? 'температура' : 'параметр';
+                      
+                      return (
+                        <Typography key={settingKey} variant="body2">
+                          • {service.name} ({paramType}): {newValue}
+                        </Typography>
+                      );
+                    })}
                   </Box>
                 )}
               </AccordionDetails>
@@ -978,7 +995,7 @@ function LLMSettingsPage() {
             <AccordionDetails>
               <Grid container spacing={3}>
                 {categorySettings.map((setting, index) => (
-                  <Grid item xs={12} md={6} key={setting.key || index}>
+                  <Grid item size={{ xs: 12, md: 6 }} key={setting.key || index}>
                     <Card variant="outlined">
                       <CardContent>
                         <Box sx={{ mb: 2 }}>

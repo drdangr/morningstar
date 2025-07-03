@@ -1881,8 +1881,25 @@ def get_posts_cache_with_ai(
                     categories = json.loads(row.ai_categories)
                 # ИСПРАВЛЕНО: используем правильное поле category_name из реальной структуры БД
                 ai_category = categories.get('category_name') or categories.get('ru') or categories.get('primary') or categories.get('category')
-            except (json.JSONDecodeError, AttributeError):
-                pass
+                # Дополнительная проверка для "Нерелевантно"
+                if not ai_category and categories.get('category_name') == 'Нерелевантно':
+                    ai_category = 'Нерелевантно'
+                # НОВОЕ: обрабатываем строку "None" как null
+                if ai_category == 'None':
+                    ai_category = None
+            except (json.JSONDecodeError, AttributeError) as e:
+                # УЛУЧШЕНО: логируем ошибку и пытаемся извлечь данные как строку
+                print(f"DEBUG: Ошибка парсинга ai_categories для post {row.id}: {e}")
+                print(f"DEBUG: raw ai_categories: {row.ai_categories}")
+                # Попытка извлечь category_name из строки
+                if isinstance(row.ai_categories, str) and 'category_name' in row.ai_categories:
+                    try:
+                        import re
+                        match = re.search(r'"category_name":\s*"([^"]+)"', row.ai_categories)
+                        if match:
+                            ai_category = match.group(1)
+                    except Exception:
+                        pass
         
         if row.ai_metrics:
             try:

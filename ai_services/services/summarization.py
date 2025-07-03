@@ -14,10 +14,12 @@ class SummarizationService(BaseAIService):
         model_name: str = "gpt-4",
         max_tokens: int = 4000,
         temperature: float = 0.3,
-        max_summary_length: int = 150
+        max_summary_length: int = 150,
+        settings_manager=None
     ):
         super().__init__(model_name, max_tokens, temperature)
         self.max_summary_length = max_summary_length
+        self.settings_manager = settings_manager
         self.logger = logger.bind(service="SummarizationService")
         
         # Инициализируем клиент OpenAI
@@ -25,6 +27,15 @@ class SummarizationService(BaseAIService):
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         self.client = AsyncOpenAI(api_key=api_key)
+        
+        self.logger.info(f"📝 SummarizationService инициализирован")
+        self.logger.info(f"   Модель: {model_name}")
+        self.logger.info(f"   Max tokens: {max_tokens}")
+        self.logger.info(f"   Temperature: {temperature}")
+        if settings_manager:
+            self.logger.info(f"   SettingsManager: подключен для динамических настроек")
+        else:
+            self.logger.info(f"   SettingsManager: не подключен, используются переданные параметры")
     
     async def process(
         self,
@@ -33,7 +44,7 @@ class SummarizationService(BaseAIService):
         custom_prompt: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """Создание краткого содержания текста"""
+        """Создание краткого содержания текста с динамическими настройками"""
         try:
             # Проверяем валидность входных данных
             if not await self.validate_input(text):
@@ -45,18 +56,38 @@ class SummarizationService(BaseAIService):
                     "summary_length": 0
                 }
             
+            # Получаем настройки суммаризации
+            if self.settings_manager:
+                try:
+                    summarization_config = await self.settings_manager.get_ai_service_config('summarization')
+                    model = summarization_config['model']
+                    max_tokens = summarization_config['max_tokens']
+                    temperature = summarization_config['temperature']
+                    self.logger.debug(f"🤖 Используем настройки суммаризации: {model}, tokens={max_tokens}, temp={temperature}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Ошибка загрузки настроек суммаризации: {e}, используем переданные параметры")
+                    model = self.model_name
+                    max_tokens = self.max_tokens
+                    temperature = self.temperature
+            else:
+                # Используем параметры переданные в конструктор
+                model = self.model_name
+                max_tokens = self.max_tokens
+                temperature = self.temperature
+                self.logger.debug(f"🤖 Используем настройки из конструктора: {model}, tokens={max_tokens}, temp={temperature}")
+            
             # Формируем промпт
             prompt = custom_prompt or self._get_default_prompt(language)
             
             # Вызываем OpenAI API с новым синтаксисом
             response = await self.client.chat.completions.create(
-                model=self.model_name,
+                model=model,
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": text}
                 ],
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
+                max_tokens=max_tokens,
+                temperature=temperature
             )
             
             # Извлекаем результат
@@ -87,6 +118,26 @@ class SummarizationService(BaseAIService):
         self.logger.info(f"🚀 БАТЧЕВАЯ саммаризация {len(texts)} текстов одним запросом")
         
         try:
+            # Получаем настройки суммаризации
+            if self.settings_manager:
+                try:
+                    summarization_config = await self.settings_manager.get_ai_service_config('summarization')
+                    model = summarization_config['model']
+                    max_tokens = summarization_config['max_tokens']
+                    temperature = summarization_config['temperature']
+                    self.logger.debug(f"🤖 Батч: используем настройки суммаризации: {model}, tokens={max_tokens}, temp={temperature}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Батч: ошибка загрузки настроек суммаризации: {e}, используем переданные параметры")
+                    model = self.model_name
+                    max_tokens = self.max_tokens
+                    temperature = self.temperature
+            else:
+                # Используем параметры переданные в конструктор
+                model = self.model_name
+                max_tokens = self.max_tokens
+                temperature = self.temperature
+                self.logger.debug(f"🤖 Батч: используем настройки из конструктора: {model}, tokens={max_tokens}, temp={temperature}")
+            
             # Формируем промпт для батчевой обработки
             base_prompt = custom_prompt or self._get_default_prompt(language)
             
@@ -111,12 +162,12 @@ class SummarizationService(BaseAIService):
             
             # Отправляем батчевый запрос к OpenAI
             response = await self.client.chat.completions.create(
-                model=self.model_name,
+                model=model,
                 messages=[
                     {"role": "user", "content": batch_prompt}
                 ],
-                max_tokens=self.max_tokens * 2,  # Увеличиваем лимит для батча
-                temperature=self.temperature
+                max_tokens=max_tokens * 2,  # Увеличиваем лимит для батча
+                temperature=temperature
             )
             
             # Парсим JSON ответ

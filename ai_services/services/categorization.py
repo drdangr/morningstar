@@ -24,7 +24,7 @@ class CategorizationService:
     v3.0 - БАТЧЕВАЯ обработка как в N8N для максимальной производительности
     """
     
-    def __init__(self, openai_api_key: str, backend_url: str = "http://localhost:8000", batch_size: int = 30):
+    def __init__(self, openai_api_key: str, backend_url: str = "http://localhost:8000", batch_size: int = 30, settings_manager=None):
         """
         Инициализация сервиса
         
@@ -32,10 +32,23 @@ class CategorizationService:
             openai_api_key: API ключ OpenAI
             backend_url: URL Backend API
             batch_size: Размер батча для обработки (по умолчанию как в N8N)
+            settings_manager: Менеджер настроек для динамических LLM
         """
-        self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+        self.openai_api_key = openai_api_key
         self.backend_url = backend_url
         self.batch_size = batch_size
+        self.settings_manager = settings_manager
+        
+        # Инициализируем OpenAI клиент
+        self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+        
+        logger.info(f"🏷️ CategorizationService инициализирован")
+        logger.info(f"   Backend URL: {backend_url}")
+        logger.info(f"   Размер батча: {batch_size}")
+        if settings_manager:
+            logger.info(f"   SettingsManager: подключен для динамических LLM настроек")
+        else:
+            logger.warning(f"   ⚠️ SettingsManager не подключен, будут использоваться fallback настройки")
         
     async def process_with_bot_config(self, posts: List[Post], bot_id: int) -> List[Dict[str, Any]]:
         """
@@ -212,16 +225,37 @@ class CategorizationService:
         return system_prompt, user_message
     
     async def _call_openai_batch_api(self, system_prompt: str, user_message: str) -> Optional[str]:
-        """Вызов OpenAI API для батча постов"""
+        """Вызов OpenAI API для батча постов с динамическими настройками"""
         try:
+            # Получаем настройки категоризации из SettingsManager
+            if self.settings_manager:
+                try:
+                    categorization_config = await self.settings_manager.get_ai_service_config('categorization')
+                    model = categorization_config['model']
+                    max_tokens = categorization_config['max_tokens']
+                    temperature = categorization_config['temperature']
+                    logger.debug(f"🤖 Используем настройки категоризации: {model}, tokens={max_tokens}, temp={temperature}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка загрузки настроек категоризации: {e}, используем fallback")
+                    # Fallback настройки
+                    model = "gpt-4o-mini"
+                    max_tokens = 6000
+                    temperature = 0.3
+            else:
+                # Fallback настройки если SettingsManager не подключен
+                model = "gpt-4o-mini"
+                max_tokens = 6000
+                temperature = 0.3
+                logger.debug(f"🤖 Используем fallback настройки категоризации: {model}, tokens={max_tokens}, temp={temperature}")
+            
             response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=6000,  # Увеличенный лимит для батча как в N8N
-                temperature=0.3
+                max_tokens=max_tokens,
+                temperature=temperature
             )
             
             return response.choices[0].message.content

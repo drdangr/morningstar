@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from models.post import Post
+from utils.settings_manager import SettingsManager
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,6 +63,9 @@ class AIOrchestrator:
         if not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
+        # Инициализируем SettingsManager для динамической загрузки LLM настроек
+        self.settings_manager = SettingsManager(backend_url=backend_url)
+        
         self.categorization_service = None
         self.summarization_service = None
         
@@ -78,26 +82,38 @@ class AIOrchestrator:
         logger.info(f"   Backend URL: {backend_url}")
         logger.info(f"   Размер батча: {batch_size}")
         logger.info(f"   Макс батчей за цикл: {self.max_batches_per_cycle}")
+        logger.info(f"   SettingsManager: инициализирован для динамической загрузки LLM настроек")
     
     async def initialize_ai_services(self):
-        """Инициализация AI сервисов"""
+        """Инициализация AI сервисов с динамическими настройками из SettingsManager"""
         try:
             from services.categorization import CategorizationService
             from services.summarization import SummarizationService
             
+            # Загружаем настройки LLM из SettingsManager
+            logger.info("📥 Загружаем LLM настройки из SettingsManager...")
+            summarization_config = await self.settings_manager.get_ai_service_config('summarization')
+            
+            logger.info(f"🤖 Настройки суммаризации:")
+            logger.info(f"   Модель: {summarization_config['model']}")
+            logger.info(f"   Max tokens: {summarization_config['max_tokens']}")
+            logger.info(f"   Temperature: {summarization_config['temperature']}")
+            
             self.categorization_service = CategorizationService(
                 openai_api_key=self.openai_api_key,
                 backend_url=self.backend_url,
-                batch_size=self.batch_size
+                batch_size=self.batch_size,
+                settings_manager=self.settings_manager  # Передаем SettingsManager
             )
             
             self.summarization_service = SummarizationService(
-                model_name="gpt-4o-mini",
-                max_tokens=4000,
-                temperature=0.3
+                model_name=summarization_config['model'],
+                max_tokens=summarization_config['max_tokens'],
+                temperature=summarization_config['temperature'],
+                settings_manager=self.settings_manager  # Передаем SettingsManager
             )
             
-            logger.info("✅ AI сервисы инициализированы")
+            logger.info("✅ AI сервисы инициализированы с динамическими LLM настройками")
             return True
             
         except Exception as e:
