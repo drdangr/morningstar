@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_, Index, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -158,6 +158,19 @@ user_subscriptions = Table(
     Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
 )
 
+# 🚀 МУЛЬТИТЕНАНТНАЯ таблица подписок (новая архитектура)
+user_category_subscriptions = Table(
+    'user_category_subscriptions', Base.metadata,
+    Column('user_telegram_id', BigInteger, nullable=False, index=True),  # 🔧 ИСПРАВЛЕНО: BigInteger вместо Integer
+    Column('category_id', Integer, ForeignKey('categories.id'), nullable=False),
+    Column('public_bot_id', Integer, ForeignKey('public_bots.id'), nullable=False),
+    Column('created_at', DateTime, default=func.now()),
+    # Индексы для быстрого поиска
+    Index('idx_user_bot_subscriptions', 'user_telegram_id', 'public_bot_id'),
+    Index('idx_user_category_bot', 'user_telegram_id', 'category_id', 'public_bot_id', unique=True),
+    extend_existing=True  # 🔧 ИСПРАВЛЕНО: Разрешаем переопределение существующей таблицы
+)
+
 class User(Base):
     __tablename__ = "users"
     
@@ -272,11 +285,22 @@ class PostCache(Base):
     # processing_status = Column(String, default="pending")  # УБРАНО: заменено мультитенантными статусами в processed_data
 
 # Обновляем модель Category для связи с пользователями
-# ВРЕМЕННО ОТКЛЮЧЕНО ДО ИСПРАВЛЕНИЯ СТРУКТУРЫ ТАБЛИЦЫ user_subscriptions:
-# Category.subscribers = relationship("User", secondary=user_subscriptions, back_populates="subscribed_categories")
-
-# ВРЕМЕННО ОТКЛЮЧАЕМ СВЯЗЬ В USER МОДЕЛИ:
-# subscribed_categories = relationship("Category", secondary=user_subscriptions, back_populates="subscribers")
+# 🚀 МУЛЬТИТЕНАНТНАЯ ТАБЛИЦА ПОДПИСОК (заменяет старую user_subscriptions)
+user_category_subscriptions = Table(
+    'user_category_subscriptions', 
+    Base.metadata,
+    Column('id', Integer, primary_key=True, index=True),
+    Column('user_telegram_id', BigInteger, nullable=False, index=True),  # 🔧 ИСПРАВЛЕНО: BigInteger для больших Telegram ID
+    Column('category_id', Integer, ForeignKey('categories.id', ondelete='CASCADE'), nullable=False),
+    Column('public_bot_id', Integer, ForeignKey('public_bots.id', ondelete='CASCADE'), nullable=False),
+    Column('created_at', DateTime, default=func.now()),
+    # Уникальность: один пользователь не может дважды подписаться на одну категорию в одном боте
+    UniqueConstraint('user_telegram_id', 'category_id', 'public_bot_id', name='uq_user_category_bot_subscription'),
+    # Индексы для быстрого поиска
+    Index('idx_user_bot_subscriptions', 'user_telegram_id', 'public_bot_id'),
+    Index('idx_bot_category_subscriptions', 'public_bot_id', 'category_id'),
+    extend_existing=True  # 🔧 ИСПРАВЛЕНО: позволяет переопределить существующую таблицу
+)
 
 # Dependency для получения сессии БД
 def get_db():
@@ -1624,6 +1648,140 @@ def remove_user_subscription(telegram_id: int, category_id: int, db: Session = D
             detail="Пользователь не подписан на эту категорию"
         )
 
+# 🚀 МУЛЬТИТЕНАНТНЫЕ ENDPOINTS ДЛЯ ПОДПИСОК
+@app.get("/api/public-bots/{bot_id}/users/{telegram_id}/subscriptions")
+def get_user_bot_subscriptions(bot_id: int, telegram_id: int, db: Session = Depends(get_db)):
+    """Получить подписки пользователя для конкретного бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Бот не найден"
+        )
+    
+    # Получаем подписки пользователя для этого бота
+    subscriptions_query = db.query(Category).join(
+        user_category_subscriptions,
+        Category.id == user_category_subscriptions.c.category_id
+    ).filter(
+        user_category_subscriptions.c.user_telegram_id == telegram_id,
+        user_category_subscriptions.c.public_bot_id == bot_id
+    )
+    
+    subscriptions = subscriptions_query.all()
+    
+    # Преобразуем в формат CategoryResponse
+    result = []
+    for category in subscriptions:
+        result.append({
+            'id': category.id,
+            'name': category.category_name,
+            'category_name': category.category_name,
+            'description': category.description,
+            'is_active': category.is_active,
+            'ai_prompt': category.ai_prompt,
+            'created_at': category.created_at,
+            'updated_at': category.updated_at
+        })
+    
+    return result
+
+@app.post("/api/public-bots/{bot_id}/users/{telegram_id}/subscriptions")
+def update_user_bot_subscriptions(
+    bot_id: int, 
+    telegram_id: int, 
+    request: dict,  # {"category_ids": [1, 2, 3]}
+    db: Session = Depends(get_db)
+):
+    """Обновить подписки пользователя для конкретного бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Бот не найден"
+        )
+    
+    category_ids = request.get('category_ids', [])
+    
+    # Проверяем существование всех категорий
+    if category_ids:
+        categories = db.query(Category).filter(Category.id.in_(category_ids)).all()
+        if len(categories) != len(category_ids):
+            found_ids = [cat.id for cat in categories]
+            missing_ids = [cat_id for cat_id in category_ids if cat_id not in found_ids]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Категории не найдены: {missing_ids}"
+            )
+    
+    # Удаляем все существующие подписки пользователя для этого бота
+    db.execute(
+        user_category_subscriptions.delete().where(
+            and_(
+                user_category_subscriptions.c.user_telegram_id == telegram_id,
+                user_category_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    )
+    
+    # Добавляем новые подписки
+    if category_ids:
+        for category_id in category_ids:
+            db.execute(
+                user_category_subscriptions.insert().values(
+                    user_telegram_id=telegram_id,
+                    category_id=category_id,
+                    public_bot_id=bot_id
+                )
+            )
+    
+    db.commit()
+    
+    return {
+        "message": f"Подписки для бота {bot_id} сохранены! Выбрано категорий: {len(category_ids)}",
+        "user_telegram_id": telegram_id,
+        "bot_id": bot_id,
+        "subscribed_categories": len(category_ids),
+        "category_ids": category_ids
+    }
+
+@app.delete("/api/public-bots/{bot_id}/users/{telegram_id}/subscriptions/{category_id}")
+def remove_user_bot_subscription(bot_id: int, telegram_id: int, category_id: int, db: Session = Depends(get_db)):
+    """Удалить конкретную подписку пользователя для бота"""
+    # Проверяем существование подписки
+    subscription_exists = db.execute(
+        user_category_subscriptions.select().where(
+            and_(
+                user_category_subscriptions.c.user_telegram_id == telegram_id,
+                user_category_subscriptions.c.category_id == category_id,
+                user_category_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    ).first()
+    
+    if not subscription_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Подписка не найдена"
+        )
+    
+    # Удаляем подписку
+    db.execute(
+        user_category_subscriptions.delete().where(
+            and_(
+                user_category_subscriptions.c.user_telegram_id == telegram_id,
+                user_category_subscriptions.c.category_id == category_id,
+                user_category_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    )
+    
+    db.commit()
+    
+    return {"message": "Подписка удалена"}
+
 # API для posts_cache
 @app.post("/api/posts/batch", status_code=status.HTTP_201_CREATED)
 def create_posts_batch(batch: PostsBatchCreate, db: Session = Depends(get_db)):
@@ -2923,6 +3081,121 @@ def remove_channel_from_bot(bot_id: int, channel_id: int, db: Session = Depends(
     return {"message": f"Removed channel {channel_id} from bot {bot_id}"}
 
 # Endpoints для связей Public Bot ↔ Categories
+@app.get("/api/public-bots/{bot_id}/digest-data")
+def get_bot_digest_data(
+    bot_id: int, 
+    limit: int = 15,
+    importance_min: Optional[float] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Получить AI-обработанные посты для дайджеста конкретного бота
+    """
+    try:
+        # Получаем каналы бота
+        bot_channels = db.query(BotChannel).filter(
+            BotChannel.public_bot_id == bot_id,
+            BotChannel.is_active == True
+        ).all()
+        
+        if not bot_channels:
+            return {"posts": [], "total": 0, "bot_id": bot_id}
+        
+        channel_ids = [bc.channel_id for bc in bot_channels]
+        
+        # Получаем telegram_id каналов
+        channels = db.query(Channel).filter(
+            Channel.id.in_(channel_ids),
+            Channel.is_active == True
+        ).all()
+        
+        channel_telegram_ids = [ch.telegram_id for ch in channels]
+        
+        # Основной запрос постов с AI результатами
+        query = db.query(
+            PostCache,
+            ProcessedData.summaries,
+            ProcessedData.categories,
+            ProcessedData.metrics,
+            ProcessedData.processed_at
+        ).outerjoin(
+            ProcessedData,
+            and_(
+                PostCache.id == ProcessedData.post_id,
+                ProcessedData.public_bot_id == bot_id
+            )
+        ).filter(
+            PostCache.channel_telegram_id.in_(channel_telegram_ids),
+            ProcessedData.processing_status.in_(['completed', 'categorized', 'summarized']),  # Более мягкие фильтры
+            ProcessedData.is_categorized == True  # Хотя бы категоризировано
+        )
+        
+        # Фильтр по важности
+        if importance_min is not None:
+            # Извлекаем importance из JSON metrics с защитой от NULL
+            query = query.filter(
+                text(f"COALESCE(CAST(processed_data.metrics->>'importance' AS FLOAT), 0) >= {importance_min}")
+            )
+        
+        # Сортировка по важности (умная сортировка) - только если есть данные
+        query = query.order_by(
+            text("COALESCE(CAST(processed_data.metrics->>'importance' AS FLOAT), 0) * 3 + COALESCE(CAST(processed_data.metrics->>'urgency' AS FLOAT), 0) * 2 + COALESCE(CAST(processed_data.metrics->>'significance' AS FLOAT), 0) * 2 DESC")
+        )
+        
+        # Применяем лимит
+        results = query.limit(limit).all()
+        
+        # Формируем ответ
+        posts = []
+        for post_cache, summaries, categories, metrics, processed_at in results:
+            # Парсим JSON поля
+            try:
+                summaries_data = json.loads(summaries) if summaries else {}
+                categories_data = json.loads(categories) if categories else {}
+                metrics_data = json.loads(metrics) if metrics else {}
+            except:
+                summaries_data = {}
+                categories_data = {}
+                metrics_data = {}
+            
+            post_data = {
+                "id": post_cache.id,
+                "channel_telegram_id": post_cache.channel_telegram_id,
+                "telegram_message_id": post_cache.telegram_message_id,
+                "title": post_cache.title,
+                "content": post_cache.content,
+                "views": post_cache.views,
+                "post_date": post_cache.post_date.isoformat(),
+                "collected_at": post_cache.collected_at.isoformat(),
+                
+                # AI результаты
+                "ai_summary": summaries_data.get('summary', ''),
+                "ai_category": categories_data.get('primary_category', ''),
+                "importance": metrics_data.get('importance', 0),
+                "urgency": metrics_data.get('urgency', 0),
+                "significance": metrics_data.get('significance', 0),
+                "ai_processed_at": processed_at.isoformat() if processed_at else None,
+                
+                # Дополнительные поля
+                "category": categories_data.get('primary_category', ''),
+                "summary": summaries_data.get('summary', ''),
+                "media_urls": json.loads(post_cache.media_urls) if post_cache.media_urls else []
+            }
+            
+            posts.append(post_data)
+        
+        return {
+            "posts": posts,
+            "total": len(posts),
+            "bot_id": bot_id,
+            "importance_min": importance_min,
+            "limit": limit
+        }
+        
+    except Exception as e:
+        print(f"Ошибка получения digest data: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка получения данных: {str(e)}")
+
 @app.get("/api/public-bots/{bot_id}/categories")
 def get_bot_categories(bot_id: int, db: Session = Depends(get_db)):
     """Получить все категории, связанные с ботом, с приоритетами"""
