@@ -144,6 +144,22 @@ async def get_ai_posts(limit=10):
         logger.error(f"Ошибка запроса AI постов: {e}")
         return []
 
+async def get_bot_settings():
+    """Получить настройки бота"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}/api/public-bots/{PUBLIC_BOT_ID}"
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data
+                else:
+                    logger.error(f"Ошибка получения настроек бота: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Ошибка запроса настроек бота: {e}")
+        return None
+
 def filter_posts_by_subscriptions(posts, subscribed_categories):
     """Фильтровать посты по подпискам"""
     if not subscribed_categories:
@@ -208,6 +224,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 • Подписки сохраняются в БД (user_category_subscriptions)
 • Привязка к bot_id для изоляции данных
 • Полная интеграция с Backend API
+• Управление количеством постов через настройки бота
 """
     await update.message.reply_text(help_text, parse_mode='HTML')
 
@@ -367,8 +384,8 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 🔧 ИСПРАВЛЕНО: Безопасная обработка None значений
     subscribed_names = [str(cat.get('name') or f"Категория {cat.get('id')}") for cat in subscribed_categories]
     
-    # Получаем AI посты
-    posts = await get_ai_posts(limit=20)
+    # Получаем AI посты с увеличенным лимитом (чтобы после фильтрации осталось достаточно)
+    posts = await get_ai_posts(limit=50)
     
     if not posts:
         await update.message.reply_text("❌ Не удалось получить посты. Попробуйте позже.")
@@ -395,27 +412,45 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     filtered_posts.sort(key=calculate_score, reverse=True)
     
-    # Ограничиваем количество постов
-    max_posts = 10
+    # Получаем настройки бота для лимита постов
+    bot_settings = await get_bot_settings()
+    max_posts = bot_settings.get('max_posts_per_digest', 10) if bot_settings else 10
+    
+    # Ограничиваем количество постов настройкой бота
     filtered_posts = filtered_posts[:max_posts]
     
-    # Формируем дайджест
+    # Группируем посты по категориям
+    posts_by_category = {}
+    for post in filtered_posts:
+        category = str(post.get('ai_category') or 'Нет категории')
+        if category not in posts_by_category:
+            posts_by_category[category] = []
+        posts_by_category[category].append(post)
+    
+    # Формируем компактный дайджест
     text = f"📰 <b>Персональный дайджест</b>\n"
     text += f"🎯 Подписки: {', '.join(subscribed_names)}\n"
-    text += f"📊 Найдено постов: {len(filtered_posts)}\n\n"
+    text += f"📊 Найдено постов: {len(filtered_posts)}"
+    if max_posts < len(filtered_posts):
+        text += f" (показаны лучшие {max_posts})"
+    text += f"\n\n"
     
-    for i, post in enumerate(filtered_posts, 1):
-        # 🔧 ИСПРАВЛЕНО: Безопасная обработка None значений
-        ai_summary = str(post.get('ai_summary') or 'Нет описания')[:100]
-        ai_category = str(post.get('ai_category') or 'Нет категории')
-        importance = float(post.get('ai_importance') or 0)
-        urgency = float(post.get('ai_urgency') or 0)
-        significance = float(post.get('ai_significance') or 0)
+    for category, posts in posts_by_category.items():
+        text += f"<b>{category.upper()}</b>\n"
         
-        text += f"<b>{i}.</b>\n"
-        text += f"📝 {ai_summary}\n"
-        text += f"🏷️ {ai_category}\n"
-        text += f"📊 Важность: {importance:.1f}, Срочность: {urgency:.1f}, Значимость: {significance:.1f}\n\n"
+        for i, post in enumerate(posts, 1):
+            # 🔧 ИСПРАВЛЕНО: Безопасная обработка None значений
+            ai_summary = str(post.get('ai_summary') or 'Нет описания')
+            
+            # Получаем ссылку на пост
+            media_urls = post.get('media_urls', [])
+            if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
+                post_url = media_urls[0]
+                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a>\n"
+            else:
+                text += f"{i}. {ai_summary}\n"
+        
+        text += "\n"
     
     await update.message.reply_text(text, parse_mode='HTML')
 
@@ -447,6 +482,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Отладочная информация"""
     user_id = update.effective_user.id
     subscriptions = await get_user_subscriptions(user_id)
+    bot_settings = await get_bot_settings()
     
     text = f"🔧 <b>Отладочная информация</b>\n\n"
     text += f"👤 User ID: {user_id}\n"
@@ -455,6 +491,16 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text += f"📊 Подписки в БД: {len(subscriptions)}\n"
     for sub in subscriptions:
         text += f"   - {sub.get('name', 'Без имени')} (ID: {sub.get('id')})\n"
+    
+    # Настройки бота
+    if bot_settings:
+        max_posts = bot_settings.get('max_posts_per_digest', 10)
+        text += f"\n⚙️ Настройки бота:\n"
+        text += f"   - Максимум постов в дайджесте: {max_posts}\n"
+        text += f"   - Статус бота: {bot_settings.get('status', 'unknown')}\n"
+        text += f"   - Всего каналов: {bot_settings.get('channels_count', 0)}\n"
+        text += f"   - Всего категорий: {bot_settings.get('topics_count', 0)}\n"
+    
     text += f"\n✅ Режим: Мультитенантные endpoints\n"
     text += f"🎯 Endpoints:\n"
     text += f"   - GET /api/public-bots/{PUBLIC_BOT_ID}/users/{user_id}/subscriptions\n"
