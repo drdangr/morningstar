@@ -158,18 +158,7 @@ user_subscriptions = Table(
     Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
 )
 
-# 🚀 МУЛЬТИТЕНАНТНАЯ таблица подписок (новая архитектура)
-user_category_subscriptions = Table(
-    'user_category_subscriptions', Base.metadata,
-    Column('user_telegram_id', BigInteger, nullable=False, index=True),  # 🔧 ИСПРАВЛЕНО: BigInteger вместо Integer
-    Column('category_id', Integer, ForeignKey('categories.id'), nullable=False),
-    Column('public_bot_id', Integer, ForeignKey('public_bots.id'), nullable=False),
-    Column('created_at', DateTime, default=func.now()),
-    # Индексы для быстрого поиска
-    Index('idx_user_bot_subscriptions', 'user_telegram_id', 'public_bot_id'),
-    Index('idx_user_category_bot', 'user_telegram_id', 'category_id', 'public_bot_id', unique=True),
-    extend_existing=True  # 🔧 ИСПРАВЛЕНО: Разрешаем переопределение существующей таблицы
-)
+# 🚀 УДАЛЕНО: Дублирование таблицы user_category_subscriptions (основная определена ниже)
 
 class User(Base):
     __tablename__ = "users"
@@ -300,6 +289,23 @@ user_category_subscriptions = Table(
     Index('idx_user_bot_subscriptions', 'user_telegram_id', 'public_bot_id'),
     Index('idx_bot_category_subscriptions', 'public_bot_id', 'category_id'),
     extend_existing=True  # 🔧 ИСПРАВЛЕНО: позволяет переопределить существующую таблицу
+)
+
+# 🚀 МУЛЬТИТЕНАНТНАЯ ТАБЛИЦА ПОДПИСОК НА КАНАЛЫ (новая архитектура)
+user_channel_subscriptions = Table(
+    'user_channel_subscriptions', 
+    Base.metadata,
+    Column('id', Integer, primary_key=True, index=True),
+    Column('user_telegram_id', BigInteger, nullable=False, index=True),
+    Column('channel_id', Integer, ForeignKey('channels.id', ondelete='CASCADE'), nullable=False),
+    Column('public_bot_id', Integer, ForeignKey('public_bots.id', ondelete='CASCADE'), nullable=False),
+    Column('created_at', DateTime, default=func.now()),
+    # Уникальность: один пользователь не может дважды подписаться на один канал в одном боте
+    UniqueConstraint('user_telegram_id', 'channel_id', 'public_bot_id', name='uq_user_channel_bot_subscription'),
+    # Индексы для быстрого поиска
+    Index('idx_user_bot_channel_subscriptions', 'user_telegram_id', 'public_bot_id'),
+    Index('idx_bot_channel_user_subscriptions', 'public_bot_id', 'channel_id'),
+    extend_existing=True
 )
 
 # Dependency для получения сессии БД
@@ -1781,6 +1787,164 @@ def remove_user_bot_subscription(bot_id: int, telegram_id: int, category_id: int
     db.commit()
     
     return {"message": "Подписка удалена"}
+
+# 🚀 API для подписок пользователей на каналы (мультитенантная архитектура)
+
+@app.get("/api/public-bots/{bot_id}/users/{telegram_id}/channel-subscriptions")
+def get_user_bot_channel_subscriptions(bot_id: int, telegram_id: int, db: Session = Depends(get_db)):
+    """Получить подписки пользователя на каналы для конкретного бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Бот не найден")
+    
+    # Получаем подписки пользователя с JOIN к каналам
+    subscriptions_query = db.query(Channel).join(
+        user_channel_subscriptions,
+        user_channel_subscriptions.c.channel_id == Channel.id
+    ).filter(
+        user_channel_subscriptions.c.user_telegram_id == telegram_id,
+        user_channel_subscriptions.c.public_bot_id == bot_id
+    )
+    
+    channels = subscriptions_query.all()
+    
+    # Преобразуем в формат ответа
+    channel_responses = []
+    for channel in channels:
+        channel_data = {
+            "id": channel.id,
+            "channel_name": channel.channel_name,
+            "telegram_id": channel.telegram_id,
+            "username": channel.username,
+            "title": channel.title,
+            "description": channel.description,
+            "is_active": channel.is_active,
+            "last_parsed": channel.last_parsed,
+            "error_count": channel.error_count,
+            "created_at": channel.created_at,
+            "updated_at": channel.updated_at,
+            "categories": []
+        }
+        channel_responses.append(channel_data)
+    
+    return {
+        "user_telegram_id": telegram_id,
+        "bot_id": bot_id,
+        "subscribed_channels": channel_responses,
+        "total_subscriptions": len(channel_responses)
+    }
+
+@app.post("/api/public-bots/{bot_id}/users/{telegram_id}/channel-subscriptions")
+def update_user_bot_channel_subscriptions(
+    bot_id: int, 
+    telegram_id: int, 
+    request: dict,  # {"channel_ids": [1, 2, 3]}
+    db: Session = Depends(get_db)
+):
+    """Обновить подписки пользователя на каналы для конкретного бота"""
+    # Проверяем существование бота
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Бот не найден")
+    
+    channel_ids = request.get("channel_ids", [])
+    if not isinstance(channel_ids, list):
+        raise HTTPException(status_code=400, detail="channel_ids должен быть массивом")
+    
+    # Проверяем, что все каналы существуют и привязаны к боту
+    if channel_ids:
+        # Проверяем что каналы существуют
+        existing_channels = db.query(Channel).filter(Channel.id.in_(channel_ids)).all()
+        if len(existing_channels) != len(channel_ids):
+            raise HTTPException(status_code=400, detail="Некоторые каналы не найдены")
+        
+        # Проверяем что каналы привязаны к боту
+        bot_channels = db.query(BotChannel).filter(
+            BotChannel.public_bot_id == bot_id,
+            BotChannel.channel_id.in_(channel_ids)
+        ).all()
+        
+        if len(bot_channels) != len(channel_ids):
+            raise HTTPException(status_code=400, detail="Некоторые каналы не привязаны к этому боту")
+    
+    # Удаляем все существующие подписки пользователя для этого бота
+    db.execute(
+        user_channel_subscriptions.delete().where(
+            and_(
+                user_channel_subscriptions.c.user_telegram_id == telegram_id,
+                user_channel_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    )
+    
+    # Добавляем новые подписки
+    if channel_ids:
+        for channel_id in channel_ids:
+            # Проверяем, не существует ли уже такая подписка
+            existing = db.execute(
+                user_channel_subscriptions.select().where(
+                    and_(
+                        user_channel_subscriptions.c.user_telegram_id == telegram_id,
+                        user_channel_subscriptions.c.channel_id == channel_id,
+                        user_channel_subscriptions.c.public_bot_id == bot_id
+                    )
+                )
+            ).first()
+            
+            if not existing:
+                db.execute(
+                    user_channel_subscriptions.insert().values(
+                        user_telegram_id=telegram_id,
+                        channel_id=channel_id,
+                        public_bot_id=bot_id
+                    )
+                )
+    
+    db.commit()
+    
+    return {
+        "message": "Подписки на каналы обновлены",
+        "user_telegram_id": telegram_id,
+        "bot_id": bot_id,
+        "subscribed_channel_ids": channel_ids,
+        "total_subscriptions": len(channel_ids)
+    }
+
+@app.delete("/api/public-bots/{bot_id}/users/{telegram_id}/channel-subscriptions/{channel_id}")
+def remove_user_bot_channel_subscription(bot_id: int, telegram_id: int, channel_id: int, db: Session = Depends(get_db)):
+    """Удалить конкретную подписку пользователя на канал для бота"""
+    # Проверяем существование подписки
+    subscription_exists = db.execute(
+        user_channel_subscriptions.select().where(
+            and_(
+                user_channel_subscriptions.c.user_telegram_id == telegram_id,
+                user_channel_subscriptions.c.channel_id == channel_id,
+                user_channel_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    ).first()
+    
+    if not subscription_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Подписка на канал не найдена"
+        )
+    
+    # Удаляем подписку
+    db.execute(
+        user_channel_subscriptions.delete().where(
+            and_(
+                user_channel_subscriptions.c.user_telegram_id == telegram_id,
+                user_channel_subscriptions.c.channel_id == channel_id,
+                user_channel_subscriptions.c.public_bot_id == bot_id
+            )
+        )
+    )
+    
+    db.commit()
+    
+    return {"message": "Подписка на канал удалена"}
 
 # API для posts_cache
 @app.post("/api/posts/batch", status_code=status.HTTP_201_CREATED)

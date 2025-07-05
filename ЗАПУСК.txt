@@ -46,3 +46,6 @@ python main.py
 5. Continuous mode
 cd ai_services
 python orchestrator.py --mode continuous
+6. запуск публичного бота
+cd bot/src
+python src/bot_v2_temp_fix.py
