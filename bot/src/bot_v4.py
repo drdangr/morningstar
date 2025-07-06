@@ -738,10 +738,6 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         for i, post in enumerate(posts, 1):
             ai_summary = post.get('ai_summary') or 'Нет описания'
             
-            # Ограничиваем длину саммари для экономии места
-            if len(ai_summary) > 200:
-                ai_summary = ai_summary[:200] + "..."
-            
             # Находим название канала для каждого поста
             channel_name = 'Неизвестный канал'
             channel_id = post.get('channel_telegram_id')
@@ -754,12 +750,9 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             media_urls = post.get('media_urls', [])
             if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
                 post_url = media_urls[0]
-                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a>\n"
+                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a> (📺 {channel_name})\n"
             else:
-                text += f"{i}. {ai_summary}\n"
-            
-            # Показываем источник (канал)
-            text += f"   📺 {channel_name}\n"
+                text += f"{i}. {ai_summary} (📺 {channel_name})\n"
         
         text += "\n"
     
@@ -1483,10 +1476,6 @@ async def digest_command_callback(query, context):
         for i, post in enumerate(posts, 1):
             ai_summary = post.get('ai_summary') or 'Нет описания'
             
-            # Ограничиваем длину саммари для экономии места
-            if len(ai_summary) > 200:
-                ai_summary = ai_summary[:200] + "..."
-            
             # Находим название канала для каждого поста
             channel_name = 'Неизвестный канал'
             channel_id = post.get('channel_telegram_id')
@@ -1499,12 +1488,9 @@ async def digest_command_callback(query, context):
             media_urls = post.get('media_urls', [])
             if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
                 post_url = media_urls[0]
-                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a>\n"
+                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a> (📺 {channel_name})\n"
             else:
-                text += f"{i}. {ai_summary}\n"
-            
-            # Показываем источник (канал)
-            text += f"   📺 {channel_name}\n"
+                text += f"{i}. {ai_summary} (📺 {channel_name})\n"
         
         text += "\n"
     
