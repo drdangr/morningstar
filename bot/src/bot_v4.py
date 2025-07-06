@@ -69,10 +69,6 @@ def get_main_menu_keyboard():
     """Создать основную клавиатуру с командами для двойной фильтрации"""
     keyboard = [
         [
-            InlineKeyboardButton("📺 Каналы", callback_data="cmd_channels"),
-            InlineKeyboardButton("📁 Категории", callback_data="cmd_categories")
-        ],
-        [
             InlineKeyboardButton("🎯 Подписки", callback_data="cmd_subscriptions"),
             InlineKeyboardButton("📰 Дайджест", callback_data="cmd_digest")
         ],
@@ -142,10 +138,12 @@ async def get_bot_channels():
         return []
 
 async def get_ai_posts(limit=10):
-    """Получить AI-обработанные посты"""
+    """ИСПРАВЛЕНО: Получить RAW посты (без AI фильтрации) для полных данных"""
     try:
         async with aiohttp.ClientSession() as session:
-            url = f"{BACKEND_URL}/api/posts/cache-with-ai?bot_id={PUBLIC_BOT_ID}&ai_status=processed&limit={limit}"
+            # ИСПРАВЛЕНО: используем ai_status=completed (полностью обработанные)
+            url = f"{BACKEND_URL}/api/posts/cache-with-ai?bot_id={PUBLIC_BOT_ID}&ai_status=completed&limit={limit}&sort_by=post_date&sort_order=desc"
+            logger.info(f"🔄 ИСПРАВЛЕНО: ai_status=completed: {url}")
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -273,36 +271,78 @@ def filter_posts_by_subscriptions(posts, subscribed_categories, subscribed_chann
         return []
     
     filtered_posts = []
+    channel_stats = {}
+    category_stats = {}
+    
     for post in posts:
         # Защита от ошибок - проверяем, что post это словарь
         if not isinstance(post, dict):
             logger.warning(f"Пропускаем пост неправильного формата: {type(post)}")
             continue
         
+        # Статистика для диагностики
+        post_channel = post.get('channel_telegram_id', 'unknown')
+        post_category = post.get('ai_category', 'unknown')
+        
+        if post_channel not in channel_stats:
+            channel_stats[post_channel] = {'total': 0, 'filtered': 0}
+        channel_stats[post_channel]['total'] += 1
+        
+        if post_category not in category_stats:
+            category_stats[post_category] = {'total': 0, 'filtered': 0}
+        category_stats[post_category]['total'] += 1
+        
         # ФИЛЬТР 1: По каналам (если выбраны каналы)
-        if subscribed_channel_ids:
+        channel_passes = True
+        if subscribed_channel_ids:  # Если каналы выбраны - фильтруем
             channel_telegram_id = post.get('channel_telegram_id')
             if not channel_telegram_id or channel_telegram_id not in subscribed_channel_ids:
-                continue  # Пост не из выбранного канала
+                channel_passes = False
+                logger.debug(f"❌ Пост отклонен по каналам: канал {channel_telegram_id} не в подписках {subscribed_channel_ids}")
+            else:
+                logger.debug(f"✅ Пост принят по каналам: канал {channel_telegram_id} найден в подписках")
+        # Если каналы НЕ выбраны - пропускаем все посты по каналам
         
         # ФИЛЬТР 2: По категориям (если выбраны категории)
-        if subscribed_categories:
+        category_passes = True
+        if subscribed_categories:  # Если категории выбраны - фильтруем
             ai_category = post.get('ai_category', '')
             if not ai_category:
-                continue  # У поста нет AI категории
+                category_passes = False
+                logger.debug(f"❌ Пост отклонен: нет ai_category. Канал: {post_channel}")
+            else:
+                # Проверяем, содержит ли AI категория одну из подписанных категорий
+                category_matches = False
+                for sub_cat in subscribed_categories:
+                    if sub_cat.lower() in ai_category.lower():
+                        category_matches = True
+                        break
                 
-            # Проверяем, содержит ли AI категория одну из подписанных категорий
-            category_matches = False
-            for sub_cat in subscribed_categories:
-                if sub_cat.lower() in ai_category.lower():
-                    category_matches = True
-                    break
-            
-            if not category_matches:
-                continue  # Категория поста не подходит
+                if not category_matches:
+                    category_passes = False
+                    logger.debug(f"❌ Пост отклонен: категория '{ai_category}' не совпадает с подписками {subscribed_categories}. Канал: {post_channel}")
+                else:
+                    logger.debug(f"✅ Пост принят: категория '{ai_category}' совпадает с подписками. Канал: {post_channel}")
+        # Если категории НЕ выбраны - пропускаем все посты по категориям
         
-        # ПОСТ ПРОШЕЛ ВСЕ ФИЛЬТРЫ
-        filtered_posts.append(post)
+        # ПОСТ ПРОХОДИТ ТОЛЬКО ЕСЛИ ОБА ФИЛЬТРА ПРОЙДЕНЫ
+        if channel_passes and category_passes:
+            filtered_posts.append(post)
+            channel_stats[post_channel]['filtered'] += 1
+            category_stats[post_category]['filtered'] += 1
+    
+    # Диагностические логи
+    logger.info(f"🔍 Фильтрация: из {len(posts)} постов отфильтровано {len(filtered_posts)} (каналы: {bool(subscribed_channel_ids)}, категории: {bool(subscribed_categories)})")
+    
+    # Статистика по каналам
+    logger.info(f"📊 Статистика по каналам:")
+    for channel, stats in channel_stats.items():
+        logger.info(f"  📺 {channel}: {stats['filtered']}/{stats['total']} постов")
+    
+    # Статистика по категориям
+    logger.info(f"📊 Статистика по категориям:")
+    for category, stats in category_stats.items():
+        logger.info(f"  📁 {category}: {stats['filtered']}/{stats['total']} постов")
     
     return filtered_posts
 
@@ -322,7 +362,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"🚀 <b>Технические особенности:</b>\n"
         f"• 🤖 AI-категоризация и саммаризация постов\n"
         f"• 📊 Умные метрики (важность, срочность, значимость)\n"
-        f"• 🎪 Группировка дайджестов по каналам\n"
+        f"• 📁 Группировка дайджестов по категориям\n"
         f"• 🔧 Mультитенантность (bot_id: {PUBLIC_BOT_ID})\n\n"
         f"💡 <b>Как это работает:</b>\n"
         f"1. Выберите интересные каналы\n"
@@ -359,7 +399,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 • Использует endpoint /api/posts/cache-with-ai?bot_id={PUBLIC_BOT_ID}
 • Подписки сохраняются в файл user_subscriptions.json
 • Фильтрация по каналам И категориям одновременно
-• Группировка дайджестов по каналам
+• Группировка дайджестов по категориям
 • Умная сортировка по AI метрикам
 """
     keyboard = get_main_menu_keyboard()
@@ -415,7 +455,7 @@ async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode='HTML')
 
 async def subscriptions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Управление подписками на каналы и категории"""
+    """Единое управление подписками на каналы и категории"""
     user_id = update.effective_user.id
     
     # Получаем подписки пользователя
@@ -434,43 +474,100 @@ async def subscriptions_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     
-    # Формируем текст с подписками
-    text = f"🎯 <b>Ваши подписки для бота {PUBLIC_BOT_ID}</b>\n\n"
+    # Создаем клавиатуру с прямым управлением
+    keyboard = []
     
-    # Подписки на каналы
-    text += f"📺 <b>Каналы ({len(channel_subscriptions)} из {len(channels)}):</b>\n"
-    if channel_subscriptions:
-        for ch in channels:
-            if ch['id'] in channel_subscriptions:
-                text += f"  ✅ {ch['name']}\n"
-    else:
-        text += "  📭 Нет подписок на каналы\n"
+    # Заголовок каналов
+    keyboard.append([InlineKeyboardButton("📺 === КАНАЛЫ ===", callback_data="noop")])
     
-    text += "\n"
+    # Добавляем каналы
+    for ch in channels:
+        if ch['is_active']:
+            is_subscribed = ch['id'] in channel_subscriptions
+            emoji = "✅" if is_subscribed else "⬜"
+            display_name = ch['name'][:25] + "..." if len(ch['name']) > 25 else ch['name']
+            text = f"{emoji} {display_name}"
+            callback_data = f"toggle_channel_{ch['id']}"
+            keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
     
-    # Подписки на категории
-    text += f"📁 <b>Категории ({len(category_subscriptions)} из {len(categories)}):</b>\n"
-    if category_subscriptions:
-        for cat in categories:
-            if cat['id'] in category_subscriptions:
-                text += f"  ✅ {cat['name']}\n"
-    else:
-        text += "  📭 Нет подписок на категории\n"
+    # Заголовок категорий
+    keyboard.append([InlineKeyboardButton("📁 === КАТЕГОРИИ ===", callback_data="noop")])
     
-    # Создаем клавиатуру
-    keyboard = [
-        [
-            InlineKeyboardButton("📺 Настроить каналы", callback_data="manage_channels"),
-            InlineKeyboardButton("📁 Настроить категории", callback_data="manage_categories")
-        ],
-        [
-            InlineKeyboardButton("🔄 Обновить", callback_data="cmd_subscriptions"),
-            InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-        ]
-    ]
+    # Добавляем категории
+    for cat in categories:
+        if cat['is_active']:
+            is_subscribed = cat['id'] in category_subscriptions
+            emoji = "✅" if is_subscribed else "⬜"
+            text = f"{emoji} {cat['name']}"
+            callback_data = f"toggle_category_{cat['id']}"
+            keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
+    
+    # Кнопки управления
+    keyboard.append([
+        InlineKeyboardButton("🔄 Обновить", callback_data="cmd_subscriptions"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Формируем текст с подписками
+    text = f"🎯 <b>Управление подписками (бот {PUBLIC_BOT_ID})</b>\n\n"
+    text += f"📺 <b>Каналы:</b> {len(channel_subscriptions)} из {len(channels)}\n"
+    text += f"📁 <b>Категории:</b> {len(category_subscriptions)} из {len(categories)}\n\n"
+    text += f"🔍 <b>Двойная фильтрация:</b>\n"
+    text += f"Дайджест = посты из выбранных каналов по выбранным темам\n\n"
+    text += f"💡 Нажимайте на элементы для переключения подписок:"
+    
     await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def get_bot_settings():
+    """Получить настройки бота через Backend API"""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}/api/public-bots/{PUBLIC_BOT_ID}"
+            logger.info(f"🔧 Запрос настроек бота: {url}")
+            async with session.get(url) as response:
+                if response.status == 200:
+                    bot_settings = await response.json()
+                    logger.info(f"🔧 Настройки бота получены: max_posts_per_digest={bot_settings.get('max_posts_per_digest', 10)}")
+                    return bot_settings
+                else:
+                    logger.error(f"❌ Ошибка получения настроек бота: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении настроек бота: {e}")
+        return None
+
+def split_message(text, max_length=4000):
+    """Разбить длинное сообщение на части для Telegram"""
+    if len(text) <= max_length:
+        return [text]
+    
+    parts = []
+    current_part = ""
+    
+    # Разбиваем по строкам
+    lines = text.split('\n')
+    
+    for line in lines:
+        # Если добавление строки превысит лимит
+        if len(current_part + line + '\n') > max_length:
+            if current_part:
+                parts.append(current_part.strip())
+                current_part = ""
+            
+            # Если одна строка слишком длинная, обрезаем
+            if len(line) > max_length:
+                line = line[:max_length-3] + "..."
+        
+        current_part += line + '\n'
+    
+    # Добавляем последнюю часть
+    if current_part:
+        parts.append(current_part.strip())
+    
+    return parts
 
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Получить персональный дайджест с двойной фильтрацией"""
@@ -479,6 +576,8 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Получаем подписки пользователя
     subscribed_category_ids = get_user_subscriptions(user_id, 'categories')
     subscribed_channel_ids = get_user_subscriptions(user_id, 'channels')
+    
+    logger.info(f"🎯 Дайджест для пользователя {user_id}: каналы={subscribed_channel_ids}, категории={subscribed_category_ids}")
     
     if not subscribed_category_ids and not subscribed_channel_ids:
         keyboard = get_main_menu_keyboard()
@@ -494,6 +593,16 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Показываем индикатор загрузки
     loading_msg = await update.message.reply_text("⏳ Формируем персональный дайджест с двойной фильтрацией...")
+    
+    # Получаем настройки бота
+    bot_settings = await get_bot_settings()
+    
+    # Получаем лимит постов из настроек бота (по умолчанию 10)
+    max_posts_per_digest = 10  # fallback значение
+    if bot_settings:
+        max_posts_per_digest = bot_settings.get('max_posts_per_digest', 10)
+    
+    logger.info(f"📊 Лимит постов в дайджесте: {max_posts_per_digest}")
     
     # Получаем данные для понимания названий
     categories = await get_bot_categories()
@@ -511,8 +620,26 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if ch['id'] in subscribed_channel_ids:
             subscribed_channel_telegram_ids.append(ch['telegram_id'])
     
-    # Получаем AI посты
-    posts = await get_ai_posts(limit=30)
+    logger.info(f"📺 Подписки на каналы: {subscribed_channel_names} (telegram_ids: {subscribed_channel_telegram_ids})")
+    logger.info(f"📁 Подписки на категории: {subscribed_category_names}")
+    
+    # ДИАГНОСТИКА: проверяем, подписан ли пользователь на ВСЕ каналы
+    total_channels = len(channels)
+    subscribed_channels_count = len(subscribed_channel_ids)
+    total_categories = len(categories)
+    subscribed_categories_count = len(subscribed_category_ids)
+    
+    logger.info(f"📊 ДИАГНОСТИКА: подписан на {subscribed_channels_count} из {total_channels} каналов")
+    logger.info(f"📊 ДИАГНОСТИКА: подписан на {subscribed_categories_count} из {total_categories} категорий")
+    
+    # Если подписан на всё, предупреждаем о большом объеме
+    if subscribed_channels_count == total_channels and subscribed_categories_count == total_categories:
+        logger.warning(f"⚠️ ВНИМАНИЕ: пользователь подписан на ВСЕ каналы и категории - дайджест может быть очень большим")
+    
+    # Получаем AI посты (увеличиваем лимит для лучшей фильтрации)
+    api_limit = max(max_posts_per_digest * 3, 50)  # Запрашиваем больше чем нужно для фильтрации
+    posts = await get_ai_posts(limit=api_limit)
+    logger.info(f"📊 Получено постов из API: {len(posts) if posts else 0}")
     
     if not posts:
         keyboard = get_main_menu_keyboard()
@@ -522,8 +649,26 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     
+    # ДИАГНОСТИКА: анализируем уникальные каналы в постах
+    unique_channels = set()
+    posts_by_channel = {}
+    for post in posts:
+        if isinstance(post, dict):
+            channel_id = post.get('channel_telegram_id')
+            if channel_id:
+                unique_channels.add(channel_id)
+                if channel_id not in posts_by_channel:
+                    posts_by_channel[channel_id] = 0
+                posts_by_channel[channel_id] += 1
+    
+    logger.info(f"📺 ДИАГНОСТИКА: уникальные каналы в постах: {unique_channels}")
+    logger.info(f"📺 ДИАГНОСТИКА: каналы в подписках: {subscribed_channel_telegram_ids}")
+    logger.info(f"📊 ДИАГНОСТИКА: постов по каналам: {posts_by_channel}")
+    
     # ДВОЙНАЯ ФИЛЬТРАЦИЯ: каналы ∩ категории
     filtered_posts = filter_posts_by_subscriptions(posts, subscribed_category_names, subscribed_channel_telegram_ids)
+    
+    logger.info(f"🔍 ДИАГНОСТИКА: после фильтрации осталось {len(filtered_posts)} постов")
     
     if not filtered_posts:
         keyboard = get_main_menu_keyboard()
@@ -532,11 +677,18 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             filter_info += f"📺 Каналы: {', '.join(subscribed_channel_names)}\n"
         if subscribed_category_names:
             filter_info += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
+        
+        # Дополнительная диагностика для пустого результата
+        debug_info = f"\n🔍 <b>Диагностика:</b>\n"
+        debug_info += f"📊 Всего постов из API: {len(posts)}\n"
+        debug_info += f"📺 Уникальные каналы в постах: {len(unique_channels)}\n"
+        debug_info += f"📁 Категории в подписках: {len(subscribed_category_names)}\n"
+        debug_info += f"📺 Каналы в подписках: {len(subscribed_channel_ids)}\n"
             
         await loading_msg.edit_text(
             f"📭 Нет новых постов по вашим фильтрам.\n\n"
             f"🎯 <b>Ваши фильтры:</b>\n{filter_info}\n"
-            f"💡 Попробуйте расширить подписки или попробуйте позже.",
+            f"💡 Попробуйте расширить подписки или попробуйте позже.\n{debug_info}",
             reply_markup=keyboard,
             parse_mode='HTML'
         )
@@ -551,25 +703,20 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     filtered_posts.sort(key=calculate_score, reverse=True)
     
-    # Ограничиваем количество постов
-    max_posts = 10
-    filtered_posts = filtered_posts[:max_posts]
+    # Ограничиваем количество постов согласно настройкам бота
+    filtered_posts = filtered_posts[:max_posts_per_digest]
     
-    # Группируем посты по каналам
-    posts_by_channel = {}
+    # Группируем посты по КАТЕГОРИЯМ (как просил пользователь)
+    posts_by_category = {}
     for post in filtered_posts:
-        channel_id = post.get('channel_telegram_id')
-        channel_name = 'Неизвестный канал'
+        category = post.get('ai_category', 'Без категории')
         
-        # Находим название канала
-        for ch in channels:
-            if ch['telegram_id'] == channel_id:
-                channel_name = ch['name']
-                break
-        
-        if channel_name not in posts_by_channel:
-            posts_by_channel[channel_name] = []
-        posts_by_channel[channel_name].append(post)
+        if category not in posts_by_category:
+            posts_by_category[category] = []
+        posts_by_category[category].append(post)
+    
+    # Сортируем категории по количеству постов (больше постов = выше)
+    sorted_categories = sorted(posts_by_category.keys(), key=lambda cat: len(posts_by_category[cat]), reverse=True)
     
     # Формируем дайджест
     text = f"📰 <b>Персональный дайджест v4</b>\n"
@@ -581,15 +728,27 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if subscribed_category_names:
         text += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
     
-    text += f"📊 Найдено постов: {len(filtered_posts)}\n\n"
+    text += f"📊 Найдено постов: {len(filtered_posts)} (лимит: {max_posts_per_digest})\n\n"
     
-    # Показываем посты по каналам
-    for channel_name, posts in posts_by_channel.items():
-        text += f"📺 <b>{channel_name.upper()}</b>\n"
+    # Показываем посты по КАТЕГОРИЯМ
+    for category_name in sorted_categories:
+        posts = posts_by_category[category_name]
+        text += f"📁 <b>{category_name.upper()}</b>\n"
         
         for i, post in enumerate(posts, 1):
             ai_summary = post.get('ai_summary') or 'Нет описания'
-            ai_category = post.get('ai_category') or 'Нет категории'
+            
+            # Ограничиваем длину саммари для экономии места
+            if len(ai_summary) > 200:
+                ai_summary = ai_summary[:200] + "..."
+            
+            # Находим название канала для каждого поста
+            channel_name = 'Неизвестный канал'
+            channel_id = post.get('channel_telegram_id')
+            for ch in channels:
+                if ch['telegram_id'] == channel_id:
+                    channel_name = ch['name']
+                    break
             
             # Получаем ссылку на пост
             media_urls = post.get('media_urls', [])
@@ -599,9 +758,224 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 text += f"{i}. {ai_summary}\n"
             
-            text += f"   🏷️ {ai_category}\n"
+            # Показываем источник (канал)
+            text += f"   📺 {channel_name}\n"
         
         text += "\n"
+    
+    # Проверяем длину сообщения и разбиваем на части если нужно
+    logger.info(f"📏 Длина дайджеста: {len(text)} символов")
+    
+    keyboard = get_main_menu_keyboard()
+    message_parts = split_message(text)
+    
+    if len(message_parts) == 1:
+        # Одно сообщение
+        await loading_msg.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+    else:
+        # Несколько сообщений
+        await loading_msg.edit_text(
+            f"📰 <b>Дайджест разбит на {len(message_parts)} частей из-за размера</b>",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+        # Отправляем части по очереди
+        for i, part in enumerate(message_parts, 1):
+            if i == len(message_parts):
+                # Последняя часть с клавиатурой
+                await update.message.reply_text(
+                    f"📰 <b>Часть {i}/{len(message_parts)}</b>\n\n{part}",
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+            else:
+                # Промежуточные части без клавиатуры
+                await update.message.reply_text(
+                    f"📰 <b>Часть {i}/{len(message_parts)}</b>\n\n{part}",
+                    parse_mode='HTML'
+                )
+
+async def api_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверка API - показывает сырые данные без фильтрации"""
+    loading_msg = await update.message.reply_text("⏳ Проверяем API данные...")
+    
+    # Тестируем ОБА endpoint'а для сравнения
+    posts_with_bot = await get_ai_posts(limit=10)  # С bot_id=4
+    categories = await get_bot_categories()
+    channels = await get_bot_channels()
+    
+    # Тестируем endpoint БЕЗ bot_id фильтра (все посты в системе)
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}/api/posts/cache-with-ai?limit=10"  # БЕЗ bot_id
+            async with session.get(url) as response:
+                if response.status == 200:
+                    all_posts_data = await response.json()
+                    if isinstance(all_posts_data, dict) and 'posts' in all_posts_data:
+                        posts_all = all_posts_data['posts']
+                    else:
+                        posts_all = []
+                else:
+                    posts_all = []
+    except Exception as e:
+        posts_all = []
+        logger.error(f"Ошибка получения всех постов: {e}")
+    
+    # Тестируем RAW POSTS (без AI фильтрации)
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}/api/posts/cache?limit=100"  # Увеличиваем лимит
+            logger.info(f"🔍 Запрос RAW постов: {url}")
+            async with session.get(url) as response:
+                logger.info(f"🔍 RAW ответ: статус {response.status}")
+                if response.status == 200:
+                    raw_posts_data = await response.json()
+                    logger.info(f"🔍 RAW данные: тип {type(raw_posts_data)}, длина {len(raw_posts_data) if isinstance(raw_posts_data, list) else 'не список'}")
+                    
+                    # API возвращает список постов напрямую (не в объекте с 'posts')
+                    if isinstance(raw_posts_data, list):
+                        posts_raw = raw_posts_data
+                    elif isinstance(raw_posts_data, dict) and 'posts' in raw_posts_data:
+                        posts_raw = raw_posts_data['posts']
+                    else:
+                        posts_raw = []
+                        logger.error(f"🔍 Неожиданный формат RAW данных: {type(raw_posts_data)}")
+                else:
+                    posts_raw = []
+                    logger.error(f"🔍 RAW запрос неуспешен: {response.status}")
+    except Exception as e:
+        posts_raw = []
+        logger.error(f"Ошибка получения RAW постов: {e}")
+    
+    if not posts_with_bot and not posts_all:
+        keyboard = get_main_menu_keyboard()
+        await loading_msg.edit_text(
+            "❌ Не удалось получить посты из API.",
+            reply_markup=keyboard
+        )
+        return
+    
+    # Анализируем посты С bot_id фильтром
+    bot_channels = {}
+    bot_categories = {}
+    for post in (posts_with_bot or []):
+        if isinstance(post, dict):
+            channel_id = post.get('channel_telegram_id')
+            category = post.get('ai_category')
+            
+            if channel_id:
+                if channel_id not in bot_channels:
+                    bot_channels[channel_id] = 0
+                bot_channels[channel_id] += 1
+            
+            if category:
+                if category not in bot_categories:
+                    bot_categories[category] = 0
+                bot_categories[category] += 1
+    
+    # Анализируем ВСЕ посты (без bot_id)
+    all_channels = {}
+    all_categories = {}
+    for post in (posts_all or []):
+        if isinstance(post, dict):
+            channel_id = post.get('channel_telegram_id')
+            category = post.get('ai_category')
+            
+            if channel_id:
+                if channel_id not in all_channels:
+                    all_channels[channel_id] = 0
+                all_channels[channel_id] += 1
+            
+            if category:
+                if category not in all_categories:
+                    all_categories[category] = 0
+                all_categories[category] += 1
+    
+    # Анализируем RAW посты (без AI обработки)
+    raw_channels = {}
+    for post in (posts_raw or []):
+        if isinstance(post, dict):
+            channel_id = post.get('channel_telegram_id')
+            
+            if channel_id:
+                if channel_id not in raw_channels:
+                    raw_channels[channel_id] = 0
+                raw_channels[channel_id] += 1
+    
+    text = f"🔍 <b>API ДИАГНОСТИКА - НАЙДЕНА ПРОБЛЕМА!</b>\n\n"
+    text += f"🤖 <b>AI посты с bot_id={PUBLIC_BOT_ID}:</b>\n"
+    text += f"📊 Постов: {len(posts_with_bot or [])}\n"
+    text += f"📺 Каналов: {len(bot_channels)}\n"
+    text += f"📁 Категорий: {len(bot_categories)}\n\n"
+    
+    text += f"🌍 <b>AI посты (без bot_id):</b>\n"
+    text += f"📊 Постов: {len(posts_all or [])}\n"
+    text += f"📺 Каналов: {len(all_channels)}\n"
+    text += f"📁 Категорий: {len(all_categories)}\n\n"
+    
+    text += f"📋 <b>RAW посты (без AI):</b>\n"
+    text += f"📊 Постов: {len(posts_raw or [])}\n"
+    text += f"📺 Каналов: {len(raw_channels)}\n\n"
+    
+    if len(raw_channels) > len(bot_channels):
+        text += f"⚠️ <b>ПРОБЛЕМА НАЙДЕНА!</b>\n"
+        text += f"RAW данных больше чем AI обработанных!\n\n"
+    
+    text += f"📺 <b>Каналы с bot_id={PUBLIC_BOT_ID}:</b>\n"
+    for channel_id, count in bot_channels.items():
+        text += f"• {channel_id}: {count} постов\n"
+    
+    text += f"\n📺 <b>AI каналы (без bot_id):</b>\n"
+    for channel_id, count in all_channels.items():
+        text += f"• {channel_id}: {count} постов\n"
+    
+    text += f"\n📺 <b>RAW каналы (все данные):</b>\n"
+    for channel_id, count in raw_channels.items():
+        text += f"• {channel_id}: {count} постов\n"
+    
+    text += f"\n🗂️ <b>Доступные категории API ({len(categories)}):</b>\n"
+    for cat in categories:
+        status = "✅" if cat['is_active'] else "❌"
+        text += f"{status} ID:{cat['id']} - {cat['name']}\n"
+    
+    text += f"\n📺 <b>Доступные каналы API ({len(channels)}):</b>\n"
+    for ch in channels:
+        status = "✅" if ch['is_active'] else "❌"
+        text += f"{status} ID:{ch['id']} - {ch['name']} (TG:{ch['telegram_id']})\n"
+    
+    text += f"\n📝 <b>Первые 3 поста (С bot_id):</b>\n"
+    for i, post in enumerate((posts_with_bot or [])[:3], 1):
+        if isinstance(post, dict):
+            title = (post.get('title') or 'Без заголовка')[:40]
+            category = post.get('ai_category', 'Без категории')
+            channel = post.get('channel_telegram_id', 'Без канала')
+            text += f"\n{i}. {title}\n"
+            text += f"   📺 Канал: {channel}\n"
+            text += f"   📁 Категория: {category}\n"
+    
+    text += f"\n📝 <b>Первые 3 поста (ВСЕ AI):</b>\n"
+    for i, post in enumerate((posts_all or [])[:3], 1):
+        if isinstance(post, dict):
+            title = (post.get('title') or 'Без заголовка')[:40]
+            category = post.get('ai_category', 'Без категории')
+            channel = post.get('channel_telegram_id', 'Без канала')
+            text += f"\n{i}. {title}\n"
+            text += f"   📺 Канал: {channel}\n"
+            text += f"   📁 Категория: {category}\n"
+    
+    text += f"\n📝 <b>Первые 3 поста (RAW):</b>\n"
+    for i, post in enumerate((posts_raw or [])[:3], 1):
+        if isinstance(post, dict):
+            title = (post.get('title') or 'Без заголовка')[:40]
+            content = (post.get('content') or 'Без содержимого')[:30]
+            channel = post.get('channel_telegram_id', 'Без канала')
+            views = post.get('views', 0)
+            text += f"\n{i}. {title}\n"
+            text += f"   📺 Канал: {channel}\n"
+            text += f"   👀 Просмотры: {views}\n"
+            text += f"   📄 Содержимое: {content}...\n"
     
     keyboard = get_main_menu_keyboard()
     await loading_msg.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
@@ -674,9 +1048,10 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if posts and isinstance(posts, list):
         for i, post in enumerate(posts[:2], 1):
             text += f"\n📝 Пост {i}:\n"
-            text += f"  Тип: {type(post)}\n"
+            text += f"  Тип: {str(type(post))}\n"
             if isinstance(post, dict):
-                text += f"  Ключи: {list(post.keys())[:5]}\n"
+                keys_list = list(post.keys())[:5]
+                text += f"  Ключи: {str(keys_list)}\n"
                 text += f"  ai_category: {post.get('ai_category', 'отсутствует')}\n"
                 text += f"  channel_telegram_id: {post.get('channel_telegram_id', 'отсутствует')}\n"
                 text += f"  title: {(post.get('title') or 'отсутствует')[:30]}\n"
@@ -689,17 +1064,19 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик inline кнопок"""
     query = update.callback_query
-    await query.answer()
     
     user_id = query.from_user.id
     data = query.data
     
+    # Игнорируем заголовки
+    if data == "noop":
+        await query.answer("🔘 Это заголовок раздела")
+        return
+    
+    await query.answer()
+    
     # Обработка команд через кнопки
-    if data == "cmd_categories":
-        await categories_command_callback(query, context)
-    elif data == "cmd_channels":
-        await channels_command_callback(query, context)
-    elif data == "cmd_subscriptions":
+    if data == "cmd_subscriptions":
         await subscriptions_command_callback(query, context)
     elif data == "cmd_digest":
         await digest_command_callback(query, context)
@@ -711,10 +1088,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await debug_command_callback(query, context)
     elif data == "main_menu":
         await main_menu_callback(query, context)
-    elif data == "manage_channels":
-        await manage_channels_callback(query, context)
-    elif data == "manage_categories":
-        await manage_categories_callback(query, context)
     elif data.startswith("toggle_channel_"):
         # Обработка toggle подписок на каналы
         channel_id = int(data.split("_")[2])
@@ -728,7 +1101,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_user_subscriptions(user_id, channel_ids=current_subscriptions)
         
         # Обновляем сообщение
-        await manage_channels_callback(query, context)
+        await subscriptions_command_callback(query, context)
         
     elif data.startswith("toggle_category_"):
         # Обработка toggle подписок на категории
@@ -743,19 +1116,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_user_subscriptions(user_id, category_ids=current_subscriptions)
         
         # Обновляем сообщение
-        await manage_categories_callback(query, context)
-        
-    elif data == "save_subscriptions":
-        # Показываем текущие подписки
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            f"✅ Подписки для бота {PUBLIC_BOT_ID} сохранены!\n\n"
-            f"🎯 Теперь вы будете получать персональные дайджесты по выбранным фильтрам:\n"
-            f"• 📺 Каналы - источники новостей\n"
-            f"• 📁 Категории - темы новостей\n\n"
-            f"Используйте команду /digest для получения дайджеста.",
-            reply_markup=keyboard
-        )
+        await subscriptions_command_callback(query, context)
 
 # Callback версии команд
 async def main_menu_callback(query, context):
@@ -764,238 +1125,15 @@ async def main_menu_callback(query, context):
     keyboard = get_main_menu_keyboard()
     
     await query.edit_message_text(
-        f"🏠 <b>Главное меню - MorningStar Bot v2</b>\n\n"
+        f"🏠 <b>Главное меню - MorningStar Bot v4</b>\n\n"
         f"Привет, {user.first_name}! 👋\n\n"
         f"🤖 Bot ID: {PUBLIC_BOT_ID}\n"
-        f"⚡ Режим: Локальное хранение подписок\n\n"
+        f"⚡ Режим: Двойная фильтрация (каналы ∩ категории)\n"
+        f"💾 Хранение: Локальные подписки\n\n"
         f"Выберите действие из меню ниже:",
         reply_markup=keyboard,
         parse_mode='HTML'
     )
-
-async def categories_command_callback(query, context):
-    """Показать категории через callback"""
-    await query.edit_message_text("⏳ Загружаем категории...")
-    
-    categories = await get_bot_categories()
-    
-    if not categories:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            "❌ Не удалось получить категории. Попробуйте позже.",
-            reply_markup=keyboard
-        )
-        return
-    
-    text = f"📁 <b>Доступные категории для бота {PUBLIC_BOT_ID}:</b>\n\n"
-    for cat in categories:
-        status = "✅" if cat['is_active'] else "❌"
-        text += f"{status} <b>{cat['name']}</b> (ID: {cat['id']})\n"
-        if cat['description']:
-            text += f"   📝 {cat['description']}\n"
-        text += "\n"
-    
-    text += f"💡 Всего категорий: {len(categories)}"
-    keyboard = get_main_menu_keyboard()
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode='HTML')
-
-async def channels_command_callback(query, context):
-    """Показать каналы через callback"""
-    await query.edit_message_text("⏳ Загружаем каналы...")
-    
-    channels = await get_bot_channels()
-    
-    if not channels:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            "❌ Не удалось получить каналы. Попробуйте позже.",
-            reply_markup=keyboard
-        )
-        return
-    
-    text = f"📺 <b>Доступные каналы для бота {PUBLIC_BOT_ID}:</b>\n\n"
-    for ch in channels:
-        status = "✅" if ch['is_active'] else "❌"
-        username = f"@{ch['username']}" if ch['username'] else "Без username"
-        text += f"{status} <b>{ch['name']}</b> (ID: {ch['id']})\n"
-        text += f"   📱 {username}\n"
-        text += f"   🆔 Telegram ID: {ch['telegram_id']}\n"
-        text += "\n"
-    
-    text += f"💡 Всего каналов: {len(channels)}"
-    keyboard = get_main_menu_keyboard()
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode='HTML')
-
-async def subscriptions_command_callback(query, context):
-    """Управление подписками через callback"""
-    await query.edit_message_text("⏳ Загружаем подписки...")
-    
-    user_id = query.from_user.id
-    categories = await get_bot_categories()
-    
-    if not categories:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            "❌ Не удалось получить категории.",
-            reply_markup=keyboard
-        )
-        return
-    
-    current_subscriptions = get_user_subscriptions(user_id)
-    
-    # Создаем inline клавиатуру
-    keyboard = []
-    for cat in categories:
-        if cat['is_active']:
-            is_subscribed = cat['id'] in current_subscriptions
-            emoji = "✅" if is_subscribed else "⬜"
-            text = f"{emoji} {cat['name']}"
-            callback_data = f"toggle_category_{cat['id']}"
-            keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
-    
-    keyboard.append([InlineKeyboardButton("💾 Сохранить", callback_data="save_subscriptions")])
-    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    text = f"🎯 <b>Управление подписками для бота {PUBLIC_BOT_ID}</b>\n\n"
-    text += f"📊 Текущие подписки: {len(current_subscriptions)}\n\n"
-    text += "Выберите категории для подписки:"
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
-
-async def digest_command_callback(query, context):
-    """Получить дайджест через callback"""
-    await query.edit_message_text("⏳ Формируем персональный дайджест с двойной фильтрацией...")
-    
-    user_id = query.from_user.id
-    
-    # Получаем подписки пользователя
-    subscribed_category_ids = get_user_subscriptions(user_id, 'categories')
-    subscribed_channel_ids = get_user_subscriptions(user_id, 'channels')
-    
-    if not subscribed_category_ids and not subscribed_channel_ids:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            f"📭 У вас пока нет подписок для бота {PUBLIC_BOT_ID}.\n\n"
-            f"🎯 Для получения дайджеста нужно:\n"
-            f"• Выбрать интересные каналы (источники новостей)\n"
-            f"• Выбрать интересные категории (темы новостей)\n\n"
-            f"Используйте кнопку '🎯 Подписки' для настройки фильтрации.",
-            reply_markup=keyboard
-        )
-        return
-    
-    # Получаем данные для понимания названий
-    categories = await get_bot_categories()
-    channels = await get_bot_channels()
-    
-    category_names = {cat['id']: cat['name'] for cat in categories}
-    channel_names = {ch['id']: ch['name'] for ch in channels}
-    
-    subscribed_category_names = [category_names.get(cat_id, f"Категория {cat_id}") for cat_id in subscribed_category_ids]
-    subscribed_channel_names = [channel_names.get(ch_id, f"Канал {ch_id}") for ch_id in subscribed_channel_ids]
-    
-    # Получаем Telegram ID каналов для фильтрации
-    subscribed_channel_telegram_ids = []
-    for ch in channels:
-        if ch['id'] in subscribed_channel_ids:
-            subscribed_channel_telegram_ids.append(ch['telegram_id'])
-    
-    # Получаем AI посты
-    posts = await get_ai_posts(limit=30)
-    
-    if not posts:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            "❌ Не удалось получить посты. Попробуйте позже.",
-            reply_markup=keyboard
-        )
-        return
-    
-    # ДВОЙНАЯ ФИЛЬТРАЦИЯ: каналы ∩ категории
-    filtered_posts = filter_posts_by_subscriptions(posts, subscribed_category_names, subscribed_channel_telegram_ids)
-    
-    if not filtered_posts:
-        keyboard = get_main_menu_keyboard()
-        filter_info = ""
-        if subscribed_channel_names:
-            filter_info += f"📺 Каналы: {', '.join(subscribed_channel_names)}\n"
-        if subscribed_category_names:
-            filter_info += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
-            
-        await query.edit_message_text(
-            f"📭 Нет новых постов по вашим фильтрам.\n\n"
-            f"🎯 <b>Ваши фильтры:</b>\n{filter_info}\n"
-            f"💡 Попробуйте расширить подписки или попробуйте позже.",
-            reply_markup=keyboard,
-            parse_mode='HTML'
-        )
-        return
-    
-    # Сортируем посты по метрикам
-    def calculate_score(post):
-        importance = post.get('ai_importance', 0)
-        urgency = post.get('ai_urgency', 0)
-        significance = post.get('ai_significance', 0)
-        return importance * 3 + urgency * 2 + significance * 2
-    
-    filtered_posts.sort(key=calculate_score, reverse=True)
-    
-    # Ограничиваем количество постов
-    max_posts = 10
-    filtered_posts = filtered_posts[:max_posts]
-    
-    # Группируем посты по каналам
-    posts_by_channel = {}
-    for post in filtered_posts:
-        channel_id = post.get('channel_telegram_id')
-        channel_name = 'Неизвестный канал'
-        
-        # Находим название канала
-        for ch in channels:
-            if ch['telegram_id'] == channel_id:
-                channel_name = ch['name']
-                break
-        
-        if channel_name not in posts_by_channel:
-            posts_by_channel[channel_name] = []
-        posts_by_channel[channel_name].append(post)
-    
-    # Формируем дайджест
-    text = f"📰 <b>Персональный дайджест v4</b>\n"
-    
-    # Показываем активные фильтры
-    text += f"🎯 <b>Фильтры:</b>\n"
-    if subscribed_channel_names:
-        text += f"📺 Каналы: {', '.join(subscribed_channel_names)}\n"
-    if subscribed_category_names:
-        text += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
-    
-    text += f"📊 Найдено постов: {len(filtered_posts)}\n\n"
-    
-    # Показываем посты по каналам
-    for channel_name, posts in posts_by_channel.items():
-        text += f"📺 <b>{channel_name.upper()}</b>\n"
-        
-        for i, post in enumerate(posts, 1):
-            ai_summary = post.get('ai_summary') or 'Нет описания'
-            ai_category = post.get('ai_category') or 'Нет категории'
-            
-            # Получаем ссылку на пост
-            media_urls = post.get('media_urls', [])
-            if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
-                post_url = media_urls[0]
-                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a>\n"
-            else:
-                text += f"{i}. {ai_summary}\n"
-            
-            text += f"   🏷️ {ai_category}\n"
-        
-        text += "\n"
-    
-    keyboard = get_main_menu_keyboard()
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode='HTML')
 
 async def help_command_callback(query, context):
     """Показать справку через callback"""
@@ -1021,7 +1159,7 @@ async def help_command_callback(query, context):
 • Использует endpoint /api/posts/cache-with-ai?bot_id={PUBLIC_BOT_ID}
 • Подписки сохраняются в файл user_subscriptions.json
 • Фильтрация по каналам И категориям одновременно
-• Группировка дайджестов по каналам
+• Группировка дайджестов по категориям
 • Умная сортировка по AI метрикам
 """
     keyboard = get_main_menu_keyboard()
@@ -1097,9 +1235,10 @@ async def debug_command_callback(query, context):
     if posts and isinstance(posts, list):
         for i, post in enumerate(posts[:2], 1):
             text += f"\n📝 Пост {i}:\n"
-            text += f"  Тип: {type(post)}\n"
+            text += f"  Тип: {str(type(post))}\n"
             if isinstance(post, dict):
-                text += f"  Ключи: {list(post.keys())[:5]}\n"
+                keys_list = list(post.keys())[:5]
+                text += f"  Ключи: {str(keys_list)}\n"
                 text += f"  ai_category: {post.get('ai_category', 'отсутствует')}\n"
                 text += f"  channel_telegram_id: {post.get('channel_telegram_id', 'отсутствует')}\n"
                 text += f"  title: {(post.get('title') or 'отсутствует')[:30]}\n"
@@ -1107,84 +1246,300 @@ async def debug_command_callback(query, context):
                 text += f"  Содержимое: {str(post)[:50]}\n"
     
     keyboard = get_main_menu_keyboard()
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode='HTML')
+    # Убираем HTML парсинг для debug чтобы избежать ошибок
+    await query.edit_message_text(text, reply_markup=keyboard)
 
-async def manage_channels_callback(query, context):
-    """Управление подписками на каналы"""
-    await query.edit_message_text("⏳ Загружаем каналы...")
+async def subscriptions_command_callback(query, context):
+    """Единое управление подписками через callback"""
+    await query.edit_message_text("⏳ Загружаем подписки...")
     
     user_id = query.from_user.id
+    
+    # Получаем подписки пользователя
+    category_subscriptions = get_user_subscriptions(user_id, 'categories')
+    channel_subscriptions = get_user_subscriptions(user_id, 'channels')
+    
+    # Получаем данные для отображения
+    categories = await get_bot_categories()
     channels = await get_bot_channels()
     
-    if not channels:
+    if not categories and not channels:
         keyboard = get_main_menu_keyboard()
         await query.edit_message_text(
-            "❌ Не удалось получить каналы.",
+            "❌ Не удалось получить данные. Попробуйте позже.",
             reply_markup=keyboard
         )
         return
     
-    current_subscriptions = get_user_subscriptions(user_id, 'channels')
-    
-    # Создаем inline клавиатуру для каналов
+    # Создаем клавиатуру с прямым управлением
     keyboard = []
+    
+    # Заголовок каналов
+    keyboard.append([InlineKeyboardButton("📺 === КАНАЛЫ ===", callback_data="noop")])
+    
+    # Добавляем каналы
     for ch in channels:
         if ch['is_active']:
-            is_subscribed = ch['id'] in current_subscriptions
+            is_subscribed = ch['id'] in channel_subscriptions
             emoji = "✅" if is_subscribed else "⬜"
-            display_name = ch['name'][:30] + "..." if len(ch['name']) > 30 else ch['name']
+            display_name = ch['name'][:25] + "..." if len(ch['name']) > 25 else ch['name']
             text = f"{emoji} {display_name}"
             callback_data = f"toggle_channel_{ch['id']}"
             keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
     
-    keyboard.append([InlineKeyboardButton("💾 Сохранить", callback_data="save_subscriptions")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="cmd_subscriptions")])
+    # Заголовок категорий
+    keyboard.append([InlineKeyboardButton("📁 === КАТЕГОРИИ ===", callback_data="noop")])
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    text = f"📺 <b>Управление подписками на каналы</b>\n\n"
-    text += f"📊 Текущие подписки: {len(current_subscriptions)} из {len(channels)}\n\n"
-    text += "Выберите каналы для подписки:"
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
-
-async def manage_categories_callback(query, context):
-    """Управление подписками на категории"""
-    await query.edit_message_text("⏳ Загружаем категории...")
-    
-    user_id = query.from_user.id
-    categories = await get_bot_categories()
-    
-    if not categories:
-        keyboard = get_main_menu_keyboard()
-        await query.edit_message_text(
-            "❌ Не удалось получить категории.",
-            reply_markup=keyboard
-        )
-        return
-    
-    current_subscriptions = get_user_subscriptions(user_id, 'categories')
-    
-    # Создаем inline клавиатуру для категорий
-    keyboard = []
+    # Добавляем категории
     for cat in categories:
         if cat['is_active']:
-            is_subscribed = cat['id'] in current_subscriptions
+            is_subscribed = cat['id'] in category_subscriptions
             emoji = "✅" if is_subscribed else "⬜"
             text = f"{emoji} {cat['name']}"
             callback_data = f"toggle_category_{cat['id']}"
             keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
     
-    keyboard.append([InlineKeyboardButton("💾 Сохранить", callback_data="save_subscriptions")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="cmd_subscriptions")])
+    # Кнопки управления
+    keyboard.append([
+        InlineKeyboardButton("🔄 Обновить", callback_data="cmd_subscriptions"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    text = f"📁 <b>Управление подписками на категории</b>\n\n"
-    text += f"📊 Текущие подписки: {len(current_subscriptions)} из {len(categories)}\n\n"
-    text += "Выберите категории для подписки:"
+    # Формируем текст с подписками
+    text = f"🎯 <b>Управление подписками (бот {PUBLIC_BOT_ID})</b>\n\n"
+    text += f"📺 <b>Каналы:</b> {len(channel_subscriptions)} из {len(channels)}\n"
+    text += f"📁 <b>Категории:</b> {len(category_subscriptions)} из {len(categories)}\n\n"
+    text += f"🔍 <b>Двойная фильтрация:</b>\n"
+    text += f"Дайджест = посты из выбранных каналов по выбранным темам\n\n"
+    text += f"💡 Нажимайте на элементы для переключения подписок:"
     
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def digest_command_callback(query, context):
+    """Получить дайджест через callback"""
+    await query.edit_message_text("⏳ Формируем персональный дайджест с двойной фильтрацией...")
+    
+    user_id = query.from_user.id
+    
+    # Получаем подписки пользователя
+    subscribed_category_ids = get_user_subscriptions(user_id, 'categories')
+    subscribed_channel_ids = get_user_subscriptions(user_id, 'channels')
+    
+    if not subscribed_category_ids and not subscribed_channel_ids:
+        keyboard = get_main_menu_keyboard()
+        await query.edit_message_text(
+            f"📭 У вас пока нет подписок для бота {PUBLIC_BOT_ID}.\n\n"
+            f"🎯 Для получения дайджеста нужно:\n"
+            f"• Выбрать интересные каналы (источники новостей)\n"
+            f"• Выбрать интересные категории (темы новостей)\n\n"
+            f"Используйте кнопку '🎯 Подписки' для настройки фильтрации.",
+            reply_markup=keyboard
+        )
+        return
+    
+    # Получаем настройки бота
+    bot_settings = await get_bot_settings()
+    
+    # Получаем лимит постов из настроек бота (по умолчанию 10)
+    max_posts_per_digest = 10  # fallback значение
+    if bot_settings:
+        max_posts_per_digest = bot_settings.get('max_posts_per_digest', 10)
+    
+    logger.info(f"📊 Лимит постов в дайджесте: {max_posts_per_digest}")
+    
+    # Получаем данные для понимания названий
+    categories = await get_bot_categories()
+    channels = await get_bot_channels()
+    
+    category_names = {cat['id']: cat['name'] for cat in categories}
+    channel_names = {ch['id']: ch['name'] for ch in channels}
+    
+    subscribed_category_names = [category_names.get(cat_id, f"Категория {cat_id}") for cat_id in subscribed_category_ids]
+    subscribed_channel_names = [channel_names.get(ch_id, f"Канал {ch_id}") for ch_id in subscribed_channel_ids]
+    
+    # Получаем Telegram ID каналов для фильтрации
+    subscribed_channel_telegram_ids = []
+    for ch in channels:
+        if ch['id'] in subscribed_channel_ids:
+            subscribed_channel_telegram_ids.append(ch['telegram_id'])
+    
+    logger.info(f"📺 Подписки на каналы: {subscribed_channel_names} (telegram_ids: {subscribed_channel_telegram_ids})")
+    logger.info(f"📁 Подписки на категории: {subscribed_category_names}")
+    
+    # ДИАГНОСТИКА: проверяем, подписан ли пользователь на ВСЕ каналы
+    total_channels = len(channels)
+    subscribed_channels_count = len(subscribed_channel_ids)
+    total_categories = len(categories)
+    subscribed_categories_count = len(subscribed_category_ids)
+    
+    logger.info(f"📊 ДИАГНОСТИКА: подписан на {subscribed_channels_count} из {total_channels} каналов")
+    logger.info(f"📊 ДИАГНОСТИКА: подписан на {subscribed_categories_count} из {total_categories} категорий")
+    
+    # Если подписан на всё, предупреждаем о большом объеме
+    if subscribed_channels_count == total_channels and subscribed_categories_count == total_categories:
+        logger.warning(f"⚠️ ВНИМАНИЕ: пользователь подписан на ВСЕ каналы и категории - дайджест может быть очень большим")
+    
+    # Получаем AI посты (увеличиваем лимит для лучшей фильтрации)
+    api_limit = max(max_posts_per_digest * 3, 50)  # Запрашиваем больше чем нужно для фильтрации
+    posts = await get_ai_posts(limit=api_limit)
+    logger.info(f"📊 Получено постов из API: {len(posts) if posts else 0}")
+    
+    if not posts:
+        keyboard = get_main_menu_keyboard()
+        await query.edit_message_text(
+            "❌ Не удалось получить посты. Попробуйте позже.",
+            reply_markup=keyboard
+        )
+        return
+    
+    # ДИАГНОСТИКА: анализируем уникальные каналы в постах
+    unique_channels = set()
+    posts_by_channel = {}
+    for post in posts:
+        if isinstance(post, dict):
+            channel_id = post.get('channel_telegram_id')
+            if channel_id:
+                unique_channels.add(channel_id)
+                if channel_id not in posts_by_channel:
+                    posts_by_channel[channel_id] = 0
+                posts_by_channel[channel_id] += 1
+    
+    logger.info(f"📺 ДИАГНОСТИКА: уникальные каналы в постах: {unique_channels}")
+    logger.info(f"📺 ДИАГНОСТИКА: каналы в подписках: {subscribed_channel_telegram_ids}")
+    logger.info(f"📊 ДИАГНОСТИКА: постов по каналам: {posts_by_channel}")
+    
+    # ДВОЙНАЯ ФИЛЬТРАЦИЯ: каналы ∩ категории
+    filtered_posts = filter_posts_by_subscriptions(posts, subscribed_category_names, subscribed_channel_telegram_ids)
+    
+    logger.info(f"🔍 ДИАГНОСТИКА: после фильтрации осталось {len(filtered_posts)} постов")
+    
+    if not filtered_posts:
+        keyboard = get_main_menu_keyboard()
+        filter_info = ""
+        if subscribed_channel_names:
+            filter_info += f"📺 Каналы: {', '.join(subscribed_channel_names)}\n"
+        if subscribed_category_names:
+            filter_info += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
+        
+        # Дополнительная диагностика для пустого результата
+        debug_info = f"\n🔍 <b>Диагностика:</b>\n"
+        debug_info += f"📊 Всего постов из API: {len(posts)}\n"
+        debug_info += f"📺 Уникальные каналы в постах: {len(unique_channels)}\n"
+        debug_info += f"📁 Категории в подписках: {len(subscribed_category_names)}\n"
+        debug_info += f"📺 Каналы в подписках: {len(subscribed_channel_ids)}\n"
+            
+        await query.edit_message_text(
+            f"📭 Нет новых постов по вашим фильтрам.\n\n"
+            f"🎯 <b>Ваши фильтры:</b>\n{filter_info}\n"
+            f"💡 Попробуйте расширить подписки или попробуйте позже.\n{debug_info}",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        return
+    
+    # Сортируем посты по метрикам
+    def calculate_score(post):
+        importance = post.get('ai_importance', 0)
+        urgency = post.get('ai_urgency', 0)
+        significance = post.get('ai_significance', 0)
+        return importance * 3 + urgency * 2 + significance * 2
+    
+    filtered_posts.sort(key=calculate_score, reverse=True)
+    
+    # Ограничиваем количество постов согласно настройкам бота
+    filtered_posts = filtered_posts[:max_posts_per_digest]
+    
+    # Группируем посты по КАТЕГОРИЯМ (как просил пользователь)
+    posts_by_category = {}
+    for post in filtered_posts:
+        category = post.get('ai_category', 'Без категории')
+        
+        if category not in posts_by_category:
+            posts_by_category[category] = []
+        posts_by_category[category].append(post)
+    
+    # Сортируем категории по количеству постов (больше постов = выше)
+    sorted_categories = sorted(posts_by_category.keys(), key=lambda cat: len(posts_by_category[cat]), reverse=True)
+    
+    # Формируем дайджест
+    text = f"📰 <b>Персональный дайджест v4</b>\n"
+    
+    # Показываем активные фильтры
+    text += f"🎯 <b>Фильтры:</b>\n"
+    if subscribed_channel_names:
+        text += f"📺 Каналы: {', '.join(subscribed_channel_names)}\n"
+    if subscribed_category_names:
+        text += f"📁 Категории: {', '.join(subscribed_category_names)}\n"
+    
+    text += f"📊 Найдено постов: {len(filtered_posts)} (лимит: {max_posts_per_digest})\n\n"
+    
+    # Показываем посты по КАТЕГОРИЯМ
+    for category_name in sorted_categories:
+        posts = posts_by_category[category_name]
+        text += f"📁 <b>{category_name.upper()}</b>\n"
+        
+        for i, post in enumerate(posts, 1):
+            ai_summary = post.get('ai_summary') or 'Нет описания'
+            
+            # Ограничиваем длину саммари для экономии места
+            if len(ai_summary) > 200:
+                ai_summary = ai_summary[:200] + "..."
+            
+            # Находим название канала для каждого поста
+            channel_name = 'Неизвестный канал'
+            channel_id = post.get('channel_telegram_id')
+            for ch in channels:
+                if ch['telegram_id'] == channel_id:
+                    channel_name = ch['name']
+                    break
+            
+            # Получаем ссылку на пост
+            media_urls = post.get('media_urls', [])
+            if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
+                post_url = media_urls[0]
+                text += f"{i}. {ai_summary} <a href='{post_url}'>🔗</a>\n"
+            else:
+                text += f"{i}. {ai_summary}\n"
+            
+            # Показываем источник (канал)
+            text += f"   📺 {channel_name}\n"
+        
+        text += "\n"
+    
+    # Проверяем длину сообщения и разбиваем на части если нужно
+    logger.info(f"📏 Длина дайджеста: {len(text)} символов")
+    
+    keyboard = get_main_menu_keyboard()
+    message_parts = split_message(text)
+    
+    if len(message_parts) == 1:
+        # Одно сообщение
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='HTML')
+    else:
+        # Несколько сообщений
+        await query.edit_message_text(
+            f"📰 <b>Дайджест разбит на {len(message_parts)} частей из-за размера</b>",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
+        
+        # Отправляем части по очереди
+        for i, part in enumerate(message_parts, 1):
+            if i == len(message_parts):
+                # Последняя часть с клавиатурой
+                await query.message.reply_text(
+                    f"📰 <b>Часть {i}/{len(message_parts)}</b>\n\n{part}",
+                    reply_markup=keyboard,
+                    parse_mode='HTML'
+                )
+            else:
+                # Промежуточные части без клавиатуры
+                await query.message.reply_text(
+                    f"📰 <b>Часть {i}/{len(message_parts)}</b>\n\n{part}",
+                    parse_mode='HTML'
+                )
 
 async def setup_bot_commands(application):
     """Настройка команд бота (кнопка меню слева)"""
@@ -1197,6 +1552,10 @@ async def setup_bot_commands(application):
         BotCommand("help", "❓ Показать справку"),
         BotCommand("test", "🧪 Тестовые данные"),
         BotCommand("debug", "🔧 Отладочная информация"),
+        BotCommand("apitest", "🔍 API тест - анализ данных"),
+        BotCommand("unsubscribe_all", "🗑️ Отписаться от всех каналов/категорий"),
+        BotCommand("settings", "⚙️ Настройки бота (админ)"),
+        BotCommand("setlimit", "📊 Изменить лимит постов (админ)"),
     ]
     
     try:
@@ -1204,6 +1563,125 @@ async def setup_bot_commands(application):
         print("✅ Команды бота установлены (кнопка меню слева активна)")
     except Exception as e:
         print(f"❌ Ошибка установки команд: {e}")
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Просмотр и изменение настроек бота (только для администратора)"""
+    user_id = update.effective_user.id
+    
+    # Проверка прав администратора (можно настроить через переменные окружения)
+    admin_ids = [123456789]  # Замените на реальный ID администратора
+    if user_id not in admin_ids:
+        await update.message.reply_text("❌ У вас нет прав для изменения настроек бота.")
+        return
+    
+    # Получаем текущие настройки
+    bot_settings = await get_bot_settings()
+    
+    if not bot_settings:
+        await update.message.reply_text("❌ Не удалось получить настройки бота.")
+        return
+    
+    # Показываем текущие настройки
+    text = f"⚙️ <b>Настройки бота</b>\n\n"
+    text += f"📊 <b>Лимит постов в дайджесте:</b> {bot_settings.get('max_posts_per_digest', 10)}\n"
+    text += f"📝 <b>Макс. длина саммари:</b> {bot_settings.get('max_summary_length', 150)}\n"
+    text += f"🌐 <b>Язык по умолчанию:</b> {bot_settings.get('default_language', 'ru')}\n"
+    text += f"⏰ <b>Часовой пояс:</b> {bot_settings.get('timezone', 'Europe/Moscow')}\n\n"
+    
+    text += f"📈 <b>Статистика:</b>\n"
+    text += f"👥 Пользователей: {bot_settings.get('users_count', 0)}\n"
+    text += f"📰 Дайджестов: {bot_settings.get('digests_count', 0)}\n"
+    text += f"📺 Каналов: {bot_settings.get('channels_count', 0)}\n"
+    text += f"📁 Категорий: {bot_settings.get('topics_count', 0)}\n\n"
+    
+    text += f"💡 <b>Для изменения лимита постов:</b>\n"
+    text += f"Используйте команду: <code>/setlimit 15</code>\n"
+    text += f"(допустимые значения: 5-30)"
+    
+    await update.message.reply_text(text, parse_mode='HTML')
+
+async def setlimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Изменить лимит постов в дайджесте"""
+    user_id = update.effective_user.id
+    
+    # Проверка прав администратора
+    admin_ids = [123456789]  # Замените на реальный ID администратора
+    if user_id not in admin_ids:
+        await update.message.reply_text("❌ У вас нет прав для изменения настроек бота.")
+        return
+    
+    # Получаем аргумент команды
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Укажите новый лимит постов.\n\n"
+            "Пример: <code>/setlimit 15</code>\n"
+            "Допустимые значения: 5-30",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        new_limit = int(context.args[0])
+        if new_limit < 5 or new_limit > 30:
+            await update.message.reply_text("❌ Лимит должен быть от 5 до 30 постов.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Некорректное значение. Укажите число от 5 до 30.")
+        return
+    
+    # Обновляем настройки через Backend API
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            url = f"{BACKEND_URL}/api/public-bots/{PUBLIC_BOT_ID}"
+            data = {"max_posts_per_digest": new_limit}
+            
+            async with session.put(url, json=data) as response:
+                if response.status == 200:
+                    await update.message.reply_text(
+                        f"✅ Лимит постов в дайджесте изменен на {new_limit}.\n\n"
+                        f"Изменения вступят в силу для новых дайджестов."
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"❌ Ошибка при обновлении настроек: {response.status}"
+                    )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении настроек: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при обновлении настроек.")
+
+async def unsubscribe_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отписаться от всех каналов и категорий"""
+    user_id = update.effective_user.id
+    
+    # Получаем текущие подписки
+    current_category_ids = get_user_subscriptions(user_id, 'categories')
+    current_channel_ids = get_user_subscriptions(user_id, 'channels')
+    
+    if not current_category_ids and not current_channel_ids:
+        keyboard = get_main_menu_keyboard()
+        await update.message.reply_text(
+            "📭 У вас нет активных подписок.",
+            reply_markup=keyboard
+        )
+        return
+    
+    # Очищаем все подписки
+    save_user_subscriptions(user_id, category_ids=[], channel_ids=[])
+    
+    # Подсчитываем что было удалено
+    removed_categories = len(current_category_ids)
+    removed_channels = len(current_channel_ids)
+    
+    keyboard = get_main_menu_keyboard()
+    await update.message.reply_text(
+        f"✅ <b>Все подписки удалены!</b>\n\n"
+        f"📁 Удалено категорий: {removed_categories}\n"
+        f"📺 Удалено каналов: {removed_channels}\n\n"
+        f"💡 Используйте кнопку '🎯 Подписки' для настройки новых фильтров.",
+        reply_markup=keyboard,
+        parse_mode='HTML'
+    )
 
 def main() -> None:
     """Запуск бота"""
@@ -1218,6 +1696,10 @@ def main() -> None:
     application.add_handler(CommandHandler("digest", digest_command))
     application.add_handler(CommandHandler("test", test_command))
     application.add_handler(CommandHandler("debug", debug_command))
+    application.add_handler(CommandHandler("apitest", api_test_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("setlimit", setlimit_command))
+    application.add_handler(CommandHandler("unsubscribe_all", unsubscribe_all_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     
     # Запускаем бота
