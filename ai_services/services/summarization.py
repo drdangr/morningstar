@@ -42,6 +42,7 @@ class SummarizationService(BaseAIService):
         text: str,
         language: str = "ru",
         custom_prompt: Optional[str] = None,
+        max_summary_length: Optional[int] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Создание краткого содержания текста с динамическими настройками"""
@@ -79,6 +80,17 @@ class SummarizationService(BaseAIService):
             # Формируем промпт
             prompt = custom_prompt or self._get_default_prompt(language)
             
+            # Используем переданную длину или дефолтную
+            summary_length = max_summary_length or self.max_summary_length
+            
+            # Добавляем рекомендацию по длине к кастомному промпту
+            if custom_prompt and summary_length:
+                # Более прямая инструкция для AI
+                min_sentences = 2 if summary_length >= 200 else 1
+                max_sentences = 4 if summary_length >= 400 else 3
+                length_instruction = f"\n\nОБЯЗАТЕЛЬНОЕ ТРЕБОВАНИЕ: Резюме должно состоять из {min_sentences}-{max_sentences} полных предложений. Общая длина резюме должна быть в диапазоне {summary_length // 2}-{summary_length} символов. НЕ создавай слишком короткие резюме из одного предложения!"
+                prompt = f"{custom_prompt}{length_instruction}"
+            
             # Вызываем OpenAI API с новым синтаксисом
             response = await self.client.chat.completions.create(
                 model=model,
@@ -108,6 +120,7 @@ class SummarizationService(BaseAIService):
         texts: list[str],
         language: str = "ru",
         custom_prompt: Optional[str] = None,
+        max_summary_length: Optional[int] = None,
         **kwargs
     ) -> list[Dict[str, Any]]:
         """НАСТОЯЩАЯ пакетная обработка постов - одним запросом к OpenAI"""
@@ -140,6 +153,17 @@ class SummarizationService(BaseAIService):
             
             # Формируем промпт для батчевой обработки
             base_prompt = custom_prompt or self._get_default_prompt(language)
+            
+            # Используем переданную длину или дефолтную
+            summary_length = max_summary_length or self.max_summary_length
+            
+            # Добавляем рекомендацию по длине к кастомному промпту
+            if custom_prompt and summary_length:
+                # Более прямая инструкция для AI
+                min_sentences = 2 if summary_length >= 200 else 1
+                max_sentences = 4 if summary_length >= 400 else 3
+                length_instruction = f"\n\nОБЯЗАТЕЛЬНОЕ ТРЕБОВАНИЕ: Резюме должно состоять из {min_sentences}-{max_sentences} полных предложений. Общая длина резюме должна быть в диапазоне {summary_length // 2}-{summary_length} символов. НЕ создавай слишком короткие резюме из одного предложения!"
+                base_prompt = f"{custom_prompt}{length_instruction}"
             
             # Создаем батчевый промпт
             batch_prompt = f"""{base_prompt}

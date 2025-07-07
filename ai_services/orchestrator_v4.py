@@ -77,7 +77,8 @@ class AIOrchestrator:
             self.summarization_service = SummarizationService(
                 model_name="gpt-4o-mini",
                 max_tokens=4000,
-                temperature=0.3
+                temperature=0.3,
+                max_summary_length=150  # Дефолтное значение, переопределяется для каждого бота
             )
             
             # AI сервисы готовы к использованию (инициализация не требуется)
@@ -308,6 +309,7 @@ class AIOrchestrator:
                     texts=texts_for_sum,
                     language=bot.get("default_language", "ru"),
                     custom_prompt=bot.get("summarization_prompt"),
+                    max_summary_length=bot.get("max_summary_length", 150)
                 )
                 for local_i, global_idx in enumerate(idx_map_sum):
                     summarization_raw_results[global_idx] = sum_res[local_i] if local_i < len(sum_res) else {}

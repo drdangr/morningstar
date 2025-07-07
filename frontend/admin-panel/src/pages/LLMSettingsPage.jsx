@@ -126,13 +126,7 @@ const BOT_TEMPLATE_SETTINGS = {
       is_editable: true,
       category: 'digest'
     },
-    {
-      key: 'DEFAULT_MAX_SUMMARY_LENGTH',
-      description: 'Максимальная длина резюме по умолчанию',
-      value_type: 'integer',
-      is_editable: true,
-      category: 'digest'
-    },
+
     {
       key: 'DEFAULT_DIGEST_LANGUAGE',
       description: 'Язык дайджестов по умолчанию',
@@ -325,7 +319,6 @@ function LLMSettingsPage() {
       'DEFAULT_MAX_TOKENS': '4000',
       'DEFAULT_TEMPERATURE': '0.3',
       'DEFAULT_MAX_POSTS_PER_DIGEST': '10',
-      'DEFAULT_MAX_SUMMARY_LENGTH': '150',
       'DEFAULT_DIGEST_LANGUAGE': 'ru',
       'DEFAULT_CATEGORIZATION_PROMPT': 'Проанализируй пост и определи наиболее подходящую категорию...',
       'DEFAULT_SUMMARIZATION_PROMPT': 'Создай краткое резюме поста на русском языке...'
