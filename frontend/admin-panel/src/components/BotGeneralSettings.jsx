@@ -219,6 +219,8 @@ const BotGeneralSettings = ({ bot, onBotUpdate }) => {
         fullWidth
         value={bot?.max_summary_length || 150}
         onChange={(e) => handleChange('max_summary_length', parseInt(e.target.value))}
+        inputProps={{ min: 50, max: 2000 }}
+        helperText="Диапазон: 50-2000 символов"
       />
     </Box>
   );

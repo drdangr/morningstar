@@ -672,7 +672,7 @@ class PublicBotBase(BaseModel):
     
     # Digest Settings (базовые)
     max_posts_per_digest: int = Field(10, ge=1, le=100)
-    max_summary_length: int = Field(150, ge=50, le=500)
+    max_summary_length: int = Field(150, ge=50, le=2000)
     
     # AI Prompts (разделенные по функциям)
     categorization_prompt: Optional[str] = None
@@ -701,7 +701,7 @@ class PublicBotUpdate(BaseModel):
     
     # Digest Settings (базовые)
     max_posts_per_digest: Optional[int] = Field(None, ge=1, le=100)
-    max_summary_length: Optional[int] = Field(None, ge=50, le=500)
+    max_summary_length: Optional[int] = Field(None, ge=50, le=4000)
     
     # AI Prompts (разделенные по функциям)
     categorization_prompt: Optional[str] = None

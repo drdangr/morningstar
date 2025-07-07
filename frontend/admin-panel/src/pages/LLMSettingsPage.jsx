@@ -59,22 +59,34 @@ const TABS_CONFIG = {
 
 // Конфигурация категорий настроек
 const SETTING_CATEGORIES = {
-  ai: {
-    title: 'AI и LLM Настройки',
+  categorization: {
+    title: 'Выбор LLM Моделей - Категоризация',
     icon: <AIIcon />,
     color: 'primary',
-    description: 'Управление искусственным интеллектом и языковыми моделями'
+    description: 'Настройки AI модели для категоризации постов'
+  },
+  summarization: {
+    title: 'Выбор LLM Моделей - Суммаризация',
+    icon: <AIIcon />,
+    color: 'secondary',
+    description: 'Настройки AI модели для создания резюме постов'
+  },
+  analysis: {
+    title: 'Выбор LLM Моделей - Анализ',
+    icon: <AIIcon />,
+    color: 'success',
+    description: 'Настройки AI модели для анализа постов'
   },
   system: {
     title: 'Системные Настройки',
     icon: <SystemIcon />,
-    color: 'secondary',
+    color: 'info',
     description: 'Общие настройки системы и производительности'
   },
   digest: {
     title: 'Настройки Дайджестов',
     icon: <DigestIcon />,
-    color: 'success',
+    color: 'warning',
     description: 'Параметры генерации и доставки дайджестов'
   }
 };
@@ -181,6 +193,22 @@ const SettingField = ({ setting, value, onChange, disabled, isTemplate = false }
       );
 
     case 'float':
+      // Специальная обработка для top_p параметра
+      if (setting.key.includes('top_p')) {
+        return (
+          <TextField
+            fullWidth
+            type="number"
+            label={getLabel(setting.key)}
+            value={value || ''}
+            onChange={(e) => handleChange(e.target.value)}
+            disabled={disabled || !setting.is_editable}
+            inputProps={{ min: 0, max: 1, step: 0.1 }}
+            helperText={`${setting.description} (диапазон: 0.0-1.0)`}
+          />
+        );
+      }
+      
       return (
         <TextField
           fullWidth
@@ -382,7 +410,36 @@ function LLMSettingsPage() {
 
   // Группировка настроек по категориям
   const groupedSettings = settings.reduce((acc, setting) => {
-    const category = setting.category || 'system';
+    let category = setting.category || 'system';
+    
+    // СНАЧАЛА проверяем исключения - эти настройки ВСЕГДА идут в system
+    const excludedFromAI = [
+      'MAX_SUMMARY_LENGTH',
+      'AI_MODEL',
+      'MAX_POSTS_FOR_AI_ANALYSIS',
+      'OPENAI_API_KEY'
+    ];
+    
+    if (excludedFromAI.includes(setting.key)) {
+      category = 'system';
+    }
+    // ЗАТЕМ обрабатываем AI настройки по сервисам
+    else if (setting.key.startsWith('ai_')) {
+      const parts = setting.key.split('_');
+      if (parts.length >= 3) { // ai_SERVICE_param
+        const service = parts[1]; 
+        if (['categorization', 'summarization', 'analysis'].includes(service)) {
+          category = service;
+        } else {
+          // Неизвестный AI сервис - в system
+          category = 'system';
+        }
+      } else {
+        // Неправильный формат AI настройки - в system
+        category = 'system';
+      }
+    }
+    
     if (!acc[category]) acc[category] = [];
     acc[category].push(setting);
     return acc;
@@ -405,7 +462,7 @@ function LLMSettingsPage() {
     <Box sx={{ p: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography variant="h4" gutterBottom>
-          AI и LLM Настройки
+          LLM Настройки
         </Typography>
         
         <Box sx={{ display: 'flex', gap: 1 }}>

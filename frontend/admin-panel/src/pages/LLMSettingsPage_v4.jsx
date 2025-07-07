@@ -97,7 +97,8 @@ const AI_SERVICES = {
     current_model: 'gpt-4o',
     recommended_model: 'gpt-4o',
     max_tokens: 2000,
-    temperature: 0.7
+    temperature: 0.7,
+    top_p: 1.0
   },
   analysis: {
     name: 'Анализ',
@@ -284,10 +285,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
     onParameterChange(serviceKey, paramName, value);
   };
 
-  // Специальная обработка для настроек из config_settings
-  const handleSpecialSettingChange = (settingKey, value) => {
-    onParameterChange('special', settingKey, value);
-  };
+  // handleSpecialSettingChange убрана - больше не нужна
 
   const calculateMonthlyCost = (model) => {
     const modelInfo = AVAILABLE_MODELS[model];
@@ -298,9 +296,7 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
     return (monthlyTokens / 1000) * modelInfo.cost_per_1k_tokens;
   };
 
-  // Получаем текущее значение MAX_SUMMARY_LENGTH из settings
-  const maxSummaryLengthSetting = settings?.find(s => s.key === 'MAX_SUMMARY_LENGTH');
-  const maxSummaryLength = maxSummaryLengthSetting?.value || 500;
+  // MAX_SUMMARY_LENGTH теперь в системных настройках
 
   return (
     <Card variant="outlined" sx={{ mb: 2 }}>
@@ -387,19 +383,18 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
             />
           </Grid>
 
-          {/* Специальное поле для суммаризации */}
+          {/* Поле top_p для суммаризации */}
           {serviceKey === 'summarization' && (
-            <Grid item size={12}>
+            <Grid item size={{ xs: 12, md: 6 }}>
               <TextField
                 fullWidth
                 type="number"
-                label="Максимальная длина резюме (символы)"
-                value={maxSummaryLength}
-                onChange={(e) => handleSpecialSettingChange('MAX_SUMMARY_LENGTH', parseInt(e.target.value))}
+                label="Top P (разнообразие)"
+                value={service.top_p || 1.0}
+                onChange={(e) => handleParameterChange('top_p', parseFloat(e.target.value))}
                 disabled={disabled}
-                inputProps={{ min: 100, max: 2000, step: 50 }}
-                helperText="Максимальное количество символов в резюме поста"
-                sx={{ mt: 1 }}
+                inputProps={{ min: 0, max: 1, step: 0.1 }}
+                helperText="От 0.0 (детерминированность) до 1.0 (разнообразие)"
               />
             </Grid>
           )}
@@ -432,7 +427,6 @@ const LLMModelSelector = ({ serviceKey, service, currentModel, onModelChange, on
             <Box sx={{ mt: 2, p: 1, bgcolor: 'info.light', borderRadius: 1 }}>
               <Typography variant="caption" color="info.contrastText">
                 💡 С текущими настройками: {service.max_tokens} токенов × температура {service.temperature}
-                {serviceKey === 'summarization' && ` × резюме до ${maxSummaryLength} символов`}
               </Typography>
             </Box>
           </Box>
@@ -515,12 +509,14 @@ function LLMSettingsPage() {
         const modelSetting = data.find(s => s.key === `ai_${serviceKey}_model`);
         const tokensSetting = data.find(s => s.key === `ai_${serviceKey}_max_tokens`);
         const tempSetting = data.find(s => s.key === `ai_${serviceKey}_temperature`);
+        const topPSetting = data.find(s => s.key === `ai_${serviceKey}_top_p`);
         
         llmModelSettings[serviceKey] = {
           ...AI_SERVICES[serviceKey],
           current_model: modelSetting?.value || AI_SERVICES[serviceKey].current_model,
           max_tokens: tokensSetting ? parseInt(tokensSetting.value) : AI_SERVICES[serviceKey].max_tokens,
-          temperature: tempSetting ? parseFloat(tempSetting.value) : AI_SERVICES[serviceKey].temperature
+          temperature: tempSetting ? parseFloat(tempSetting.value) : AI_SERVICES[serviceKey].temperature,
+          top_p: topPSetting ? parseFloat(topPSetting.value) : AI_SERVICES[serviceKey].top_p
         };
       });
       
@@ -645,12 +641,18 @@ function LLMSettingsPage() {
     // Для глобальных настроек фильтруем настройки AI категории
     // Показываем только нужные настройки, скрываем новые LLM переменные
     const filteredSettings = settings.filter(setting => {
-      // Скрываем новые LLM переменные (управляются через аккордеон "Выбор LLM Моделей")
+      // Полностью исключаем настройки ботов из LLM Settings
+      const botSettings = ['MAX_SUMMARY_LENGTH'];
+      if (botSettings.includes(setting.key)) {
+        return false;
+      }
+      
+      // Скрываем LLM переменные которые управляются через аккордеон "Выбор LLM Моделей"
       const llmVariables = [
         'ai_categorization_model', 'ai_categorization_max_tokens', 'ai_categorization_temperature',
-        'ai_summarization_model', 'ai_summarization_max_tokens', 'ai_summarization_temperature',
-        'ai_analysis_model', 'ai_analysis_max_tokens', 'ai_analysis_temperature',
-        'MAX_SUMMARY_LENGTH'
+        'ai_summarization_model', 'ai_summarization_max_tokens', 'ai_summarization_temperature', 'ai_summarization_top_p',
+        'ai_analysis_model', 'ai_analysis_max_tokens', 'ai_analysis_temperature'
+        // ai_summarization_top_p теперь управляется через аккордеон "Выбор LLM Моделей"
       ];
       
       if (llmVariables.includes(setting.key)) {
@@ -792,7 +794,21 @@ function LLMSettingsPage() {
   // Группировка настроек по категориям
   const currentSettings = getCurrentSettings() || [];
   const groupedSettings = currentSettings.reduce((acc, setting) => {
-    const category = setting.category || 'system';
+    let category = setting.category || 'system';
+    
+    // Исключаем устаревшие настройки из AI категорий - переносим в system
+    const excludedFromAI = [
+      'AI_MODEL', 
+      'MAX_POSTS_FOR_AI_ANALYSIS',
+      'OPENAI_API_KEY'
+      // MAX_SUMMARY_LENGTH убрана - это настройка бота, не LLM Settings
+      // ai_summarization_top_p НЕ исключаем - должна остаться в AI категории
+    ];
+    
+    if (excludedFromAI.includes(setting.key)) {
+      category = 'system';
+    }
+    
     if (!acc[category]) acc[category] = [];
     acc[category].push(setting);
     return acc;
@@ -969,14 +985,7 @@ function LLMSettingsPage() {
                       Планируемые изменения:
                     </Typography>
                     {Object.entries(changedLlmModels).map(([settingKey, newValue]) => {
-                      // Специальная обработка для MAX_SUMMARY_LENGTH
-                      if (settingKey === 'MAX_SUMMARY_LENGTH') {
-                        return (
-                          <Typography key={settingKey} variant="body2">
-                            • Суммаризация (макс. длина резюме): {newValue} символов
-                          </Typography>
-                        );
-                      }
+                      // Специальная обработка для MAX_SUMMARY_LENGTH убрана
 
                       // Парсим serviceKey из полного ключа настройки (ai_categorization_model → categorization)
                       const match = settingKey.match(/^ai_([^_]+)_/);

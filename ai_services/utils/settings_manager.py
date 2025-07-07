@@ -39,6 +39,7 @@ class SettingsManager:
             
         Returns:
             Словарь с настройками: model, max_tokens, temperature
+            Для summarization дополнительно: top_p
         """
         try:
             # Проверяем кэш
@@ -132,12 +133,26 @@ class SettingsManager:
             tokens_key = f"ai_{service_name}_max_tokens"
             temp_key = f"ai_{service_name}_temperature"
             
-            if all(key in settings for key in [model_key, tokens_key, temp_key]):
+            # Основные настройки для всех сервисов
+            base_keys = [model_key, tokens_key, temp_key]
+            
+            if all(key in settings for key in base_keys):
                 config = {
                     'model': settings[model_key],
                     'max_tokens': int(settings[tokens_key]),
                     'temperature': float(settings[temp_key])
                 }
+                
+                # Дополнительные настройки для summarization
+                if service_name == 'summarization':
+                    top_p_key = f"ai_{service_name}_top_p"
+                    if top_p_key in settings:
+                        config['top_p'] = float(settings[top_p_key])
+                        self.logger.debug(f"🎯 Добавлен параметр top_p: {config['top_p']}")
+                    else:
+                        # Fallback значение для top_p
+                        config['top_p'] = 1.0
+                        self.logger.debug(f"⚠️ Параметр {top_p_key} не найден, используется fallback: 1.0")
                 
                 # Валидация настроек
                 if self._validate_config(config, service_name):
@@ -146,7 +161,7 @@ class SettingsManager:
                     self.logger.warning(f"⚠️ Настройки {service_name} не прошли валидацию")
                     return None
             else:
-                missing_keys = [key for key in [model_key, tokens_key, temp_key] if key not in settings]
+                missing_keys = [key for key in base_keys if key not in settings]
                 self.logger.warning(f"⚠️ Отсутствуют настройки для {service_name}: {missing_keys}")
                 return None
                 
@@ -182,6 +197,12 @@ class SettingsManager:
                 self.logger.warning(f"⚠️ temperature {config['temperature']} вне диапазона 0.0-2.0 для {service_name}")
                 return False
             
+            # Проверяем top_p для summarization
+            if service_name == 'summarization' and 'top_p' in config:
+                if not (0.0 <= config['top_p'] <= 1.0):
+                    self.logger.warning(f"⚠️ top_p {config['top_p']} вне диапазона 0.0-1.0 для {service_name}")
+                    return False
+            
             return True
             
         except Exception as e:
@@ -207,7 +228,8 @@ class SettingsManager:
             'summarization': {
                 'model': 'gpt-4o',
                 'max_tokens': 2000,
-                'temperature': 0.7
+                'temperature': 0.7,
+                'top_p': 1.0
             },
             'analysis': {
                 'model': 'gpt-4o-mini', 
