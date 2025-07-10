@@ -67,23 +67,24 @@ class AIOrchestrator:
         try:
             from services.categorization import CategorizationService
             from services.summarization import SummarizationService
+            from utils.settings_manager import SettingsManager
+            
+            # Создаем единый SettingsManager для всех сервисов
+            settings_manager = SettingsManager()
             
             self.categorization_service = CategorizationService(
                 openai_api_key=self.openai_api_key,
                 backend_url=self.backend_url,
-                batch_size=self.batch_size
+                batch_size=self.batch_size,
+                settings_manager=settings_manager  # Передаем settings_manager
             )
             
-            self.summarization_service = SummarizationService(
-                model_name="gpt-4o-mini",
-                max_tokens=4000,
-                temperature=0.3,
-                max_summary_length=150  # Дефолтное значение, переопределяется для каждого бота
-            )
-            
-            # AI сервисы готовы к использованию (инициализация не требуется)
+            # Создаем SummarizationService без параметров - он сам загрузит настройки из SettingsManager
+            self.summarization_service = SummarizationService()
             
             logger.info("✅ AI сервисы инициализированы")
+            logger.info("   CategorizationService будет использовать настройки из LLM Settings")
+            logger.info("   SummarizationService будет использовать настройки из LLM Settings")
             return True
             
         except Exception as e:

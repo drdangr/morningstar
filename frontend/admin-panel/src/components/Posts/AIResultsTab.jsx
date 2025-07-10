@@ -659,7 +659,7 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                                 {post.ai_summary && (
                                   <Box sx={{ mb: 2 }}>
                                     <Typography variant="body2" fontWeight="bold">
-                                      Summary:
+                                      AI Summary:
                                     </Typography>
                                     <Typography variant="body2">
                                       {post.ai_summary}

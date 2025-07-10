@@ -51,7 +51,7 @@ class ProcessingResult:
     categories: Dict[str, Any]
     summaries: Dict[str, Any]
     metrics: Dict[str, Any]
-    processing_version: str = "v5.0_parallel_workers"
+    processing_version: str = "v5.8_single_summarization"
     error_message: Optional[str] = None
 
 class AIOrchestrator:
@@ -78,7 +78,7 @@ class AIOrchestrator:
         self.max_batches_per_cycle = 10
         self.batch_timeout_minutes = 5
         
-        logger.info(f"🚀 AI Orchestrator v5.0 инициализирован (Параллельная архитектура)")
+        logger.info(f"🚀 AI Orchestrator v5.7 инициализирован (Параллельная архитектура)")
         logger.info(f"   Backend URL: {backend_url}")
         logger.info(f"   Размер батча: {batch_size if batch_size else 'будет загружен из настроек'}")
         logger.info(f"   Макс батчей за цикл: {self.max_batches_per_cycle}")
@@ -116,6 +116,8 @@ class AIOrchestrator:
             if self.batch_size is None:
                 self.batch_size = await self._get_batch_size_from_settings()
                 logger.info(f"📦 Размер батча получен из настроек: {self.batch_size}")
+            else:
+                logger.info(f"📦 Используется размер батча из параметров: {self.batch_size}")
             
             # Загружаем настройки LLM из SettingsManager
             logger.info("📥 Загружаем LLM настройки из SettingsManager...")
@@ -219,7 +221,7 @@ class AIOrchestrator:
                 }
             },
             "stats": ai_stats.get("flags_stats", {}),
-            "version": "v5.0_parallel_workers",
+            "version": "v5.7_parallel_workers",
             "timestamp": datetime.now().isoformat(),
             "backend_url": self.backend_url,
             "batch_size": self.batch_size
@@ -475,12 +477,15 @@ class AIOrchestrator:
                     "require_categorization": "true"  # Только некатегоризированные
                 }
                 
+                logger.debug(f"📋 Запрос постов для категоризации с limit={self.batch_size}")
+                
                 async with session.get(
                     f"{self.backend_url}/api/posts/unprocessed",
                     params=params
                 ) as response:
                     if response.status == 200:
                         posts = await response.json()
+                        logger.debug(f"📊 Получено {len(posts)} постов для категоризации (запрошено limit={self.batch_size})")
                         return posts  # Endpoint возвращает список напрямую
                     else:
                         logger.warning(f"⚠️ Ошибка получения постов для категоризации: {response.status}")
@@ -509,12 +514,15 @@ class AIOrchestrator:
                     "require_summarization": "true"  # Только несаммаризированные
                 }
                 
+                logger.debug(f"📋 Запрос постов для саммаризации с limit={self.batch_size}")
+                
                 async with session.get(
                     f"{self.backend_url}/api/posts/unprocessed",
                     params=params
                 ) as response:
                     if response.status == 200:
                         posts = await response.json()
+                        logger.debug(f"📊 Получено {len(posts)} постов для саммаризации (запрошено limit={self.batch_size})")
                         return posts  # Endpoint возвращает список напрямую
                     else:
                         logger.warning(f"⚠️ Ошибка получения постов для саммаризации: {response.status}")
@@ -580,7 +588,7 @@ class AIOrchestrator:
                 logger.error(f"❌ Ошибка обработки категоризации: {e}")
 
     async def process_summarization_batch(self, posts: List[Dict], bot: Dict):
-        """Обработка батча саммаризации"""
+        """Обработка батча саммаризации (по одному посту за раз)"""
         # Используем существующий SummarizationService
         if self.summarization_service:
             try:
@@ -596,38 +604,81 @@ class AIOrchestrator:
                         })
                 
                 if processed_posts:
-                    # Извлекаем тексты для батчевой обработки
-                    texts = []
-                    for post in processed_posts:
-                        text = f"{post.get('title', '')} {post.get('content', '')}".strip()
-                        texts.append(text)
+                    # Логируем параметры для отладки
+                    max_summary_length = bot.get("max_summary_length", 150)
+                    logger.info(f"📊 Параметры саммаризации для бота '{bot.get('name')}' (ID: {bot.get('id')}):")
+                    logger.info(f"   - max_summary_length: {max_summary_length}")
+                    logger.info(f"   - language: {bot.get('default_language', 'ru')}")
+                    logger.info(f"   - custom_prompt: {'Есть' if bot.get('summarization_prompt') else 'Нет'}")
+                    logger.info(f"   - постов для обработки: {len(processed_posts)}")
                     
-                    # Вызываем правильный метод SummarizationService
-                    results = await self.summarization_service.process_batch(texts)
+                    # ВАЖНО: Обрабатываем посты ПО ОДНОМУ для избежания проблем с большими батчами
+                    logger.info(f"📝 Используем ОДИНОЧНУЮ обработку для каждого поста (избегаем проблем с батчами)")
                     
-                    if results:
-                        # Конвертируем результаты в ProcessingResult
-                        processing_results = []
-                        for i, result in enumerate(results):
-                            if i < len(processed_posts):
-                                processing_result = ProcessingResult(
-                                    post_id=processed_posts[i]['id'],
-                                    bot_id=bot['id'],
-                                    success=True,
-                                    categories=processed_posts[i].get('categories', {}),
-                                    summaries=result,
-                                    metrics={}
-                                )
-                                processing_results.append(processing_result)
-                        
-                        # Сохраняем результаты саммаризации
+                    processing_results = []
+                    
+                    for i, post in enumerate(processed_posts):
+                        try:
+                            # Извлекаем текст для поста
+                            text = f"{post.get('title', '')} {post.get('content', '')}".strip()
+                            
+                            logger.debug(f"📄 Обработка поста {post['id']} ({i+1}/{len(processed_posts)})")
+                            
+                            # Используем SINGLE режим для каждого поста
+                            result = await self.summarization_service.process(
+                                text=text,
+                                language=bot.get("default_language", "ru"),
+                                custom_prompt=bot.get("summarization_prompt"),
+                                max_summary_length=max_summary_length
+                            )
+                            
+                            # Извлекаем саммаризацию из результата
+                            if isinstance(result, dict):
+                                # Если это словарь с полем 'summary'
+                                summary_text = result.get('summary', '')
+                                logger.debug(f"✅ Саммаризация поста {post['id']}: {len(summary_text)} символов")
+                            else:
+                                # Если это просто строка
+                                summary_text = result
+                                logger.debug(f"✅ Саммаризация поста {post['id']}: {len(summary_text)} символов")
+                            
+                            # Формируем результат в правильном формате для Backend API
+                            summaries_dict = {
+                                "ru": summary_text  # Backend ожидает язык как ключ
+                            }
+                            
+                            processing_result = ProcessingResult(
+                                post_id=post['id'],
+                                bot_id=bot['id'],
+                                success=True,
+                                categories=post.get('categories', {}),
+                                summaries=summaries_dict,
+                                metrics={}
+                            )
+                            processing_results.append(processing_result)
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка обработки поста {post['id']}: {e}")
+                            # Добавляем пустой результат с ошибкой
+                            processing_results.append(ProcessingResult(
+                                post_id=post['id'],
+                                bot_id=bot['id'],
+                                success=False,
+                                categories=post.get('categories', {}),
+                                summaries={"ru": f"Ошибка обработки: {str(e)}"},
+                                metrics={},
+                                error_message=str(e)
+                            ))
+                    
+                    # Сохраняем результаты саммаризации
+                    if processing_results:
                         saved_count = await self.save_results(processing_results)
                         logger.info(f"✅ Саммаризация: сохранено {saved_count} результатов")
                         
                         # Обновляем флаги саммаризации
-                        post_ids = [post['id'] for post in processed_posts if post.get('id')]
-                        if post_ids:
-                            await self.sync_service_status(post_ids, bot['id'], 'summarization')
+                        successful_post_ids = [r.post_id for r in processing_results if r.success]
+                        if successful_post_ids:
+                            await self.sync_service_status(successful_post_ids, bot['id'], 'summarization')
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки саммаризации: {e}")
