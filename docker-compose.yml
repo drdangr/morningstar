@@ -1,112 +1,69 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: morningstar_db
-    environment:
-      POSTGRES_DB: ${DB_NAME:-digest_bot}
-      POSTGRES_USER: ${DB_USER:-digest_bot}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  redis:
+    image: redis:7-alpine
+    container_name: morningstar_redis
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-digest_bot} -d ${DB_NAME:-digest_bot}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - morningstar_network
 
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: morningstar_n8n
+  # Unified AI Services с Celery Worker
+  ai_services:
+    build:
+      context: ./ai_services
+      dockerfile: Dockerfile
+    container_name: morningstar_ai_services
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_WORKER_LOGLEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=4
+      - PYTHONPATH=/app
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BACKEND_API_URL=http://host.docker.internal:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./ai_services:/app
+      - ./ai_services/logs:/app/logs
+    networks:
+      - morningstar_network
+
+  # Flower dashboard для мониторинга Celery
+  flower:
+    image: mher/flower:2.0
+    container_name: morningstar_flower
     ports:
-      - "${N8N_PORT:-5678}:5678"
+      - "5555:5555"
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-      - N8N_HOST=${N8N_HOST:-0.0.0.0}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
-      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${DB_NAME:-digest_bot}
-      - DB_POSTGRESDB_USER=${DB_USER:-digest_bot}
-      - DB_POSTGRESDB_PASSWORD=${DB_PASSWORD}
-      - N8N_RUNNERS_ENABLED=true
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-    volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n/custom-nodes:/home/node/.n8n/custom:ro
-    restart: unless-stopped
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_BASIC_AUTH=${FLOWER_BASIC_AUTH:-admin:admin}
     depends_on:
-      postgres:
+      redis:
         condition: service_healthy
-    networks:
-      - morningstar_network
-
-  userbot:
-    build: 
-      context: ./userbot
-      dockerfile: Dockerfile
-    container_name: morningstar_userbot
-    environment:
-      - API_ID=${API_ID}
-      - API_HASH=${API_HASH}
-      - PHONE=${PHONE}
-      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/telegram-posts
-      - N8N_WEBHOOK_TOKEN=${N8N_WEBHOOK_TOKEN}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CHANNELS=${CHANNELS}
-      - USERBOT_MODE=${USERBOT_MODE:-once}
-      - POLLING_INTERVAL=${POLLING_INTERVAL:-1800}
-      - TZ=${TIMEZONE:-Europe/Moscow}
-    volumes:
-      - ./userbot/session:/app/session
-      - ./userbot/logs:/app/logs
+      ai_services:
+        condition: service_started
     restart: unless-stopped
-    depends_on:
-      - n8n
-    networks:
-      - morningstar_network
-
-  telegram-bot:
-    build: 
-      context: ./bot
-      dockerfile: Dockerfile
-    container_name: morningstar_bot
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - DATABASE_URL=postgresql://${DB_USER:-digest_bot}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-digest_bot}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ADMIN_CHAT_ID=${ADMIN_CHAT_ID}
-      - TZ=${TIMEZONE:-Europe/Moscow}
-    volumes:
-      - ./bot/logs:/app/logs
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       - morningstar_network
 
 volumes:
-  postgres_data:
-    driver: local
-  n8n_data:
+  redis_data:
     driver: local
 
 networks:
   morningstar_network:
     driver: bridge
-    name: morningstar_network

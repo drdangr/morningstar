@@ -106,7 +106,7 @@ class Channel(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     channel_name = Column(String, nullable=False)  # Добавлено поле для совместимости с БД
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String)
     title = Column(String, nullable=False)
     description = Column(Text)
@@ -164,7 +164,7 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
     username = Column(String)
     first_name = Column(String)
     last_name = Column(String)

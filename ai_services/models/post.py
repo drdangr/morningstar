@@ -16,8 +16,8 @@ Base = declarative_base()
 class PostData(BaseModel):
     """Pydantic модель для валидации данных поста"""
     id: int
-    channel_telegram_id: int
-    telegram_message_id: int
+    channel_telegram_id: int = Field(..., ge=-9223372036854775808, le=9223372036854775807)  # 🔧 ИСПРАВЛЕНО: поддержка BigInteger диапазона
+    telegram_message_id: int = Field(..., ge=-9223372036854775808, le=9223372036854775807)  # 🔧 ИСПРАВЛЕНО: поддержка BigInteger диапазона
     title: Optional[str] = None
     content: Optional[str] = None
     media_urls: List[str] = Field(default_factory=list)
@@ -245,7 +245,7 @@ class Post(Base):
 
 class ProcessedPostData(BaseModel):
     """Pydantic модель для результатов AI обработки"""
-    post_id: int
+    post_id: int = Field(..., ge=-9223372036854775808, le=9223372036854775807)  # 🔧 ИСПРАВЛЕНО: поддержка BigInteger диапазона для posts_cache.id
     public_bot_id: int
     summary: Optional[str] = None
     categories: List[str] = Field(default_factory=list)

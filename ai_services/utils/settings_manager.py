@@ -14,7 +14,9 @@ import os
 class SettingsManager:
     """Менеджер настроек для AI сервисов"""
     
-    def __init__(self, backend_url: str = "http://localhost:8000", cache_ttl: int = 300):
+    def __init__(self, backend_url: str = None, cache_ttl: int = 300):
+        if backend_url is None:
+            backend_url = os.getenv("BACKEND_API_URL", "http://localhost:8000")
         """
         Инициализация SettingsManager
         

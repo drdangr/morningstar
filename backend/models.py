@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Float, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, BigInteger, String, Text, DateTime, ForeignKey, JSON, Boolean, Float, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -60,8 +60,8 @@ class PostCache(Base):
     __tablename__ = "posts_cache"
     
     id = Column(Integer, primary_key=True, index=True)
-    channel_telegram_id = Column(Integer, nullable=False, index=True)
-    telegram_message_id = Column(Integer, nullable=False)
+    channel_telegram_id = Column(BigInteger, nullable=False, index=True)
+    telegram_message_id = Column(BigInteger, nullable=False)
     title = Column(Text)
     content = Column(Text)
     # Условные типы данных в зависимости от БД

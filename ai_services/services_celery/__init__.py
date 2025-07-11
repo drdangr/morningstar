@@ -1,0 +1,1 @@
+# Celery-адаптированные AI Services 
