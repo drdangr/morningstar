@@ -80,14 +80,7 @@ celery_client = Celery(
 # CORS middleware для админ-панели (исправленная версия)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", 
-        "http://localhost:3000", 
-        "http://127.0.0.1:5173", 
-        "http://127.0.0.1:3000",
-        "http://localhost",  # Добавляем для Docker frontend
-        "http://127.0.0.1"   # Добавляем для Docker frontend
-    ],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
     allow_credentials=False,  # Убираем credentials для совместимости
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -106,10 +99,10 @@ class Category(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)  # Исправлено: category_name → name
     description = Column(Text)
-    emoji = Column(String, default="📝")  # Восстановлено: добавлено в БД
+    # emoji = Column(String, default="📝")  # Убрано: нет в БД
     is_active = Column(Boolean, default=True)
     ai_prompt = Column(Text)  # Восстановлено: нужно для AI обработки
-    sort_order = Column(Integer, default=0)  # Восстановлено: добавлено в БД
+    # sort_order = Column(Integer, default=0)  # Убрано: нет в БД
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
@@ -457,10 +450,10 @@ create_default_settings()
 class CategoryBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)  # Исправлено: category_name → name
     description: Optional[str] = None
-    emoji: str = Field("📝", max_length=10)  # Восстановлено: добавлено в БД
+    # emoji: str = Field("📝", max_length=10)  # Убрано: нет в БД
     is_active: bool = True
     ai_prompt: Optional[str] = None  # Восстановлено: нужно для AI обработки
-    sort_order: int = 0  # Восстановлено: добавлено в БД
+    # sort_order: int = 0  # Убрано: нет в БД
 
 class CategoryCreate(CategoryBase):
     pass
@@ -993,10 +986,6 @@ def get_category(category_id: int, db: Session = Depends(get_db)):
 @app.put("/api/categories/{category_id}", response_model=CategoryResponse)
 def update_category(category_id: int, category: CategoryUpdate, db: Session = Depends(get_db)):
     """Обновить категорию"""
-    print(f"=== UPDATE CATEGORY DEBUG ===")
-    print(f"Category ID: {category_id}")
-    print(f"Received data: {category.dict()}")
-    print(f"====================")
     db_category = db.query(Category).filter(Category.id == category_id).first()
     if not db_category:
         raise HTTPException(

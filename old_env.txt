@@ -1,0 +1,44 @@
+# Database Configuration
+DB_USER=digest_bot
+DB_PASSWORD=Demiurg12@
+DB_NAME=digest_bot
+DB_HOST=localhost
+DB_PORT=5432
+
+# Telegram API (from my.telegram.org)
+API_ID=20050280
+API_HASH=3fbd8dc74bbc346376f25190492fba85
+PHONE=+380933150287
+
+# Telegram Bot (from @BotFather)
+BOT_TOKEN=7423649706:AAEL_WqadrdnThAzhlgdNEK6R_bbzUojdEk
+
+# Токен для публичного бота
+PUBLIC_BOT_TOKEN=81024620179:AAHNt4-7ZFg-zz0Cr6mJX483jDuWeARpIdE
+
+# Admin Configuration
+ADMIN_CHAT_ID=202359350
+
+# n8n Configuration
+N8N_USER=admin
+N8N_PASSWORD=SecureN8NPassword123!
+N8N_WEBHOOK_TOKEN=bwIIbaQtoha0sm58OQVHeVSwHZNTSzAXJK7ma9vmbEE
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/telegram-posts
+
+# Userbot Settings
+CHANNELS=@durov,@telegram,@breakingmash
+USERBOT_MODE=once
+POLLING_INTERVAL=1800
+
+# System Settings
+LOG_LEVEL=INFO
+TIMEZONE=Europe/Moscow
+RATE_LIMIT_MESSAGES=30
+RATE_LIMIT_MINUTES=60
+
+# AI Configuration (optional)
+OPENAI_API_KEY=sk-proj-KXyPF6L_53kntDzcq4m_TCJ3ipvDRGqCom_hldYSIUa_DMU5rBavX4QpXytwQagUr
+ANTHROPIC_API_KEY=your_claude_key_here
+
+BACKEND_API_URL=http://localhost:8000
+TEST_MODE=false

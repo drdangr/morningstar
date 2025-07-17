@@ -1,0 +1,79 @@
+version: '3.8'
+
+# Пример мультитенантной конфигурации для нескольких PublicBot экземпляров
+# Использование: docker-compose -f docker-compose.yml -f docker-compose.multitenant.yml up -d
+
+services:
+  # PublicBot для США Дайджеста
+  publicbot-usa:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: morningstar_publicbot_usa
+    environment:
+      - BOT_TOKEN=${USA_BOT_TOKEN}
+      - BOT_ID=${USA_BOT_ID:-1}
+      - BACKEND_API_URL=http://backend:8000
+      - API_HOST=backend
+      - API_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TIMEZONE=${TIMEZONE:-America/New_York}
+      - BOT_NAME=USA Digest Bot
+    depends_on:
+      - backend
+    restart: unless-stopped
+    volumes:
+      - ./bot/logs/usa:/app/logs  # Отдельные логи для USA бота
+    networks:
+      - morningstar_network
+
+  # PublicBot для Военных Сводок
+  publicbot-military:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: morningstar_publicbot_military
+    environment:
+      - BOT_TOKEN=${MILITARY_BOT_TOKEN}
+      - BOT_ID=${MILITARY_BOT_ID:-2}
+      - BACKEND_API_URL=http://backend:8000
+      - API_HOST=backend
+      - API_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TIMEZONE=${TIMEZONE:-Europe/Moscow}
+      - BOT_NAME=Military Reports Bot
+    depends_on:
+      - backend
+    restart: unless-stopped
+    volumes:
+      - ./bot/logs/military:/app/logs  # Отдельные логи для Military бота
+    networks:
+      - morningstar_network
+
+  # PublicBot для Крипто Новостей
+  publicbot-crypto:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: morningstar_publicbot_crypto
+    environment:
+      - BOT_TOKEN=${CRYPTO_BOT_TOKEN}
+      - BOT_ID=${CRYPTO_BOT_ID:-3}
+      - BACKEND_API_URL=http://backend:8000
+      - API_HOST=backend
+      - API_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TIMEZONE=${TIMEZONE:-UTC}
+      - BOT_NAME=Crypto News Bot
+    depends_on:
+      - backend
+    restart: unless-stopped
+    volumes:
+      - ./bot/logs/crypto:/app/logs  # Отдельные логи для Crypto бота
+    networks:
+      - morningstar_network
+
+# Сеть остается той же
+networks:
+  morningstar_network:
+    external: true  # Используем сеть из основного docker-compose.yml 

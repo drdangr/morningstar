@@ -115,12 +115,6 @@ export default function CategoriesPage() {
         }
         return '';
       
-      case 'emoji':
-        if (value && value.length > 10) {
-          return 'Emoji must be less than 10 characters';
-        }
-        return '';
-      
       case 'ai_prompt':
         if (value && value.trim().length > 1000) {
           return 'AI prompt must be less than 1000 characters';
@@ -135,7 +129,7 @@ export default function CategoriesPage() {
   const validateForm = () => {
     const errors = {};
     Object.keys(formData).forEach(field => {
-      if (field !== 'is_active' && field !== 'sort_order') { // Skip validation for switch and sort_order
+      if (field !== 'is_active') { // Skip validation for switch
         const error = validateField(field, formData[field]);
         if (error) {
           errors[field] = error;
@@ -164,7 +158,7 @@ export default function CategoriesPage() {
 
   // Filtered categories based on search and filters
   const filteredCategories = useMemo(() => {
-    return categories.filter(category => {
+    const filtered = categories.filter(category => {
       // Search filter
       const matchesSearch = searchQuery === '' || 
         (category.name && category.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -176,6 +170,14 @@ export default function CategoriesPage() {
         (statusFilter === 'inactive' && !category.is_active);
       
       return matchesSearch && matchesStatus;
+    });
+    
+    // Sort by sort_order first, then by name
+    return filtered.sort((a, b) => {
+      if (a.sort_order !== b.sort_order) {
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      }
+      return a.name.localeCompare(b.name);
     });
   }, [categories, searchQuery, statusFilter]);
 
@@ -229,7 +231,6 @@ export default function CategoriesPage() {
     setTouched({
       name: true,
       description: true,
-      emoji: true,
       ai_prompt: true
     });
 
@@ -240,12 +241,18 @@ export default function CategoriesPage() {
     try {
       setSaving(true);
       
-      // Transform data for backend API (name -> category_name)
+      // Отправляем данные как есть, без трансформации
       const apiData = {
-        ...formData,
-        category_name: formData.name
+        name: formData.name,
+        description: formData.description,
+        emoji: formData.emoji,
+        is_active: formData.is_active,
+        ai_prompt: formData.ai_prompt,
+        sort_order: formData.sort_order
       };
-      delete apiData.name;
+
+      console.log('Sending data to API:', apiData);
+      console.log('Category ID:', editingCategory?.id);
 
       if (editingCategory) {
         // Update existing category
@@ -390,7 +397,6 @@ export default function CategoriesPage() {
             <TableRow>
               <TableCell>Name</TableCell>
               <TableCell>Description</TableCell>
-              <TableCell>Emoji</TableCell>
               <TableCell>Status</TableCell>
               <TableCell align="right">Actions</TableCell>
             </TableRow>
@@ -398,7 +404,7 @@ export default function CategoriesPage() {
           <TableBody>
             {filteredCategories.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} align="center">
+                <TableCell colSpan={4} align="center">
                   <Typography variant="body2" color="textSecondary">
                     {searchQuery || statusFilter !== 'all' 
                       ? 'No categories match your search criteria'
@@ -412,16 +418,11 @@ export default function CategoriesPage() {
                 <TableRow key={category.id}>
                   <TableCell component="th" scope="row">
                     <Typography variant="subtitle2">
-                      {category.name}
+                      {category.emoji} {category.name}
                     </Typography>
                   </TableCell>
                   <TableCell>
                     {category.description || 'No description'}
-                  </TableCell>
-                  <TableCell>
-                    <Typography variant="h6">
-                      {category.emoji || '📝'}
-                    </Typography>
                   </TableCell>
                   <TableCell>
                     <Chip
@@ -469,17 +470,6 @@ export default function CategoriesPage() {
                   required
                 />
               </Grid>
-              <Grid item xs={12} md={4}>
-                <TextField
-                  fullWidth
-                  label="Emoji"
-                  value={formData.emoji}
-                  onChange={(e) => handleFieldChange('emoji', e.target.value)}
-                  onBlur={() => handleFieldBlur('emoji')}
-                  error={!!formErrors.emoji}
-                  helperText={formErrors.emoji || 'Optional emoji for this category'}
-                />
-              </Grid>
               <Grid item xs={12}>
                 <TextField
                   fullWidth
@@ -493,6 +483,26 @@ export default function CategoriesPage() {
                   rows={2}
                 />
               </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="Emoji"
+                  value={formData.emoji}
+                  onChange={(e) => handleFieldChange('emoji', e.target.value)}
+                  helperText="Emoji icon for this category"
+                  inputProps={{ maxLength: 10 }}
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  label="Sort Order"
+                  type="number"
+                  value={formData.sort_order}
+                  onChange={(e) => handleFieldChange('sort_order', parseInt(e.target.value) || 0)}
+                  helperText="Lower numbers appear first"
+                />
+              </Grid>
               <Grid item xs={12}>
                 <TextField
                   fullWidth
@@ -504,16 +514,6 @@ export default function CategoriesPage() {
                   helperText={formErrors.ai_prompt || 'AI instructions for categorizing posts'}
                   multiline
                   rows={3}
-                />
-              </Grid>
-              <Grid item xs={6}>
-                <TextField
-                  fullWidth
-                  label="Sort Order"
-                  type="number"
-                  value={formData.sort_order}
-                  onChange={(e) => handleFieldChange('sort_order', parseInt(e.target.value) || 0)}
-                  helperText="Lower numbers appear first"
                 />
               </Grid>
               <Grid item xs={6}>

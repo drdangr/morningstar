@@ -392,6 +392,103 @@ def cleanup_expired_results(self, max_age_hours: int = 24):
             'timestamp': time.time()
         }
 
+# AI Orchestrator tasks
+@app.task(bind=True, name='tasks.trigger_ai_processing')
+def trigger_ai_processing(self, bot_id: Optional[int] = None, force_reprocess: bool = False):
+    """
+    Запуск AI Orchestrator для обработки постов
+    
+    Args:
+        bot_id: ID публичного бота (None для всех ботов)
+        force_reprocess: Принудительная переобработка всех постов
+        
+    Returns:
+        Результат запуска AI Orchestrator
+    """
+    logger.info(f"🤖 AI Orchestrator task started: bot_id={bot_id}, force_reprocess={force_reprocess}")
+    
+    try:
+        # Импортируем AI Orchestrator
+        from orchestrator_v5_parallel import process_bot_parallel
+        
+        # Определяем режим обработки
+        if force_reprocess:
+            mode = "force_reprocess"
+        else:
+            mode = "parallel"
+            
+        # Запускаем обработку
+        result = process_bot_parallel(bot_id=bot_id, mode=mode)
+        
+        logger.info(f"✅ AI Orchestrator task completed: {result}")
+        
+        return {
+            'task_id': self.request.id,
+            'bot_id': bot_id,
+            'mode': mode,
+            'result': result,
+            'status': 'success',
+            'timestamp': time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ AI Orchestrator task failed: {e}")
+        
+        return {
+            'task_id': self.request.id,
+            'bot_id': bot_id,
+            'mode': mode if 'mode' in locals() else 'unknown',
+            'result': None,
+            'status': 'error',
+            'error': str(e),
+            'timestamp': time.time()
+        }
+
+@app.task(bind=True, name='tasks.generate_digest_preview')
+def generate_digest_preview(self, bot_id: int, limit: int = 10):
+    """
+    Генерация превью дайджеста для конкретного бота
+    
+    Args:
+        bot_id: ID публичного бота
+        limit: Количество постов для превью
+        
+    Returns:
+        Превью дайджеста
+    """
+    logger.info(f"📋 Generate digest preview task started: bot_id={bot_id}, limit={limit}")
+    
+    try:
+        # Импортируем AI Orchestrator  
+        from orchestrator_v5_parallel import generate_digest_preview_parallel
+        
+        # Генерируем превью
+        preview_result = generate_digest_preview_parallel(bot_id=bot_id, limit=limit)
+        
+        logger.info(f"✅ Generate digest preview task completed for bot {bot_id}")
+        
+        return {
+            'task_id': self.request.id,
+            'bot_id': bot_id,
+            'limit': limit,
+            'preview': preview_result,
+            'status': 'success',
+            'timestamp': time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Generate digest preview task failed: {e}")
+        
+        return {
+            'task_id': self.request.id,
+            'bot_id': bot_id,
+            'limit': limit,
+            'preview': None,
+            'status': 'error',
+            'error': str(e),
+            'timestamp': time.time()
+        }
+
 # Export all tasks
 __all__ = [
     'ping_task',
@@ -402,5 +499,7 @@ __all__ = [
     'summarize_posts',
     'summarize_batch',
     'process_digest',
-    'cleanup_expired_results'
+    'cleanup_expired_results',
+    'trigger_ai_processing',
+    'generate_digest_preview'
 ] 

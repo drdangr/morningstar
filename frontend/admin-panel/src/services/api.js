@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://127.0.0.1:8000/api';
+const API_BASE_URL = '/api';
 
 class ApiService {
   constructor() {
@@ -9,7 +9,8 @@ class ApiService {
     const url = `${this.baseURL}${endpoint}`;
     const config = {
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
+        'Accept': 'application/json',
         ...options.headers,
       },
       ...options,
@@ -20,6 +21,9 @@ class ApiService {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: 'Network error' }));
+        console.error(`API Error ${response.status}:`, errorData);
+        console.error('Request URL:', url);
+        console.error('Request body:', config.body);
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
       }
 

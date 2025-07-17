@@ -60,9 +60,6 @@ services:
       - API_PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - API_ID=${API_ID}
-      - API_HASH=${API_HASH}
-      - PHONE=${PHONE}
     ports:
       - "8000:8000"
     depends_on:
@@ -73,29 +70,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend/logs:/app/logs
-    networks:
-      - morningstar_network
-
-  # Userbot (Telethon)
-  userbot:
-    build:
-      context: ./userbot
-      dockerfile: Dockerfile
-    container_name: morningstar_userbot
-    environment:
-      - API_ID=${API_ID}
-      - API_HASH=${API_HASH}
-      - PHONE=${PHONE}
-      - BACKEND_API_URL=http://backend:8000
-      - CHANNELS=${CHANNELS}
-      - USERBOT_MODE=once
-      - POLLING_INTERVAL=1800
-    depends_on:
-      - backend
-    restart: unless-stopped
-    volumes:
-      - ./userbot/session:/app/session  # Persistent sessions для Telethon
-      - ./userbot/logs:/app/logs        # Persistent logs
     networks:
       - morningstar_network
 
@@ -139,28 +113,6 @@ services:
     networks:
       - morningstar_network
 
-  # PublicBot (Telegram Bot)
-  publicbot:
-    build:
-      context: ./bot
-      dockerfile: Dockerfile
-    container_name: morningstar_publicbot
-    environment:
-      - PUBLIC_BOT_TOKEN=${PUBLIC_BOT_TOKEN}
-      - BOT_ID=${PUBLIC_BOT_ID:-4}
-      - BACKEND_API_URL=http://backend:8000
-      - API_HOST=backend
-      - API_PORT=8000
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - TIMEZONE=${TIMEZONE:-Europe/Moscow}
-    depends_on:
-      - backend
-    restart: unless-stopped
-    volumes:
-      - ./bot/logs:/app/logs  # Persistent logs
-    networks:
-      - morningstar_network
-
   # Flower dashboard для мониторинга Celery
   flower:
     image: mher/flower:2.0
@@ -188,4 +140,4 @@ volumes:
 
 networks:
   morningstar_network:
-    driver: bridge
+    driver: bridge 

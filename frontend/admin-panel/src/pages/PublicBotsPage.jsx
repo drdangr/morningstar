@@ -670,90 +670,16 @@ function PublicBotsPage() {
       <Dialog 
         open={createDialogOpen} 
         onClose={() => setCreateDialogOpen(false)}
-        maxWidth="md"
+        maxWidth="lg"
         fullWidth
       >
         <DialogTitle>Создать нового бота</DialogTitle>
         <DialogContent>
-          <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <TextField
-              label="Название бота"
-              fullWidth
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              required
-            />
-            <TextField
-              label="Описание"
-              fullWidth
-              multiline
-              rows={3}
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-            />
-            <TextField
-              label="Telegram Bot Token"
-              fullWidth
-              value={formData.bot_token}
-              onChange={(e) => setFormData({ ...formData, bot_token: e.target.value })}
-              required
-            />
-            <TextField
-              label="Приветственное сообщение"
-              fullWidth
-              multiline
-              rows={2}
-              value={formData.welcome_message}
-              onChange={(e) => setFormData({ ...formData, welcome_message: e.target.value })}
-            />
-            <FormControl fullWidth>
-              <InputLabel>Язык по умолчанию</InputLabel>
-              <Select
-                value={formData.default_language}
-                onChange={(e) => setFormData({ ...formData, default_language: e.target.value })}
-                label="Язык по умолчанию"
-              >
-                <MenuItem value="ru">Русский</MenuItem>
-                <MenuItem value="en">English</MenuItem>
-              </Select>
-            </FormControl>
-            <TextField
-              label="Максимум постов в дайджесте"
-              type="number"
-              fullWidth
-              value={formData.max_posts_per_digest}
-              onChange={(e) => setFormData({ ...formData, max_posts_per_digest: parseInt(e.target.value) })}
-              InputProps={{
-                startAdornment: <InputAdornment position="start">📝</InputAdornment>,
-              }}
-            />
-            <TextField
-              label="Максимальная длина резюме"
-              type="number"
-              fullWidth
-              value={formData.max_summary_length}
-              onChange={(e) => setFormData({ ...formData, max_summary_length: parseInt(e.target.value) })}
-              InputProps={{
-                startAdornment: <InputAdornment position="start">📏</InputAdornment>,
-              }}
-            />
-            <TextField
-              label="Промпт для категоризации"
-              fullWidth
-              multiline
-              rows={3}
-              value={formData.categorization_prompt}
-              onChange={(e) => setFormData({ ...formData, categorization_prompt: e.target.value })}
-            />
-            <TextField
-              label="Промпт для суммаризации"
-              fullWidth
-              multiline
-              rows={3}
-              value={formData.summarization_prompt}
-              onChange={(e) => setFormData({ ...formData, summarization_prompt: e.target.value })}
-            />
-          </Box>
+          <BotConfigurationTabs 
+            bot={formData} 
+            onBotUpdate={(updatedBot) => setFormData(updatedBot)}
+            onClose={() => setCreateDialogOpen(false)}
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCreateDialogOpen(false)}>Отмена</Button>

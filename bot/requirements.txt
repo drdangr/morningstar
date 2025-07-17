@@ -1,24 +1,27 @@
-# Зависимости для telegram bot Docker контейнера
+# MultiBotManager dependencies
+pyrogram==2.0.106
+aiohttp==3.8.5
+asyncio-mqtt==0.11.0
+fastapi==0.104.1
+uvicorn==0.24.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+python-multipart==0.0.6
+aiofiles==23.2.1
 
-# Telegram Bot API
+# Telegram Bot libraries
+TgCrypto==1.2.5
 python-telegram-bot==20.7
 
-# Database ORM и миграции
-sqlalchemy==2.0.23
-asyncpg==0.29.0
-alembic==1.13.1
+# HTTP client
+httpx==0.25.2
 
-# HTTP клиент
-aiohttp==3.9.3
-
-# Переменные окружения
-python-dotenv==1.0.1
-
-# Структурированное логирование
+# Logging and monitoring
 structlog==23.2.0
+psutil==5.9.6
 
-# Работа с временными зонами
-pytz==2024.1
-
-# Валидация данных
-pydantic==2.5.3
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+chardet==5.2.0
