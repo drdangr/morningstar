@@ -123,7 +123,10 @@ class Channel(Base):
     channel_name = Column(String, nullable=False)  # Основное поле для имени канала
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String)
+    title = Column(String, nullable=False) 
     description = Column(Text)
+    last_parsed = Column(DateTime)
+    error_count = Column(Integer, default=0)  
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

@@ -73,6 +73,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend/logs:/app/logs
+      - ./userbot/session:/userbot/session
     networks:
       - morningstar_network
 
