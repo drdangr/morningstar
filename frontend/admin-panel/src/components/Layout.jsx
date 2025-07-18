@@ -1,140 +1,136 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import {
-  Box,
-  Drawer,
   AppBar,
   Toolbar,
-  List,
   Typography,
-  Divider,
-  IconButton,
+  Drawer,
+  List,
   ListItem,
-  ListItemButton,
   ListItemIcon,
   ListItemText,
+  Box,
   CssBaseline,
+  Button
 } from '@mui/material';
 import {
-  Menu as MenuIcon,
   Dashboard as DashboardIcon,
-  Topic as TopicIcon,
-  Tv as ChannelsIcon,
-  SmartToy as PublicBotsIcon,
-  Storage as PostsCacheIcon,
-  Psychology as LLMSettingsIcon,
-  SmartToy as AIResultsIcon,
+  Storage as StorageIcon,
+  Psychology as PsychologyIcon,
+  SmartToy as SmartToyIcon,
   Settings as SettingsIcon,
+  Category as CategoryIcon,
+  Radio as RadioIcon,
+  Android as AndroidIcon
 } from '@mui/icons-material';
-import { Link, useLocation } from 'react-router-dom';
+
+// Импорт страниц
+import DashboardPage from '../pages/DashboardPage';
+import PostsCachePage from '../pages/PostsCachePage_v2';
+import AIResultsPage from '../pages/AIResultsPage';
+import CategoriesPage from '../pages/CategoriesPage';
+import ChannelsPage from '../pages/ChannelsPage';
+import PublicBotsPage from '../pages/PublicBotsPage';
+import LLMSettingsPage from '../pages/LLMSettingsPage';
+import UserbotPage from '../pages/UserbotPage';
 
 const drawerWidth = 240;
 
 const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
-  { text: 'Categories', icon: <TopicIcon />, path: '/categories' },
-  { text: 'Channels', icon: <ChannelsIcon />, path: '/channels' },
-  { text: 'Public Bots', icon: <PublicBotsIcon />, path: '/public-bots' },
-  { text: 'Post Cache Monitor', icon: <PostsCacheIcon />, path: '/posts-cache' },
-  { text: 'LLM Settings', icon: <LLMSettingsIcon />, path: '/settings' },
-  { text: 'AI Results', icon: <AIResultsIcon />, path: '/ai-results' },
+  { text: 'Userbot', icon: <AndroidIcon />, path: '/userbot' },
+  { text: 'Posts Cache', icon: <StorageIcon />, path: '/posts-cache' },
+  { text: 'AI Results', icon: <PsychologyIcon />, path: '/ai-results' },
+  { text: 'Categories', icon: <CategoryIcon />, path: '/categories' },
+  { text: 'Channels', icon: <RadioIcon />, path: '/channels' },
+  { text: 'Public Bots', icon: <SmartToyIcon />, path: '/public-bots' },
+  { text: 'System Settings', icon: <SettingsIcon />, path: '/llm-settings' },
 ];
 
-export default function Layout({ children }) {
-  const [mobileOpen, setMobileOpen] = useState(false);
+function Layout() {
   const location = useLocation();
-
-  const handleDrawerToggle = () => {
-    setMobileOpen(!mobileOpen);
-  };
-
-  const drawer = (
-    <div>
-      <Toolbar>
-        <Typography variant="h6" noWrap component="div">
-          Admin Panel
-        </Typography>
-      </Toolbar>
-      <Divider />
-      <List>
-        {menuItems.map((item) => (
-          <ListItem key={item.text} disablePadding>
-            <ListItemButton
-              component={Link}
-              to={item.path}
-              selected={location.pathname === item.path}
-            >
-              <ListItemIcon>
-                {item.icon}
-              </ListItemIcon>
-              <ListItemText primary={item.text} />
-            </ListItemButton>
-          </ListItem>
-        ))}
-      </List>
-    </div>
-  );
 
   return (
     <Box sx={{ display: 'flex' }}>
       <CssBaseline />
-      <AppBar
-        position="fixed"
-        sx={{
-          width: { sm: `calc(100% - ${drawerWidth}px)` },
-          ml: { sm: `${drawerWidth}px` },
+      <AppBar 
+        position="fixed" 
+        sx={{ 
+          width: `calc(100% - ${drawerWidth}px)`, 
+          ml: `${drawerWidth}px`,
+          backgroundColor: '#1976d2'
         }}
       >
         <Toolbar>
-          <IconButton
-            color="inherit"
-            aria-label="open drawer"
-            edge="start"
-            onClick={handleDrawerToggle}
-            sx={{ mr: 2, display: { sm: 'none' } }}
-          >
-            <MenuIcon />
-          </IconButton>
           <Typography variant="h6" noWrap component="div">
-            MorningStar Bot - Admin Panel
+            MorningStar Admin Panel
           </Typography>
         </Toolbar>
       </AppBar>
-      <Box
-        component="nav"
-        sx={{ width: { sm: drawerWidth }, flexShrink: { sm: 0 } }}
-      >
-        <Drawer
-          variant="temporary"
-          open={mobileOpen}
-          onClose={handleDrawerToggle}
-          ModalProps={{
-            keepMounted: true,
-          }}
-          sx={{
-            display: { xs: 'block', sm: 'none' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth },
-          }}
-        >
-          {drawer}
-        </Drawer>
-        <Drawer
-          variant="permanent"
-          sx={{
-            display: { xs: 'none', sm: 'block' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth },
-          }}
-          open
-        >
-          {drawer}
-        </Drawer>
-      </Box>
-      <Box
-        component="main"
-        sx={{ flexGrow: 1, p: 3, width: { sm: `calc(100% - ${drawerWidth}px)` } }}
+      
+      <Drawer
+        sx={{
+          width: drawerWidth,
+          flexShrink: 0,
+          '& .MuiDrawer-paper': {
+            width: drawerWidth,
+            boxSizing: 'border-box',
+          },
+        }}
+        variant="permanent"
+        anchor="left"
       >
         <Toolbar />
-        {children}
+        <Box sx={{ overflow: 'auto' }}>
+          <List>
+            {menuItems.map((item) => (
+              <ListItem 
+                key={item.text}
+                component={Link} 
+                to={item.path}
+                sx={{
+                  backgroundColor: location.pathname === item.path ? 'rgba(25, 118, 210, 0.12)' : 'transparent',
+                  '&:hover': {
+                    backgroundColor: 'rgba(25, 118, 210, 0.08)',
+                  },
+                }}
+              >
+                <ListItemIcon sx={{ color: location.pathname === item.path ? '#1976d2' : 'inherit' }}>
+                  {item.icon}
+                </ListItemIcon>
+                <ListItemText 
+                  primary={item.text} 
+                  sx={{ color: location.pathname === item.path ? '#1976d2' : 'inherit' }}
+                />
+              </ListItem>
+            ))}
+          </List>
+        </Box>
+      </Drawer>
+      
+      <Box 
+        component="main" 
+        sx={{ 
+          flexGrow: 1, 
+          bgcolor: 'background.default', 
+          p: 3,
+          minHeight: '100vh'
+        }}
+      >
+        <Toolbar />
+        <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/userbot" element={<UserbotPage />} />
+          <Route path="/posts-cache" element={<PostsCachePage />} />
+          <Route path="/ai-results" element={<AIResultsPage />} />
+          <Route path="/categories" element={<CategoriesPage />} />
+          <Route path="/channels" element={<ChannelsPage />} />
+          <Route path="/public-bots" element={<PublicBotsPage />} />
+          <Route path="/llm-settings" element={<LLMSettingsPage />} />
+        </Routes>
       </Box>
     </Box>
   );
-} 
+}
+
+export default Layout; 

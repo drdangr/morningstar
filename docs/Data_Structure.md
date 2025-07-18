@@ -138,6 +138,7 @@ MorningStarBot3 использует мультитенантную архите
 - ai_categorization_temperature: температура (default '0.3')
 - ai_summarization_temperature: температура (default '0.7')
 - ai_analysis_temperature: температура (default '0.5')
+- ai_summarization_top_p: параметр top_p для суммаризации (default '1.0')
 
 ### llm_providers (пока не используется)
 - id: Integer (PK)

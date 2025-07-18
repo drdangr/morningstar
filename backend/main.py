@@ -2802,6 +2802,121 @@ def bulk_delete_posts(
             detail=f"Ошибка удаления постов: {str(e)}"
         )
 
+# ==================== USERBOT API ====================
+
+@app.post("/api/userbot/run")
+async def run_userbot_manual(db: Session = Depends(get_db)):
+    """Запуск userbot для однократного сбора постов"""
+    try:
+        import subprocess
+        import asyncio
+        
+        # Получаем статистику до запуска
+        stats_before = db.query(PostCache).count()
+        
+        logger.info("🚀 Запуск userbot для сбора постов...")
+        
+        # Запускаем userbot перезапуск через docker-compose
+        try:
+            # Выполняем команду перезапуска userbot контейнера
+            result = subprocess.run(
+                ["docker-compose", "restart", "userbot"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"Docker-compose restart failed: {result.stderr}")
+                
+            logger.info("✅ Userbot контейнер перезапущен")
+            
+        except subprocess.TimeoutExpired:
+            raise Exception("Timeout при перезапуске userbot")
+        except FileNotFoundError:
+            # Fallback: если docker-compose не найден, используем docker напрямую
+            result = subprocess.run(
+                ["docker", "restart", "morningstar_userbot"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"Docker restart failed: {result.stderr}")
+        
+        # Ждем немного для завершения сбора
+        await asyncio.sleep(15)
+        
+        # Получаем статистику после запуска
+        stats_after = db.query(PostCache).count()
+        posts_collected = stats_after - stats_before
+        
+        # Получаем активные каналы для статистики
+        active_channels = db.query(Channel).filter(Channel.is_active == True).count()
+        
+        logger.info(f"✅ Userbot запущен. Собрано новых постов: {posts_collected}")
+        
+        return {
+            "success": True,
+            "message": "Userbot успешно запущен",
+            "posts_collected": posts_collected,
+            "active_channels": active_channels,
+            "container_status": "restarted"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска userbot: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка запуска userbot: {str(e)}"
+        )
+
+@app.get("/api/userbot/status")
+def get_userbot_status(db: Session = Depends(get_db)):
+    """Получить статус userbot контейнера"""
+    try:
+        import subprocess
+        
+        # Проверяем статус userbot контейнера
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "morningstar_userbot", "--format", "{{.State.Status}}"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            container_status = result.stdout.strip() if result.returncode == 0 else "unknown"
+            
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            container_status = "unknown"
+        
+        # Получаем статистику
+        total_posts = db.query(PostCache).count()
+        active_channels = db.query(Channel).filter(Channel.is_active == True).count()
+        
+        # Считаем посты за сегодня
+        today = datetime.now().date()
+        today_posts = db.query(PostCache).filter(
+            func.date(PostCache.created_at) == today
+        ).count()
+        
+        return {
+            "container_status": container_status,
+            "total_posts": total_posts,
+            "today_posts": today_posts,
+            "active_channels": active_channels,
+            "last_check": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения статуса userbot: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения статуса: {str(e)}"
+        )
+
 # ==================== PUBLIC BOTS API ====================
 
 @app.get("/api/public-bots", response_model=List[PublicBotResponse])

@@ -74,6 +74,7 @@ services:
     volumes:
       - ./backend/logs:/app/logs
       - ./userbot/session:/userbot/session
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket для управления контейнерами
     networks:
       - morningstar_network
 
@@ -91,9 +92,11 @@ services:
       - CHANNELS=${CHANNELS}
       - USERBOT_MODE=once
       - POLLING_INTERVAL=1800
+      - TEST_MODE=${TEST_MODE}
+      - LOG_LEVEL=${LOG_LEVEL}
     depends_on:
       - backend
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - ./userbot/session:/app/session  # Persistent sessions для Telethon
       - ./userbot/logs:/app/logs        # Persistent logs

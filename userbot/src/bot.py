@@ -14,6 +14,28 @@ from telethon.errors import FloodWaitError, SessionPasswordNeededError
 # Улучшенный поиск и загрузка .env файла
 def find_and_load_env():
     """Поиск .env файла в разных местах с подробной диагностикой"""
+    
+    # СНАЧАЛА проверяем переменные окружения (для Docker контейнеров)
+    print("🔍 Проверка переменных окружения...")
+    test_vars = ['API_ID', 'API_HASH', 'PHONE']
+    env_vars = {var: os.getenv(var) for var in test_vars}
+    
+    print("📋 Проверка переменных окружения:")
+    for var, value in env_vars.items():
+        status = "✅" if value else "❌"
+        # Безопасный вывод без отображения реальных значений
+        if value:
+            print(f"   {status} {var}: [КОНФИДЕНЦИАЛЬНО]")
+        else:
+            print(f"   {status} {var}: НЕ НАЙДЕНО")
+    
+    if all(env_vars.values()):
+        print("🎉 Все переменные окружения найдены! (Docker режим)")
+        return True
+    
+    # Если переменных окружения нет, пытаемся найти .env файл
+    print("\n🔍 Переменные окружения не найдены, ищем .env файл...")
+    
     # Определяем базовые пути
     current_file = Path(__file__).resolve()
     current_dir = current_file.parent  # userbot/src
@@ -30,7 +52,6 @@ def find_and_load_env():
         Path('../../.env'),                # две папки выше
     ]
     
-    print("🔍 Поиск .env файла...")
     print(f"📂 Текущий файл: {current_file}")
     print(f"📂 Корень проекта: {project_root}")
     
@@ -41,16 +62,11 @@ def find_and_load_env():
         if abs_path.exists():
             print(f"✅ Найден .env файл: {abs_path}")
             
-            # Проверяем содержимое .env файла для N8N_WEBHOOK_URL
+            # Проверяем содержимое .env файла
             try:
                 with open(abs_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    for line in content.split('\n'):
-                        if line.strip().startswith('N8N_WEBHOOK_URL='):
-                            print(f"📄 В .env файле найдено: {line.strip()}")
-                            break
-                    else:
-                        print("📄 N8N_WEBHOOK_URL не найден в .env файле")
+                    print(f"📄 .env файл содержит {len(content.split())} строк")
             except Exception as e:
                 print(f"❌ Ошибка чтения .env файла: {e}")
             
@@ -58,7 +74,6 @@ def find_and_load_env():
             print(f"🔄 .env файл загружен с override=True")
             
             # Проверяем что переменные загрузились
-            test_vars = ['API_ID', 'API_HASH', 'PHONE']
             loaded_vars = {var: os.getenv(var) for var in test_vars}
             
             print("📋 Проверка загруженных переменных:")
@@ -163,17 +178,7 @@ except ValueError as e:
 # Пути с адаптацией под среду
 SESSION_NAME = str(SESSION_DIR / "morningstar")
 
-# Детальная диагностика N8N_WEBHOOK_URL
-print("🔍 Диагностика N8N_WEBHOOK_URL:")
-print(f"   📋 Значение из os.getenv(): '{os.getenv('N8N_WEBHOOK_URL', 'НЕТ')}'")
-print(f"   📋 Есть ли в os.environ: {'N8N_WEBHOOK_URL' in os.environ}")
-if 'N8N_WEBHOOK_URL' in os.environ:
-    print(f"   📋 Значение из os.environ: '{os.environ['N8N_WEBHOOK_URL']}'")
-
-N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/telegram-posts")
-N8N_WEBHOOK_TOKEN = os.getenv("N8N_WEBHOOK_TOKEN", "")
-
-print(f"   ✅ Финальное значение N8N_WEBHOOK_URL: '{N8N_WEBHOOK_URL}'")
+# N8N переменные удалены - система больше не использует N8N
 
 # Настройки Backend API
 BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
@@ -207,14 +212,12 @@ else:
 print(f"🌐 Backend API: {BACKEND_API_URL}")
 print(f"🧪 Режим тестирования: {TEST_MODE}")
 print(f"📡 Fallback каналы: {FALLBACK_CHANNELS}")
-print(f"🔗 N8N Webhook URL: {N8N_WEBHOOK_URL}")
 
 logger.info("📁 Логи сохраняются в: %s", LOGS_DIR)
 logger.info("💾 Сессия сохраняется в: %s", SESSION_DIR)
 logger.info("🌐 Backend API: %s", BACKEND_API_URL)
 logger.info("🧪 Режим тестирования: %s", TEST_MODE)
-logger.info("🔗 N8N Webhook: %s", "✅ Настроен" if N8N_WEBHOOK_URL else "❌ Не настроен")
-logger.info("📡 N8N Webhook URL: %s", N8N_WEBHOOK_URL or "НЕ ЗАДАН")
+logger.info("📡 Fallback каналы: %s", FALLBACK_CHANNELS)
 
 
 class MorningStarUserbot:
