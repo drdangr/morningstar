@@ -675,6 +675,17 @@ class PostsBatchCreate(BaseModel):
     posts: List[PostCacheCreate]
     channels_metadata: Dict[str, Dict[str, Any]]
 
+class PostsBulkDeleteRequest(BaseModel):
+    """Модель для bulk удаления постов"""
+    post_ids: List[int] = Field(..., min_items=1, max_items=1000, description="Список ID постов для удаления")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "post_ids": [1, 2, 3, 4, 5]
+            }
+        }
+
 class PublicBotBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
@@ -2736,6 +2747,59 @@ def cleanup_orphan_posts(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка очистки orphan постов: {str(e)}"
+        )
+
+@app.delete("/api/posts/cache/bulk-delete", response_model=dict)
+def bulk_delete_posts(
+    request: PostsBulkDeleteRequest,
+    db: Session = Depends(get_db)
+):
+    """Удалить посты по их ID"""
+    try:
+        post_ids = request.post_ids
+        
+        # Получаем посты для удаления
+        posts = db.query(PostCache).filter(PostCache.id.in_(post_ids)).all()
+        found_post_ids = {post.id for post in posts}
+        missing_post_ids = set(post_ids) - found_post_ids
+        
+        if missing_post_ids:
+            logger.warning(f"Не найдены посты с ID: {missing_post_ids}")
+        
+        # Удаляем найденные посты
+        if posts:
+            delete_count = db.query(PostCache).filter(
+                PostCache.id.in_([post.id for post in posts])
+            ).delete(synchronize_session=False)
+            
+            # Удаляем связанные записи из processed_data
+            db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_([post.id for post in posts])
+            ).delete(synchronize_session=False)
+            
+            db.commit()
+            
+            logger.info(f"✅ Удалено {delete_count} постов")
+            
+            return {
+                "message": f"Удалено {delete_count} постов",
+                "deleted_count": delete_count,
+                "requested_count": len(post_ids),
+                "found_count": len(posts),
+                "missing_post_ids": list(missing_post_ids) if missing_post_ids else []
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Ни один из запрошенных постов не найден: {post_ids}"
+            )
+            
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка удаления постов: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления постов: {str(e)}"
         )
 
 # ==================== PUBLIC BOTS API ====================

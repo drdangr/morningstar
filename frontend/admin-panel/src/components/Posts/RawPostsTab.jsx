@@ -30,7 +30,8 @@ import {
   DialogContentText,
   DialogActions,
   Snackbar,
-  Collapse
+  Collapse,
+  Checkbox
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -63,6 +64,12 @@ function RawPostsTab({ stats, onStatsUpdate }) {
   const [orphanConfirmDialog, setOrphanConfirmDialog] = useState(false);
   const [clearingOrphans, setClearingOrphans] = useState(false);
   const [orphanSuccess, setOrphanSuccess] = useState('');
+
+  // Состояние для bulk delete функциональности
+  const [selectedPosts, setSelectedPosts] = useState(new Set());
+  const [bulkDeleteConfirmDialog, setBulkDeleteConfirmDialog] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteSuccess, setBulkDeleteSuccess] = useState('');
 
   // Состояние для фильтров
   const [page, setPage] = useState(0);
@@ -146,6 +153,11 @@ function RawPostsTab({ stats, onStatsUpdate }) {
     loadRawPosts();
   }, [page, rowsPerPage, search, channelFilter, statusFilter, dateFrom, dateTo, sortBy, sortOrder]);
 
+  // Очистка выбранных постов при смене страницы или фильтров
+  useEffect(() => {
+    clearSelectedPosts();
+  }, [page, rowsPerPage, search, channelFilter, statusFilter, dateFrom, dateTo, sortBy, sortOrder]);
+
   // Обработчики событий
   const handlePageChange = (event, newPage) => {
     setPage(newPage);
@@ -208,6 +220,83 @@ function RawPostsTab({ stats, onStatsUpdate }) {
       .trim();
   };
 
+  // Функции для работы с checkbox bulk delete
+  const handleSelectAllPosts = (event) => {
+    if (event.target.checked) {
+      // Выбираем все посты на текущей странице
+      const currentPagePostIds = new Set(posts.map(post => post.id));
+      setSelectedPosts(currentPagePostIds);
+    } else {
+      // Снимаем выбор со всех постов
+      setSelectedPosts(new Set());
+    }
+  };
+
+  const handleSelectPost = (postId) => {
+    const newSelected = new Set(selectedPosts);
+    if (newSelected.has(postId)) {
+      newSelected.delete(postId);
+    } else {
+      newSelected.add(postId);
+    }
+    setSelectedPosts(newSelected);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedPosts.size === 0) {
+      setError('Не выбран ни один пост для удаления');
+      return;
+    }
+
+    setBulkDeleting(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/posts/cache/bulk-delete`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          post_ids: Array.from(selectedPosts)
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Ошибка удаления постов');
+      }
+
+      const result = await response.json();
+      
+      // Успешное удаление
+      setBulkDeleteSuccess(`Успешно удалено ${result.deleted_count} постов`);
+      setSelectedPosts(new Set());
+      setBulkDeleteConfirmDialog(false);
+      
+      // Обновляем данные
+      loadRawPosts();
+      if (onStatsUpdate) onStatsUpdate();
+      
+    } catch (err) {
+      console.error('❌ Ошибка bulk delete:', err);
+      setError('Ошибка удаления постов: ' + err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const clearSelectedPosts = () => {
+    setSelectedPosts(new Set());
+  };
+
+  // Проверяем, выбраны ли все посты на текущей странице
+  const isAllCurrentPageSelected = posts.length > 0 && posts.every(post => selectedPosts.has(post.id));
+  
+  // Проверяем, выбраны ли некоторые посты на текущей странице
+  const isSomeCurrentPageSelected = posts.some(post => selectedPosts.has(post.id));
+
+  // Orphan cleanup functionality (existing)
   const handleCleanupOrphans = async () => {
     setClearingOrphans(true);
     try {
@@ -390,6 +479,15 @@ function RawPostsTab({ stats, onStatsUpdate }) {
               >
                 Обновить
               </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                onClick={() => setBulkDeleteConfirmDialog(true)}
+                startIcon={<DeleteIcon />}
+                disabled={selectedPosts.size === 0}
+              >
+                Удалить выделенные ({selectedPosts.size})
+              </Button>
             </Box>
           </Box>
         </Box>
@@ -400,6 +498,14 @@ function RawPostsTab({ stats, onStatsUpdate }) {
         <Table>
           <TableHead>
             <TableRow>
+              <TableCell padding="checkbox">
+                <Checkbox
+                  checked={isAllCurrentPageSelected}
+                  indeterminate={!isAllCurrentPageSelected && isSomeCurrentPageSelected}
+                  onChange={handleSelectAllPosts}
+                  color="primary"
+                />
+              </TableCell>
               <TableCell>ID</TableCell>
               <TableCell>Канал</TableCell>
               <TableCell>Содержимое</TableCell>
@@ -412,13 +518,13 @@ function RawPostsTab({ stats, onStatsUpdate }) {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={7} align="center">
+                <TableCell colSpan={8} align="center">
                   <CircularProgress />
                 </TableCell>
               </TableRow>
             ) : posts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} align="center">
+                <TableCell colSpan={8} align="center">
                   <Typography color="text.secondary">
                     Нет данных для отображения
                   </Typography>
@@ -432,6 +538,13 @@ function RawPostsTab({ stats, onStatsUpdate }) {
                 return (
                   <React.Fragment key={post.id}>
                     <TableRow hover>
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedPosts.has(post.id)}
+                          onChange={() => handleSelectPost(post.id)}
+                          color="primary"
+                        />
+                      </TableCell>
                       <TableCell>{post.id}</TableCell>
                       
                       <TableCell>
@@ -646,12 +759,49 @@ function RawPostsTab({ stats, onStatsUpdate }) {
         </DialogActions>
       </Dialog>
 
+      {/* Диалог подтверждения bulk delete */}
+      <Dialog open={bulkDeleteConfirmDialog} onClose={() => setBulkDeleteConfirmDialog(false)}>
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <DeleteIcon color="error" />
+            Удаление выбранных постов
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Вы уверены, что хотите удалить {selectedPosts.size} выбранных постов?
+            Это действие также удалит все связанные AI результаты и нельзя отменить.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBulkDeleteConfirmDialog(false)}>
+            Отмена
+          </Button>
+          <Button
+            onClick={handleBulkDelete}
+            color="error"
+            variant="contained"
+            disabled={bulkDeleting}
+            startIcon={bulkDeleting ? <CircularProgress size={20} /> : <DeleteIcon />}
+          >
+            {bulkDeleting ? 'Удаление...' : 'Удалить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Snackbar для успешных операций */}
       <Snackbar
         open={!!orphanSuccess}
         autoHideDuration={6000}
         onClose={() => setOrphanSuccess('')}
         message={orphanSuccess}
+      />
+      
+      <Snackbar
+        open={!!bulkDeleteSuccess}
+        autoHideDuration={6000}
+        onClose={() => setBulkDeleteSuccess('')}
+        message={bulkDeleteSuccess}
       />
     </Box>
   );

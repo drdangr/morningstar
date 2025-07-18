@@ -26,7 +26,14 @@ import {
   Grid,
   Rating,
   Collapse,
-  Divider
+  Divider,
+  Checkbox,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  Snackbar
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -39,7 +46,8 @@ import {
   ExpandLess as ExpandLessIcon,
   Category as CategoryIcon,
   TrendingUp as TrendingUpIcon,
-  SmartToy as SmartToyIcon
+  SmartToy as SmartToyIcon,
+  Delete as DeleteIcon
 } from '@mui/icons-material';
 
 // Импорт компонента выбора бота
@@ -60,6 +68,12 @@ function AIResultsTab({ stats, onStatsUpdate }) {
 
   // Состояние для расширенного отображения
   const [expandedPosts, setExpandedPosts] = useState(new Set());
+
+  // Состояние для bulk delete функциональности
+  const [selectedPosts, setSelectedPosts] = useState(new Set());
+  const [bulkDeleteConfirmDialog, setBulkDeleteConfirmDialog] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteSuccess, setBulkDeleteSuccess] = useState('');
 
   // Состояние для фильтров
   const [page, setPage] = useState(0);
@@ -156,6 +170,11 @@ function AIResultsTab({ stats, onStatsUpdate }) {
     }
   }, [page, rowsPerPage, selectedBotId, search, channelFilter, categoryFilter, aiStatusFilter, dateFrom, dateTo, sortBy, sortOrder]);
 
+  // Очистка выбранных постов при смене страницы или фильтров
+  useEffect(() => {
+    clearSelectedPosts();
+  }, [page, rowsPerPage, selectedBotId, search, channelFilter, categoryFilter, aiStatusFilter, dateFrom, dateTo, sortBy, sortOrder]);
+
   // Загрузка ботов и AI статистики при монтировании
   useEffect(() => {
     loadAIStats();
@@ -184,6 +203,82 @@ function AIResultsTab({ stats, onStatsUpdate }) {
     setDateTo(null);
     setPage(0);
   };
+
+  // Функции для работы с checkbox bulk delete
+  const handleSelectAllPosts = (event) => {
+    if (event.target.checked) {
+      // Выбираем все посты на текущей странице
+      const currentPagePostIds = new Set(posts.map(post => post.id));
+      setSelectedPosts(currentPagePostIds);
+    } else {
+      // Снимаем выбор со всех постов
+      setSelectedPosts(new Set());
+    }
+  };
+
+  const handleSelectPost = (postId) => {
+    const newSelected = new Set(selectedPosts);
+    if (newSelected.has(postId)) {
+      newSelected.delete(postId);
+    } else {
+      newSelected.add(postId);
+    }
+    setSelectedPosts(newSelected);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedPosts.size === 0) {
+      setError('Не выбран ни один пост для удаления');
+      return;
+    }
+
+    setBulkDeleting(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/posts/cache/bulk-delete`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          post_ids: Array.from(selectedPosts)
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Ошибка удаления постов');
+      }
+
+      const result = await response.json();
+      
+      // Успешное удаление
+      setBulkDeleteSuccess(`Успешно удалено ${result.deleted_count} постов`);
+      setSelectedPosts(new Set());
+      setBulkDeleteConfirmDialog(false);
+      
+      // Обновляем данные
+      loadAIResults();
+      if (onStatsUpdate) onStatsUpdate();
+      
+    } catch (err) {
+      console.error('❌ Ошибка bulk delete:', err);
+      setError('Ошибка удаления постов: ' + err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const clearSelectedPosts = () => {
+    setSelectedPosts(new Set());
+  };
+
+  // Проверяем, выбраны ли все посты на текущей странице
+  const isAllCurrentPageSelected = posts.length > 0 && posts.every(post => selectedPosts.has(post.id));
+  
+  // Проверяем, выбраны ли некоторые посты на текущей странице
+  const isSomeCurrentPageSelected = posts.some(post => selectedPosts.has(post.id));
 
   const togglePostExpansion = (postId) => {
     const newExpanded = new Set(expandedPosts);
@@ -453,6 +548,15 @@ function AIResultsTab({ stats, onStatsUpdate }) {
               >
                 Обновить
               </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                onClick={() => setBulkDeleteConfirmDialog(true)}
+                startIcon={<DeleteIcon />}
+                disabled={selectedPosts.size === 0}
+              >
+                Удалить выделенные ({selectedPosts.size})
+              </Button>
             </Box>
           </Box>
         </Box>
@@ -472,6 +576,14 @@ function AIResultsTab({ stats, onStatsUpdate }) {
         <Table>
           <TableHead>
             <TableRow>
+              <TableCell padding="checkbox">
+                <Checkbox
+                  checked={isAllCurrentPageSelected}
+                  indeterminate={!isAllCurrentPageSelected && isSomeCurrentPageSelected}
+                  onChange={handleSelectAllPosts}
+                  color="primary"
+                />
+              </TableCell>
               <TableCell>Пост</TableCell>
               <TableCell>AI Категория</TableCell>
               <TableCell>AI Summary</TableCell>
@@ -483,15 +595,15 @@ function AIResultsTab({ stats, onStatsUpdate }) {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} align="center">
+                <TableCell colSpan={7} align="center">
                   <CircularProgress />
                 </TableCell>
               </TableRow>
             ) : posts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} align="center">
+                <TableCell colSpan={7} align="center">
                   <Typography color="text.secondary">
-                    {selectedBotId ? 'Нет AI результатов для выбранного бота' : 'Выберите бота для просмотра результатов'}
+                    {selectedBotId ? 'Нет данных для отображения' : 'Выберите бота для просмотра AI результатов'}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -503,6 +615,13 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 return (
                   <React.Fragment key={post.id}>
                     <TableRow hover>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={selectedPosts.has(post.id)}
+                          onChange={() => handleSelectPost(post.id)}
+                          color="primary"
+                        />
+                      </TableCell>
                       <TableCell>
                         <Box sx={{ maxWidth: 500 }}>
                           <Typography variant="body2" fontWeight="bold" gutterBottom>
@@ -713,6 +832,44 @@ function AIResultsTab({ stats, onStatsUpdate }) {
         labelDisplayedRows={({ from, to, count }) => 
           `${from}-${to} из ${count !== -1 ? count : `более ${to}`}`
         }
+      />
+
+      {/* Диалог подтверждения bulk delete */}
+      <Dialog open={bulkDeleteConfirmDialog} onClose={() => setBulkDeleteConfirmDialog(false)}>
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <DeleteIcon color="error" />
+            Удаление выбранных постов
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Вы уверены, что хотите удалить {selectedPosts.size} выбранных постов?
+            Это действие также удалит все связанные AI результаты и нельзя отменить.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBulkDeleteConfirmDialog(false)}>
+            Отмена
+          </Button>
+          <Button
+            onClick={handleBulkDelete}
+            color="error"
+            variant="contained"
+            disabled={bulkDeleting}
+            startIcon={bulkDeleting ? <CircularProgress size={20} /> : <DeleteIcon />}
+          >
+            {bulkDeleting ? 'Удаление...' : 'Удалить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Snackbar для успешных операций */}
+      <Snackbar
+        open={!!bulkDeleteSuccess}
+        autoHideDuration={6000}
+        onClose={() => setBulkDeleteSuccess('')}
+        message={bulkDeleteSuccess}
       />
     </Box>
   );
