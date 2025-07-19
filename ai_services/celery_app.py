@@ -48,9 +48,24 @@ app.conf.update(
         'tasks.categorize_post': {'queue': 'categorization'},
         'tasks.summarize_posts': {'queue': 'summarization'},
         'tasks.process_digest': {'queue': 'processing'},
-        'tasks.ping_task': {'queue': 'default'},
-        'tasks.test_task': {'queue': 'default'},
+        'tasks.test_openai_connection': {'queue': 'testing'},
+        'tasks.trigger_ai_processing': {'queue': 'orchestration'},
+        'tasks.process_bot_digest': {'queue': 'processing'},
+        'tasks.check_for_new_posts': {'queue': 'monitoring'},  # Новая очередь для мониторинга
     },
+    
+    # Celery Beat конфигурация для автоматических задач
+    beat_schedule={
+        'auto-check-new-posts': {
+            'task': 'tasks.check_for_new_posts',
+            'schedule': 30.0,  # Каждые 30 секунд
+            'options': {
+                'queue': 'monitoring',
+                'priority': 5,  # Низкий приоритет, не мешает основной обработке
+            }
+        },
+    },
+    beat_scheduler='celery.beat:PersistentScheduler',  # Сохраняет расписание в файл
     
     # Настройки безопасности
     worker_disable_rate_limits=True,

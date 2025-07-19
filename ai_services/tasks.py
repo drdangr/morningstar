@@ -725,6 +725,63 @@ def process_bot_digest(self, bot_id: int, limit: int = 50):
             'timestamp': time.time()
         }
 
+@app.task(bind=True, name='tasks.check_for_new_posts')
+def check_for_new_posts(self):
+    """
+    Проверка наличия новых необработанных постов
+    Если найдены - запускает trigger_ai_processing
+    
+    Эта задача запускается автоматически каждые 30 секунд через Celery Beat
+    """
+    logger.info("🔍 Проверка наличия новых необработанных постов...")
+    
+    try:
+        import httpx
+        
+        # Быстрая проверка - есть ли хотя бы 1 необработанный пост
+        with httpx.Client(timeout=10) as client:
+            response = client.get(
+                f"{BACKEND_URL}/api/posts/unprocessed",
+                params={
+                    'limit': 1,
+                    'require_categorization': True
+                }
+            )
+            response.raise_for_status()
+            unprocessed_posts = response.json()
+        
+        if unprocessed_posts:
+            post_count = len(unprocessed_posts)
+            logger.info(f"🚀 Найдены необработанные посты, запускаем AI обработку...")
+            
+            # Запускаем существующую логику обработки
+            task_result = trigger_ai_processing.delay()
+            
+            return {
+                'task_id': self.request.id,
+                'status': 'triggered',
+                'found_posts': post_count,
+                'ai_task_id': task_result.id,
+                'timestamp': time.time()
+            }
+        else:
+            logger.debug("✅ Новых постов для обработки не найдено")
+            return {
+                'task_id': self.request.id,
+                'status': 'no_work',
+                'found_posts': 0,
+                'timestamp': time.time()
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки новых постов: {e}")
+        return {
+            'task_id': self.request.id,
+            'status': 'error',
+            'error': str(e),
+            'timestamp': time.time()
+        }
+
 # Export all tasks
 __all__ = [
     'ping_task',
@@ -738,5 +795,6 @@ __all__ = [
     'cleanup_expired_results',
     'trigger_ai_processing',
     'generate_digest_preview',
-    'process_bot_digest'
+    'process_bot_digest',
+    'check_for_new_posts'
 ] 
