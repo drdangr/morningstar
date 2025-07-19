@@ -87,6 +87,19 @@ class CategorizationService:
             logger.debug(f"✅ Categorization: OpenAI клиент актуален (ключ {current_key[-10:]})")
         
         return self.openai_client
+    
+    async def close(self):
+        """
+        🔒 ЯВНОЕ закрытие OpenAI клиента для предотвращения ошибок Event loop is closed
+        """
+        if self.openai_client:
+            try:
+                await self.openai_client.close()
+                logger.info("🔒 CategorizationService: OpenAI клиент закрыт")
+            except Exception as e:
+                logger.warning(f"⚠️ CategorizationService: ошибка закрытия OpenAI клиента: {e}")
+            finally:
+                self.openai_client = None
         
     async def process_with_bot_config(self, posts: List[Post], bot_id: int) -> List[Dict[str, Any]]:
         """

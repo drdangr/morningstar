@@ -58,6 +58,19 @@ class SummarizationService(BaseAIService):
         else:
             self.logger.debug(f"✅ OpenAI клиент актуален (ключ {current_key[-10:]})")
     
+    async def close(self):
+        """
+        🔒 ЯВНОЕ закрытие OpenAI клиента для предотвращения ошибок Event loop is closed
+        """
+        if self.client:
+            try:
+                await self.client.close()
+                self.logger.info("🔒 SummarizationService: OpenAI клиент закрыт")
+            except Exception as e:
+                self.logger.warning(f"⚠️ SummarizationService: ошибка закрытия OpenAI клиента: {e}")
+            finally:
+                self.client = None
+    
     async def process(
         self,
         text: str,
