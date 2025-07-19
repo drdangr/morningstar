@@ -24,12 +24,12 @@ class CategorizationService:
     v3.0 - БАТЧЕВАЯ обработка как в N8N для максимальной производительности
     """
     
-    def __init__(self, openai_api_key: str, backend_url: str = "http://localhost:8000", batch_size: int = 30, settings_manager=None):
+    def __init__(self, openai_api_key: str = None, backend_url: str = "http://localhost:8000", batch_size: int = 30, settings_manager=None):
         """
         Инициализация сервиса
         
         Args:
-            openai_api_key: API ключ OpenAI
+            openai_api_key: API ключ OpenAI (опциональный, будет получен через SettingsManager)
             backend_url: URL Backend API
             batch_size: Размер батча для обработки (по умолчанию как в N8N)
             settings_manager: Менеджер настроек для динамических LLM
@@ -39,8 +39,8 @@ class CategorizationService:
         self.batch_size = batch_size
         self.settings_manager = settings_manager
         
-        # Инициализируем OpenAI клиент
-        self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+        # НЕ инициализируем OpenAI клиент сразу - будем создавать динамически
+        self.openai_client = None
         
         logger.info(f"🏷️ CategorizationService инициализирован")
         logger.info(f"   Backend URL: {backend_url}")
@@ -49,6 +49,44 @@ class CategorizationService:
             logger.info(f"   SettingsManager: подключен для динамических LLM настроек")
         else:
             logger.warning(f"   ⚠️ SettingsManager не подключен, будут использоваться fallback настройки")
+    
+    async def _ensure_openai_client(self) -> AsyncOpenAI:
+        """
+        🔑 ДИНАМИЧЕСКОЕ создание OpenAI клиента с актуальным ключом
+        
+        Returns:
+            Настроенный AsyncOpenAI клиент
+        """
+        # Получаем актуальный ключ через SettingsManager
+        current_key = None
+        
+        if self.settings_manager:
+            try:
+                current_key = await self.settings_manager.get_openai_key()
+                logger.info("🔑 Получен актуальный OpenAI ключ через SettingsManager")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить ключ из SettingsManager: {e}")
+        
+        # Fallback на ключ из конструктора
+        if not current_key:
+            current_key = self.openai_api_key
+            if current_key:
+                logger.info("⚠️ Используется OpenAI ключ из конструктора (fallback)")
+        
+        if not current_key:
+            raise ValueError("OpenAI API ключ не найден ни в SettingsManager, ни в конструкторе")
+        
+        # Создаем/обновляем клиент если ключ изменился или клиента нет
+        old_key = getattr(self.openai_client, 'api_key', None) if self.openai_client else None
+        need_update = not self.openai_client or old_key != current_key
+        
+        if need_update:
+            self.openai_client = AsyncOpenAI(api_key=current_key)
+            logger.info(f"🔄 Categorization: OpenAI клиент создан/обновлен с ключом {current_key[-10:]}")
+        else:
+            logger.debug(f"✅ Categorization: OpenAI клиент актуален (ключ {current_key[-10:]})")
+        
+        return self.openai_client
         
     async def process_with_bot_config(self, posts: List[Post], bot_id: int) -> List[Dict[str, Any]]:
         """
@@ -227,6 +265,9 @@ class CategorizationService:
     async def _call_openai_batch_api(self, system_prompt: str, user_message: str) -> Optional[str]:
         """Вызов OpenAI API для батча постов с динамическими настройками"""
         try:
+            # 🔑 ПОЛУЧАЕМ АКТУАЛЬНЫЙ OpenAI КЛИЕНТ
+            openai_client = await self._ensure_openai_client()
+            
             # Получаем настройки категоризации из SettingsManager
             if self.settings_manager:
                 try:
@@ -248,7 +289,7 @@ class CategorizationService:
                 temperature = 0.3
                 logger.debug(f"🤖 Используем fallback настройки категоризации: {model}, tokens={max_tokens}, temp={temperature}")
             
-            response = await self.openai_client.chat.completions.create(
+            response = await openai_client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -430,4 +471,135 @@ class CategorizationService:
             'significance': 5,
             'reasoning': 'Fallback результат - ошибка AI категоризации',
             'processing_method': 'fallback_batch_v3.0'
-        } 
+        }
+    
+    def categorize_post(self, post_data: Dict[str, Any], categories: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        🔥 СИНХРОННЫЙ метод для категоризации одного поста (для Celery tasks)
+        
+        Args:
+            post_data: Данные поста в формате dict
+            categories: Список категорий бота
+            
+        Returns:
+            Результат категоризации в формате:
+            {
+                'category': 'название категории' или None,
+                'relevance': 0.0-1.0
+            }
+        """
+        try:
+            # Создаем объект Post из словаря
+            from models.post import Post
+            post = Post(
+                id=post_data.get('id'),
+                content=post_data.get('content', ''),
+                channel_telegram_id=post_data.get('channel_telegram_id'),
+                telegram_message_id=post_data.get('telegram_message_id', 0)
+            )
+            
+            # Используем батчевую обработку для одного поста
+            import asyncio
+            
+            # Создаем новый event loop если его нет (для Celery)
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Запускаем асинхронную категоризацию одного поста
+            result = loop.run_until_complete(self._categorize_single_post_async(post, categories))
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка категоризации поста {post_data.get('id', 'unknown')}: {e}")
+            return {
+                'category': None,
+                'relevance': 0.0
+            }
+    
+    async def _categorize_single_post_async(self, post: Post, categories: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Асинхронная категоризация одного поста"""
+        try:
+            # Строим промпт для одного поста
+            system_prompt, user_message = self._build_single_post_prompt(post, categories)
+            
+            # Вызываем OpenAI API
+            response = await self._call_openai_batch_api(system_prompt, user_message)
+            if not response:
+                return {'category': None, 'relevance': 0.0}
+            
+            # Парсим ответ
+            result = self._parse_single_post_response(response, categories)
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка асинхронной категоризации поста {post.id}: {e}")
+            return {'category': None, 'relevance': 0.0}
+    
+    def _build_single_post_prompt(self, post: Post, categories: List[Dict[str, Any]]) -> tuple:
+        """Строит промпт для категоризации одного поста"""
+        # Формируем список категорий
+        categories_list = []
+        for i, category in enumerate(categories, 1):
+            name = category.get('name', 'Unknown')
+            categories_list.append(f"{i}. {name}")
+        
+        categories_text = "\n".join(categories_list)
+        
+        system_prompt = f"""Проанализируй пост и определи наиболее подходящую категорию.
+
+Доступные категории:
+{categories_text}
+
+Отвечай ТОЛЬКО валидным JSON:
+{{
+  "category_number": 1,
+  "category_name": "название категории",
+  "relevance_score": 0.95,
+  "reasoning": "обоснование"
+}}
+
+Если ни одна категория не подходит, используй null для category_number."""
+        
+        user_message = f"Проанализируй пост:\n\nТекст: {post.content}"
+        
+        return system_prompt, user_message
+    
+    def _parse_single_post_response(self, response: str, categories: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Парсит ответ для одного поста"""
+        try:
+            import json
+            import re
+            
+            # Извлекаем JSON из ответа
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if not json_match:
+                return {'category': None, 'relevance': 0.0}
+            
+            json_text = json_match.group()
+            json_text = re.sub(r'\bNULL\b', 'null', json_text)
+            
+            parsed_response = json.loads(json_text)
+            
+            category_number = parsed_response.get('category_number')
+            category_name = parsed_response.get('category_name')
+            relevance_score = parsed_response.get('relevance_score', 0.0)
+            
+            # Валидация
+            if category_number is None or category_number == 'null':
+                return {'category': None, 'relevance': 0.0}
+            
+            # Проверяем диапазон релевантности
+            relevance = max(0.0, min(1.0, float(relevance_score) if relevance_score else 0.0))
+            
+            return {
+                'category': category_name,
+                'relevance': relevance
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка парсинга ответа для одного поста: {e}")
+            return {'category': None, 'relevance': 0.0} 

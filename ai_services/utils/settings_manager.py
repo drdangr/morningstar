@@ -271,4 +271,39 @@ class SettingsManager:
             'cache_ttl_seconds': self.cache_ttl,
             'is_cache_valid': cache_age >= 0 and cache_age < self.cache_ttl,
             'ai_settings_count': len([k for k in self._cache.keys() if k.startswith('ai_')]) if self._cache else 0
-        } 
+        }
+    
+    async def get_openai_key(self) -> str:
+        """
+        Получает OpenAI API ключ из Backend API
+        
+        Returns:
+            OpenAI API ключ
+            
+        Raises:
+            ValueError: Если ключ не найден
+        """
+        try:
+            # Используем endpoint /api/config/{key} для получения ключа
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.backend_url}/api/config/OPENAI_API_KEY"
+                self.logger.info(f"🔑 Получение OpenAI API ключа из: {url}")
+                
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        api_key = data.get('value')
+                        
+                        if api_key:
+                            self.logger.info("✅ OpenAI API ключ успешно получен")
+                            return api_key
+                        else:
+                            raise ValueError("OpenAI API ключ пуст в ответе Backend API")
+                    else:
+                        error_text = await response.text()
+                        self.logger.error(f"❌ Ошибка получения OpenAI ключа: {response.status} - {error_text}")
+                        raise ValueError(f"Не удалось получить OpenAI ключ: HTTP {response.status}")
+                        
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения OpenAI ключа: {e}")
+            raise ValueError(f"Не удалось получить OpenAI ключ: {e}") 

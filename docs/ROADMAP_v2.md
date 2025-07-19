@@ -3123,6 +3123,14 @@ Backend API → Redis Pub/Sub → AI Orchestrator (Docker)
 - [ ] 🔄 Добавить celery и redis в backend/requirements.txt
 - [ ] 🔄 Создать новые Celery tasks: trigger_ai_processing, generate_digest_preview
 - [ ] 🔄 Протестировать Backend API в Docker с Celery интеграцией
+🆕 **Подзадачи для полной миграции на чистые Celery-таски**
+- [ ] 🔄 Удалить импорт и вызов `orchestrator_v5_parallel.py` из `tasks.trigger_ai_processing`
+- [ ] 🔄 Перенести бизнес-логику в новые таски `process_bot_digest / categorize_posts / summarize_posts`
+- [ ] 🔄 Переписать `POST /api/ai/trigger-processing` — создавать `tasks.process_bot_digest` для каждого активного бота и возвращать `tasks_info`
+- [ ] 🔄 Обновить health-endpoints (`GET /api/debug/celery-status`, `GET /api/ai/tasks`)
+- [ ] 🔄 Покрыть unit-тестами Backend↔Celery (`tests/test_trigger_processing.py`)
+- [ ] 🔄 E2E: запуск триггера ⇒ записи появляются в `processed_data`
+
 - [ ] 🔄 **Цель**: Устранение subprocess проблем
 - [ ] 🔄 **Время**: 4-6 часов
 - [ ] 🔄 **КРИТИЧНО**: Решает архитектурную несогласованность
@@ -3133,6 +3141,12 @@ Backend API → Redis Pub/Sub → AI Orchestrator (Docker)
 - [ ] 🔄 Добавить мониторинг AI Services в реальном времени
 - [ ] 🔄 Создать UI для управления AI задачами и очередями
 - [ ] 🔄 Интегрировать Flower dashboard в Admin Panel
+🆕 **Подзадачи**
+- [ ] 🔄 Страница «AI Services» (route `#/ai-services`) в админ-меню
+- [ ] 🔄 Компонент `CeleryStatusTable.jsx` — отображает active / reserved / scheduled задачи (`GET /api/debug/celery-status`)
+- [ ] 🔄 Кнопка «Trigger processing» → `POST /api/ai/trigger-processing`
+- [ ] 🔄 Ссылка «Flower» открывает `http://localhost:5555`
+- [ ] 🔄 Тестовый файл `temp/test_ai_services_page.jsx`
 - [ ] 🔄 **Цель**: Полное управление AI сервисами из Frontend
 - [ ] 🔄 **Время**: 3-4 часа
 - [ ] 🔄 **КРИТИЧНО**: Необходимо для мониторинга новой архитектуры
@@ -3157,6 +3171,9 @@ Backend API → Redis Pub/Sub → AI Orchestrator (Docker)
 - [x] ✅ Проверить communication между сервисами - **USERBOT РАБОТАЕТ**
 - [x] ✅ Валидировать persistence данных (PostgreSQL, Redis, sessions) - **USERBOT SESSIONS РАБОТАЮТ**
 - [ ] 🔄 Протестировать полную цепочку: userbot → backend → ai_services → frontend - **НЕ ТЕСТИРОВАЛОСЬ**
+🆕 **Подзадачи**
+- [ ] 🔄 Скрипт `temp/e2e_docker_ai_services.py` — запускает триггер, ждёт появления записей в `processed_data`, валидирует `AI RESULTS`
+- [ ] 🔄 GitHub Actions workflow `docker-e2e.yml` для автоматической проверки целостности образов
 - [ ] 🔄 **Цель**: Подтверждение работоспособности Docker системы - **ЧАСТИЧНО ДОСТИГНУТА (ТОЛЬКО USERBOT)**
 - [x] ✅ **Время**: 2-3 часа - **ПОТРАЧЕНО 6+ ЧАСОВ НА DEBUGGING USERBOT**
 - [ ] 🔄 **КРИТИЧНО**: Валидация перед интеграцией с MultiBotManager - **ЧАСТИЧНО ВЫПОЛНЕНА**

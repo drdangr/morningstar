@@ -18,5 +18,5 @@ exec celery -A celery_app worker \
     --loglevel=$CELERY_WORKER_LOGLEVEL \
     --concurrency=$CELERY_WORKER_CONCURRENCY \
     --pool=threads \
-    --queues=default,categorization,summarization,processing \
+    --queues=default,categorization,summarization,processing,celery \
     --hostname=ai-services@%h 

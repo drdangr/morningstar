@@ -8,6 +8,9 @@ import logging
 import time
 import os
 from typing import List, Dict, Any, Optional
+import asyncio
+from datetime import datetime
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,10 @@ except Exception as e:
 
 # Получаем app для декораторов
 app = get_celery_app()
+
+# === Helper constants ===
+BACKEND_URL = os.getenv("BACKEND_INTERNAL_URL", "http://backend:8000")
+
 
 # Test and health check tasks
 @app.task(bind=True, name='tasks.ping_task')
@@ -75,10 +82,19 @@ def test_openai_connection(self):
     logger.info("🔌 Testing OpenAI connection...")
     
     try:
-        # Проверяем наличие API ключа
-        openai_key = os.getenv('OPENAI_API_KEY')
+        # Получаем API ключ через SettingsManager (правильная архитектура)
+        
+        async def get_api_key():
+            if settings_manager:
+                return await settings_manager.get_openai_key()
+            else:
+                raise ValueError("SettingsManager не инициализирован")
+        
+        # Выполняем асинхронное получение ключа
+        openai_key = asyncio.run(get_api_key())
+        
         if not openai_key:
-            raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
+            raise ValueError("OpenAI API ключ не найден в Backend API")
         
         # Пробуем создать клиент OpenAI
         from openai import OpenAI
@@ -131,11 +147,37 @@ def categorize_post(self, post: Dict, bot_id: int, **kwargs):
         # Используем существующий сервис категоризации
         from services.categorization import CategorizationService
         
-        # Создаем сервис категоризации
+        # Получаем ключ - ПРИОРИТЕТ У SETTINGS_MANAGER
+        openai_key = None
+        if settings_manager:
+            try:
+                import asyncio
+                openai_key = asyncio.run(settings_manager.get_openai_key())
+                logger.info("✅ OpenAI ключ получен из SettingsManager")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить ключ из SettingsManager: {e}")
+                openai_key = None
+        
+        # Fallback на переменную окружения только если SettingsManager недоступен
+        if not openai_key:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if openai_key:
+                logger.info("⚠️ Используется OpenAI ключ из переменной окружения (fallback)")
+        
+        if not openai_key:
+            logger.error("❌ OPENAI_API_KEY не найден ни в SettingsManager, ни в переменных окружения")
+            return {
+                'task_id': self.request.id,
+                'bot_id': bot_id,
+                'post_id': post.get('id'),
+                'result': None,
+                'status': 'error',
+                'error': 'missing_openai_api_key',
+                'timestamp': time.time()
+            }
+
         categorization_service = CategorizationService(
-            model_name=kwargs.get('model_name', 'gpt-4o-mini'),
-            max_tokens=kwargs.get('max_tokens', 1000),
-            temperature=kwargs.get('temperature', 0.3),
+            backend_url=os.getenv('BACKEND_API_URL', 'http://backend:8000'),
             settings_manager=settings_manager
         )
         
@@ -146,8 +188,21 @@ def categorize_post(self, post: Dict, bot_id: int, **kwargs):
             {'id': 3, 'name': 'Экономика'}
         ])
         
-        # Обрабатываем пост
-        result = categorization_service.categorize_post(post, bot_categories)
+        # Создаём упрощённый PostData объект, необходимый сервису (id, content)
+        from types import SimpleNamespace
+        simple_post = SimpleNamespace(
+            id=post.get('id'),
+            channel_telegram_id=post.get('channel_telegram_id'),
+            telegram_message_id=post.get('telegram_message_id'),
+            title=post.get('title'),
+            content=post.get('content')
+        )
+
+        import asyncio
+        result_list = asyncio.run(
+            categorization_service.process_with_bot_config([simple_post], bot_id)
+        )
+        result = result_list[0] if result_list else {}
         
         logger.info(f"✅ Categorize post task completed: {result}")
         
@@ -251,13 +306,19 @@ def summarize_posts(self, posts: List[Dict], mode: str = 'individual', **kwargs)
         
         # Выбираем режим обработки
         if mode == 'individual':
+            import asyncio
             results = []
             for post in posts:
-                summary = summarization_service.summarize_post(post)
+                summary_res = asyncio.run(
+                    summarization_service.process(
+                        text=post.get('content') or '',
+                        max_summary_length=kwargs.get('max_summary_length', 150)
+                    )
+                )
                 results.append({
                     'post_id': post.get('id'),
-                    'summary': summary,
-                    'status': 'success'
+                    'summary': summary_res.get('summary', ''),
+                    'status': summary_res.get('status', 'success')
                 })
         else:
             # Батчевый режим - пока не реализован
@@ -409,24 +470,32 @@ def trigger_ai_processing(self, bot_id: Optional[int] = None, force_reprocess: b
     
     try:
         # Импортируем AI Orchestrator
-        from orchestrator_v5_parallel import process_bot_parallel
-        
-        # Определяем режим обработки
-        if force_reprocess:
-            mode = "force_reprocess"
+        # 🔄 Заменяем на новые Celery pipeline задачи
+        task_map = []
+        if bot_id is None:
+            # Получаем список активных ботов через Backend API
+            try:
+                import httpx
+                with httpx.Client(timeout=30) as client:
+                    resp = client.get(f"{BACKEND_URL}/api/public-bots", params={"status_filter": "active"})
+                    resp.raise_for_status()
+                    bots = resp.json()
+                    bot_ids = [b['id'] for b in bots]
+            except Exception as e:
+                logger.error(f"❌ Не удалось получить список ботов: {e}")
+                bot_ids = []
         else:
-            mode = "parallel"
-            
-        # Запускаем обработку
-        result = process_bot_parallel(bot_id=bot_id, mode=mode)
-        
-        logger.info(f"✅ AI Orchestrator task completed: {result}")
-        
+            bot_ids = [bot_id]
+
+        for b_id in bot_ids:
+            t = process_bot_digest.delay(b_id)
+            task_map.append({"bot_id": b_id, "task_id": t.id})
+
+        logger.info(f"✅ AI trigger redirected: {task_map}")
+
         return {
             'task_id': self.request.id,
-            'bot_id': bot_id,
-            'mode': mode,
-            'result': result,
+            'tasks': task_map,
             'status': 'success',
             'timestamp': time.time()
         }
@@ -489,6 +558,173 @@ def generate_digest_preview(self, bot_id: int, limit: int = 10):
             'timestamp': time.time()
         }
 
+# NEW TASK: Полная обработка постов конкретного бота
+@app.task(bind=True, name='tasks.process_bot_digest')
+def process_bot_digest(self, bot_id: int, limit: int = 50):
+    """Полная обработка необработанных постов для одного бота (категоризация + саммаризация).
+
+    Шаги:
+    1. Получить список активных категорий бота
+    2. Получить необработанные посты (require_categorization)
+    3. Для каждого поста выполнить CategorizationService и SummarizationService
+    4. Сохранить результаты батчем через /api/ai/results/batch
+    """
+
+    logger.info(f"🚀 process_bot_digest started for bot {bot_id}")
+
+    try:
+        session = httpx.Client()
+
+        # 1. Получаем категории бота
+        cat_resp = session.get(f"{BACKEND_URL}/api/public-bots/{bot_id}/categories", timeout=30)
+        cat_resp.raise_for_status()
+        bot_categories = cat_resp.json()
+
+        if not bot_categories:
+            logger.warning(f"⚠️ У бота {bot_id} нет категорий – пропуск")
+            return {
+                'status': 'skipped',
+                'reason': 'no_categories',
+                'bot_id': bot_id,
+                'task_id': self.request.id,
+                'timestamp': time.time()
+            }
+
+        # Преобразуем категории в упрощённый формат для сервиса категоризации
+        categories_for_service = []
+        for c in bot_categories:
+            cat_name = c.get('name') or c.get('category_name') or c.get('category')
+            if not cat_name:
+                cat_name = f"Category {c.get('id')}"
+            categories_for_service.append({'id': c['id'], 'name': cat_name})
+
+        # 2. Получаем необработанные посты
+        posts_resp = session.get(
+            f"{BACKEND_URL}/api/posts/unprocessed",
+            params={
+                'bot_id': bot_id,
+                'require_categorization': 'true',
+                'limit': limit
+            },
+            timeout=60
+        )
+        posts_resp.raise_for_status()
+        posts = posts_resp.json()
+
+        if not posts:
+            logger.info(f"✅ Нет новых постов для бота {bot_id}")
+            return {
+                'status': 'nothing_to_do',
+                'bot_id': bot_id,
+                'posts_processed': 0,
+                'task_id': self.request.id,
+                'timestamp': time.time()
+            }
+
+        # 3. Инициализируем AI сервисы
+        from services.categorization import CategorizationService
+        from services.summarization import SummarizationService
+
+        # Получаем OpenAI API ключ - ПРИОРИТЕТ У SETTINGS_MANAGER
+        openai_api_key = None
+        if settings_manager:
+            try:
+                import asyncio
+                openai_api_key = asyncio.run(settings_manager.get_openai_key())
+                logger.info("✅ OpenAI ключ получен из SettingsManager для process_bot_digest")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить ключ из SettingsManager: {e}")
+                openai_api_key = None
+        
+        # Fallback на переменную окружения только если SettingsManager недоступен
+        if not openai_api_key:
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if openai_api_key:
+                logger.info("⚠️ Используется OpenAI ключ из переменной окружения (fallback)")
+        
+        if not openai_api_key:
+            logger.error("❌ OPENAI_API_KEY не найден ни в SettingsManager, ни в переменных окружения")
+            return {
+                'status': 'error',
+                'error': 'missing_openai_api_key',
+                'bot_id': bot_id,
+                'task_id': self.request.id,
+                'timestamp': time.time()
+            }
+
+        categorizer = CategorizationService(
+            backend_url=BACKEND_URL,
+            settings_manager=settings_manager
+        )
+        summarizer = SummarizationService(settings_manager=settings_manager)
+
+        ai_results_payload = []
+
+        for post in posts:
+            try:
+                cat_result = categorizer.categorize_post(post, categories_for_service)
+
+                # summary может быть пустым для очень коротких постов
+                summary_data = asyncio.run(
+                    summarizer.process(
+                        text=post.get('content') or '',
+                        max_summary_length=150
+                    )
+                )
+
+                ai_results_payload.append({
+                    'post_id': post['id'],
+                    'public_bot_id': bot_id,
+                    'summaries': {
+                        'summary': summary_data.get('summary', '')
+                    },
+                    'categories': {
+                        'category': cat_result.get('category')
+                    },
+                    'metrics': {
+                        'relevance': cat_result.get('relevance', 0)
+                    }
+                })
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки поста {post['id']}: {e}")
+
+        if not ai_results_payload:
+            logger.warning(f"⚠️ Не удалось обработать ни одного поста для бота {bot_id}")
+            return {
+                'status': 'error',
+                'error': 'no_results',
+                'bot_id': bot_id,
+                'task_id': self.request.id,
+                'timestamp': time.time()
+            }
+
+        # 4. Сохраняем результаты батчем
+        save_resp = session.post(f"{BACKEND_URL}/api/ai/results/batch", json=ai_results_payload, timeout=60)
+        save_resp.raise_for_status()
+
+        saved_results = save_resp.json()
+
+        logger.info(f"✅ process_bot_digest completed for bot {bot_id}: {len(saved_results)} results saved")
+
+        return {
+            'status': 'success',
+            'bot_id': bot_id,
+            'posts_processed': len(saved_results),
+            'task_id': self.request.id,
+            'timestamp': time.time()
+        }
+
+    except Exception as e:
+        logger.error(f"❌ process_bot_digest failed for bot {bot_id}: {e}")
+        return {
+            'status': 'error',
+            'bot_id': bot_id,
+            'error': str(e),
+            'task_id': self.request.id,
+            'timestamp': time.time()
+        }
+
 # Export all tasks
 __all__ = [
     'ping_task',
@@ -501,5 +737,6 @@ __all__ = [
     'process_digest',
     'cleanup_expired_results',
     'trigger_ai_processing',
-    'generate_digest_preview'
+    'generate_digest_preview',
+    'process_bot_digest'
 ] 

@@ -22,13 +22,41 @@ class SummarizationService(BaseAIService):
         self.settings_manager = settings_manager
         self.logger = logger.bind(service="SummarizationService")
         
-        # Инициализируем клиент OpenAI
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = AsyncOpenAI(api_key=api_key)
+        # Клиент OpenAI будет инициализирован при первом использовании
+        self.client = None
         
         self.logger.info("📝 SummarizationService инициализирован")
+    
+    async def _ensure_client(self):
+        """🔑 ДИНАМИЧЕСКОЕ создание/обновление OpenAI клиента с актуальным ключом"""
+        # Получаем актуальный ключ
+        current_key = None
+        
+        if self.settings_manager:
+            try:
+                current_key = await self.settings_manager.get_openai_key()
+                self.logger.info("🔑 Получен актуальный OpenAI ключ через SettingsManager")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось получить ключ из SettingsManager: {e}")
+        
+        # Fallback на переменную окружения только если SettingsManager недоступен
+        if not current_key:
+            current_key = os.getenv('OPENAI_API_KEY')
+            if current_key:
+                self.logger.info("⚠️ Используется OpenAI ключ из переменной окружения (fallback)")
+        
+        if not current_key:
+            raise ValueError("OpenAI API ключ не найден ни в SettingsManager, ни в переменных окружения")
+        
+        # Создаем/обновляем клиент если ключ изменился или клиента нет
+        old_key = getattr(self.client, 'api_key', None) if self.client else None
+        need_update = not self.client or old_key != current_key
+        
+        if need_update:
+            self.client = AsyncOpenAI(api_key=current_key)
+            self.logger.info(f"🔄 OpenAI клиент создан/обновлен с ключом {current_key[-10:]}")
+        else:
+            self.logger.debug(f"✅ OpenAI клиент актуален (ключ {current_key[-10:]})")
     
     async def process(
         self,
@@ -40,6 +68,9 @@ class SummarizationService(BaseAIService):
     ) -> Dict[str, Any]:
         """Создание краткого содержания одного текста"""
         try:
+            # Инициализируем OpenAI клиент при первом использовании
+            await self._ensure_client()
+            
             # Проверяем валидность входных данных
             if not text or not text.strip():
                 return {
