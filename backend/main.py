@@ -3926,6 +3926,24 @@ class ProcessedData(Base):
     is_summarized = Column(Boolean, default=False, nullable=False)
     __table_args__ = (UniqueConstraint('post_id', 'public_bot_id', name='uq_processed_post_bot'),)
 
+class ProcessedServiceResult(Base):
+    """Журнальный слой результатов каждого AI-сервиса"""
+    __tablename__ = "processed_service_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(BigInteger, nullable=False)
+    public_bot_id = Column(Integer, nullable=False)
+    service_name = Column(String(64), nullable=False)  # 'categorization', 'summarization', 'ner', etc.
+    status = Column(String(32), default="success")  # success, error, skipped
+    payload = Column(JSONB if USE_POSTGRESQL else Text, nullable=False, default={} if USE_POSTGRESQL else "{}")
+    metrics = Column(JSONB if USE_POSTGRESQL else Text, nullable=False, default={} if USE_POSTGRESQL else "{}")
+    processed_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('post_id', 'public_bot_id', 'service_name', name='uq_processed_service_result'),
+        Index('idx_psr_post_bot_service', 'post_id', 'public_bot_id', 'service_name'),
+    )
+
 # Создание таблиц БД - выполняется в конце после всех определений
 print("🔧 Создание таблиц в базе данных...")
 try:
@@ -3955,6 +3973,19 @@ class SyncStatusRequest(BaseModel):
     post_ids: List[int]
     bot_id: int
     service: str  # 'categorizer' | 'summarizer'
+
+# === Модели для service results ===
+class ProcessedServiceResultCreate(BaseModel):
+    post_id: int
+    public_bot_id: int
+    service_name: str
+    status: str = "success"
+    payload: Dict[str, Any]
+    metrics: Dict[str, Any] = {}
+
+class ServiceResultsBatch(BaseModel):
+    service: str
+    results: List[ProcessedServiceResultCreate]
 
 # === API ENDPOINTS ДЛЯ AI SERVICE ===
 @app.post("/api/ai/results", response_model=AIResultResponse, status_code=status.HTTP_201_CREATED)
@@ -4360,6 +4391,96 @@ def update_ai_results_status_batch(
             detail=f"Ошибка батчевого обновления AI статусов: {str(e)}"
         )
 
+def _check_and_update_aggregate_status(db: Session, post_id: int, public_bot_id: int):
+    """
+    Проверяет результаты всех AI-сервисов для поста и обновляет агрегированный статус в processed_data.
+    Вызывается после сохранения результата любого сервиса в processed_service_results.
+    """
+    try:
+        # Получаем все результаты сервисов для данного поста и бота
+        service_results = db.query(ProcessedServiceResult).filter(
+            ProcessedServiceResult.post_id == post_id,
+            ProcessedServiceResult.public_bot_id == public_bot_id,
+            ProcessedServiceResult.status == 'success'
+        ).all()
+        
+        if not service_results:
+            logger.warning(f"⚠️ Нет успешных результатов сервисов для post_id={post_id}, bot_id={public_bot_id}")
+            return
+        
+        # Определяем завершенные сервисы
+        completed_services = {result.service_name for result in service_results}
+        has_categorization = 'categorization' in completed_services
+        has_summarization = 'summarization' in completed_services
+        
+        # Агрегируем данные из service results
+        aggregated_summaries = {}
+        aggregated_categories = {}
+        aggregated_metrics = {}
+        
+        for result in service_results:
+            # Парсим payload в зависимости от типа БД
+            if USE_POSTGRESQL:
+                payload = result.payload if isinstance(result.payload, dict) else json.loads(result.payload)
+                metrics = result.metrics if isinstance(result.metrics, dict) else json.loads(result.metrics)
+            else:
+                payload = json.loads(result.payload) if result.payload else {}
+                metrics = json.loads(result.metrics) if result.metrics else {}
+            
+            # Агрегируем данные по типу сервиса
+            if result.service_name == 'categorization':
+                aggregated_categories.update(payload)
+            elif result.service_name == 'summarization':
+                aggregated_summaries.update(payload)
+            
+            # Объединяем метрики
+            aggregated_metrics.update(metrics)
+        
+        # Определяем итоговый статус
+        if has_categorization and has_summarization:
+            processing_status = "completed"
+        elif has_categorization or has_summarization:
+            processing_status = "processing"
+        else:
+            processing_status = "pending"
+        
+        # Находим или создаем запись в processed_data
+        processed_data = db.query(ProcessedData).filter(
+            ProcessedData.post_id == post_id,
+            ProcessedData.public_bot_id == public_bot_id
+        ).first()
+        
+        if processed_data:
+            # Обновляем существующую запись
+            processed_data.summaries = aggregated_summaries if USE_POSTGRESQL else json.dumps(aggregated_summaries, ensure_ascii=False)
+            processed_data.categories = aggregated_categories if USE_POSTGRESQL else json.dumps(aggregated_categories, ensure_ascii=False)
+            processed_data.metrics = aggregated_metrics if USE_POSTGRESQL else json.dumps(aggregated_metrics, ensure_ascii=False)
+            processed_data.is_categorized = has_categorization
+            processed_data.is_summarized = has_summarization
+            processed_data.processing_status = processing_status
+            processed_data.processed_at = func.now()
+        else:
+            # Создаем новую запись
+            processed_data = ProcessedData(
+                post_id=post_id,
+                public_bot_id=public_bot_id,
+                summaries=aggregated_summaries if USE_POSTGRESQL else json.dumps(aggregated_summaries, ensure_ascii=False),
+                categories=aggregated_categories if USE_POSTGRESQL else json.dumps(aggregated_categories, ensure_ascii=False),
+                metrics=aggregated_metrics if USE_POSTGRESQL else json.dumps(aggregated_metrics, ensure_ascii=False),
+                is_categorized=has_categorization,
+                is_summarized=has_summarization,
+                processing_status=processing_status
+            )
+            db.add(processed_data)
+        
+        db.commit()
+        logger.info(f"✅ Агрегирован статус для post_id={post_id}, bot_id={public_bot_id}: {processing_status} (categorized={has_categorization}, summarized={has_summarization})")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка агрегации статуса для post_id={post_id}, bot_id={public_bot_id}: {e}")
+        db.rollback()
+        raise
+
 @app.get("/api/ai/results/{result_id}", response_model=AIResultResponse)
 def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
     """Получение конкретного AI результата по ID"""
@@ -4367,6 +4488,68 @@ def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="AI result not found")
     return result
+
+@app.post("/api/ai/service-results/batch", status_code=status.HTTP_201_CREATED)
+def create_service_results_batch(batch: ServiceResultsBatch, db: Session = Depends(get_db)):
+    """
+    Принимает батч результатов от одного AI-сервиса (например, все результаты категоризации).
+    Сохраняет их в processed_service_results и обновляет агрегированный статус в processed_data.
+    """
+    try:
+        logger.info(f"Получен батч из {len(batch.results)} результатов от сервиса '{batch.service}'")
+
+        # Шаг 1: Сохраняем все результаты из батча в processed_service_results
+        for result_data in batch.results:
+            # Используем UPSERT для атомарного обновления
+            existing_result = db.query(ProcessedServiceResult).filter(
+                ProcessedServiceResult.post_id == result_data.post_id,
+                ProcessedServiceResult.public_bot_id == result_data.public_bot_id,
+                ProcessedServiceResult.service_name == result_data.service_name
+            ).first()
+            
+            if existing_result:
+                # Обновляем существующий результат
+                existing_result.status = result_data.status
+                existing_result.payload = result_data.payload if USE_POSTGRESQL else json.dumps(result_data.payload, ensure_ascii=False)
+                existing_result.metrics = result_data.metrics if USE_POSTGRESQL else json.dumps(result_data.metrics, ensure_ascii=False)
+                existing_result.processed_at = func.now()
+            else:
+                # Создаем новый результат
+                new_result = ProcessedServiceResult(
+                    post_id=result_data.post_id,
+                    public_bot_id=result_data.public_bot_id,
+                    service_name=result_data.service_name,
+                    status=result_data.status,
+                    payload=result_data.payload if USE_POSTGRESQL else json.dumps(result_data.payload, ensure_ascii=False),
+                    metrics=result_data.metrics if USE_POSTGRESQL else json.dumps(result_data.metrics, ensure_ascii=False)
+                )
+                db.add(new_result)
+
+        # Коммитим все результаты сервисов
+        db.commit()
+        logger.info(f"Успешно сохранено {len(batch.results)} результатов в processed_service_results.")
+
+        # Шаг 2: Обновляем агрегированные статусы для всех затронутых постов
+        unique_posts = list(set((res.post_id, res.public_bot_id) for res in batch.results))
+        logger.info(f"🔄 Требуется обновить агрегаты для {len(unique_posts)} постов...")
+        
+        for post_id, public_bot_id in unique_posts:
+            try:
+                # Вызываем функцию агрегации для каждого поста
+                _check_and_update_aggregate_status(db, post_id, public_bot_id)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при агрегации для post_id={post_id}, bot_id={public_bot_id}: {e}")
+
+        logger.info("✅ Batch результатов успешно сохранен и агрегирован.")
+        
+        return JSONResponse(
+            status_code=201,
+            content={"message": f"Batch от сервиса '{batch.service}' успешно обработан.", "processed_count": len(batch.results)}
+        )
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в create_service_results_batch: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/ai/results/sync-status")
 def sync_ai_service_status(request: SyncStatusRequest, db: Session = Depends(get_db)):
