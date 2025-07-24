@@ -16,9 +16,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация Redis
+# Конфигурация Redis и Backend
 REDIS_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+# Backend URL для AI Tasks (используется в tasks.py)
+# BACKEND_INTERNAL_URL используется в tasks.py как BACKEND_URL
 
 # Создание Celery app
 app = Celery('ai_services')

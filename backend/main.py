@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_, Index, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
@@ -650,7 +650,10 @@ class PostCacheResponse(PostCacheBase):
     class Config:
         from_attributes = True
 
-# Новая модель для Posts Cache Monitor с AI результатами
+# Расширенная модель для /api/posts/unprocessed
+class PostCacheResponseWithBot(PostCacheResponse):
+    bot_id: int
+
 class PostCacheWithAIResponse(PostCacheBase):
     id: int
     collected_at: datetime
@@ -2643,6 +2646,60 @@ def update_post_status(
         "new_status": new_status
     }
 
+@app.delete("/api/posts/cache/{post_id}")
+def delete_post_by_id(post_id: int, db: Session = Depends(get_db)):
+    """🔧 НОВЫЙ ЭНДПОИНТ: Удалить конкретный пост и все связанные AI результаты"""
+    try:
+        # Проверяем существование поста
+        post = db.query(PostCache).filter(PostCache.id == post_id).first()
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Пост с ID {post_id} не найден"
+            )
+        
+        # Удаляем связанные AI результаты из processed_data
+        processed_data_count = db.query(ProcessedData).filter(
+            ProcessedData.post_id == post_id
+        ).count()
+        
+        db.query(ProcessedData).filter(
+            ProcessedData.post_id == post_id
+        ).delete(synchronize_session=False)
+        
+        # Удаляем связанные записи из processed_service_results
+        service_results_count = db.query(ProcessedServiceResult).filter(
+            ProcessedServiceResult.post_id == post_id
+        ).count()
+        
+        db.query(ProcessedServiceResult).filter(
+            ProcessedServiceResult.post_id == post_id
+        ).delete(synchronize_session=False)
+        
+        # Удаляем сам пост
+        db.query(PostCache).filter(PostCache.id == post_id).delete()
+        
+        db.commit()
+        
+        logger.info(f"✅ Удален пост {post_id} с {processed_data_count} AI результатами и {service_results_count} сервисными записями")
+        
+        return {
+            "message": f"Пост {post_id} и все связанные данные успешно удалены",
+            "post_id": post_id,
+            "deleted_processed_data": processed_data_count,
+            "deleted_service_results": service_results_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка удаления поста {post_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления поста: {str(e)}"
+        )
+
 @app.delete("/api/database/clear")
 def clear_database(
     confirm: bool = False,
@@ -2776,6 +2833,13 @@ def bulk_delete_posts(
             db.query(ProcessedData).filter(
                 ProcessedData.post_id.in_([post.id for post in posts])
             ).delete(synchronize_session=False)
+            
+            # 🔧 ИСПРАВЛЕНИЕ: Удаляем связанные записи из processed_service_results
+            post_ids_list = [post.id for post in posts]
+            if post_ids_list:
+                db.query(ProcessedServiceResult).filter(
+                    ProcessedServiceResult.post_id.in_(post_ids_list)
+                ).delete(synchronize_session=False)
             
             db.commit()
             
@@ -3926,6 +3990,24 @@ class ProcessedData(Base):
     is_summarized = Column(Boolean, default=False, nullable=False)
     __table_args__ = (UniqueConstraint('post_id', 'public_bot_id', name='uq_processed_post_bot'),)
 
+# НОВАЯ ТАБЛИЦА ДЛЯ РАСШИРЯЕМЫХ РЕЗУЛЬТАТОВ СЕРВИСОВ
+class ProcessedServiceResult(Base):
+    __tablename__ = "processed_service_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(BigInteger, nullable=False)
+    public_bot_id = Column(Integer, nullable=False)
+    service_name = Column(String(64), nullable=False)
+    status = Column(String(32), default="success")
+    payload = Column(JSONB if USE_POSTGRESQL else Text, nullable=False, default={})
+    metrics = Column(JSONB if USE_POSTGRESQL else Text, nullable=False, default={})
+    processed_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('post_id', 'public_bot_id', 'service_name', name='uq_psr_post_bot_service'),
+        Index('idx_psr_post_bot_service', 'post_id', 'public_bot_id', 'service_name'),
+    )
+
 # Создание таблиц БД - выполняется в конце после всех определений
 print("🔧 Создание таблиц в базе данных...")
 try:
@@ -3949,6 +4031,19 @@ class AIResultResponse(AIResultCreate):
     processed_at: datetime
     class Config:
         from_attributes = True
+
+# Pydantic модели для новой архитектуры
+class ProcessedServiceResultCreate(BaseModel):
+    post_id: int
+    public_bot_id: int
+    service_name: str
+    status: str = "success"
+    payload: Dict[str, Any]
+    metrics: Dict[str, Any] = {}
+
+class ServiceResultsBatch(BaseModel):
+    service: str
+    results: List[ProcessedServiceResultCreate]
 
 # === Новый запрос для синхронизации статусов ===
 class SyncStatusRequest(BaseModel):
@@ -4121,9 +4216,9 @@ def get_ai_results(
     
     return query.offset(skip).limit(limit).all()
 
-@app.get("/api/posts/unprocessed", response_model=List[PostCacheResponse])
+@app.get("/api/posts/unprocessed", response_model=List[PostCacheResponseWithBot])
 def get_unprocessed_posts(
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=1000), # Увеличен лимит по умолчанию
     channel_telegram_ids: Optional[str] = Query(None, description="Comma-separated list of channel telegram IDs"),
     bot_id: Optional[int] = Query(None, description="Bot ID for filtering processed posts"),
     require_categorization: Optional[bool] = Query(None, description="Only posts that need categorization"),
@@ -4147,26 +4242,63 @@ def get_unprocessed_posts(
                 detail="Некорректные channel_telegram_ids"
             )
     
-    # Если указан bot_id и требуется специфическая фильтрация
+    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Умная дедупликация по сервисам
+    # Не добавляем общую дедупликацию здесь - она будет специфична для каждого сервиса ниже
+    
+    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Фильтрация по processed_service_results
     if bot_id and (require_categorization or require_summarization):
-        # Получаем processed_data для данного бота
-        processed_query = db.query(ProcessedData.post_id).filter(ProcessedData.public_bot_id == bot_id)
-        
         if require_categorization:
-            # Только посты которые НЕ категоризированы
-            categorized_post_ids = processed_query.filter(ProcessedData.is_categorized == True).subquery()
-            query = query.filter(~PostCache.id.in_(categorized_post_ids))
+            # 🎯 УМНАЯ ДЕДУПЛИКАЦИЯ: Исключаем посты уже обрабатываемые или готовые по категоризации
+            # Исключаем посты с записью: service_name='categorization' AND status IN ('processing', 'success')
+            already_categorized_or_processing = db.query(ProcessedServiceResult.post_id).filter(
+                ProcessedServiceResult.public_bot_id == bot_id,
+                ProcessedServiceResult.service_name == 'categorization',
+                ProcessedServiceResult.status.in_(['processing', 'success'])
+            ).subquery()
+            
+            # Исключаем уже обрабатываемые/готовые посты
+            query = query.filter(~PostCache.id.in_(already_categorized_or_processing))
+            
+            logger.info(f"🛡️ Дедупликация категоризации: исключены посты в статусе processing/success для бота {bot_id}")
         
         elif require_summarization:
-            # Только посты которые категоризированы, но НЕ саммаризированы
-            ready_for_summary = processed_query.filter(
-                ProcessedData.is_categorized == True,
-                ProcessedData.is_summarized == False
+            # 🎯 УМНАЯ ДЕДУПЛИКАЦИЯ ДЛЯ САММАРИЗАЦИИ: 
+            # 1) ДОЛЖНЫ быть успешно категоризированы
+            # 2) НЕ должны быть в процессе саммаризации или уже саммаризированы
+            
+            # Подзапрос: посты с успешной категоризацией 
+            successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
+                ProcessedServiceResult.public_bot_id == bot_id,
+                ProcessedServiceResult.service_name == 'categorization',
+                ProcessedServiceResult.status == 'success'
             ).subquery()
-            query = query.filter(PostCache.id.in_(ready_for_summary))
+            
+            # Подзапрос: посты уже обрабатываемые или готовые по саммаризации
+            already_summarized_or_processing = db.query(ProcessedServiceResult.post_id).filter(
+                ProcessedServiceResult.public_bot_id == bot_id,
+                ProcessedServiceResult.service_name == 'summarization', 
+                ProcessedServiceResult.status.in_(['processing', 'success'])
+            ).subquery()
+            
+            # Берем категоризированные, но исключаем уже обрабатываемые/готовые по саммаризации
+            query = query.filter(
+                PostCache.id.in_(successfully_categorized),
+                ~PostCache.id.in_(already_summarized_or_processing)
+            )
+            
+            logger.info(f"🛡️ Дедупликация саммаризации: посты категоризированы но НЕ в process/success саммаризации для бота {bot_id}")
     
     # Возвращаем результат
-    return query.order_by(PostCache.collected_at.asc()).limit(limit).all()
+    results = query.order_by(PostCache.post_date.desc()).limit(limit).all()
+    
+    # Добавляем bot_id к каждому посту
+    response_data = []
+    for post in results:
+        post_dict = post.__dict__
+        post_dict['bot_id'] = bot_id
+        response_data.append(PostCacheResponseWithBot.model_validate(post_dict))
+
+    return response_data
 
 # === MULTITENANT STATUS ENDPOINTS ===
 @app.get("/api/ai/results/batch-status")
@@ -4367,6 +4499,175 @@ def get_ai_result_by_id(result_id: int, db: Session = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="AI result not found")
     return result
+
+# --------------------------------------------------------------------------
+# НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПАРАЛЛЕЛЬНОЙ АРХИТЕКТУРЫ (ДЕНЬ 30)
+# --------------------------------------------------------------------------
+
+# РЕЕСТР СЕРВИСОВ
+# Определяет, какие сервисы должны быть выполнены для каждого поста
+AI_SERVICES = [
+    {"name": "categorization", "queue": "categorization", "required": True},
+    {"name": "summarization",  "queue": "summarization",  "required": True},
+    # Можно добавлять новые сервисы, например:
+    # {"name": "ner_extraction", "queue": "processing", "required": False}
+]
+
+def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
+    """🔧 ИСПРАВЛЕНО: Пересчитывает флаги и статусы с проверкой реальных AI результатов."""
+    
+    # Получаем или создаем агрегированную запись
+    agg_row = db.query(ProcessedData).filter(
+        ProcessedData.post_id == post_id,
+        ProcessedData.public_bot_id == bot_id
+    ).with_for_update().first()
+
+    if not agg_row:
+        agg_row = ProcessedData(post_id=post_id, public_bot_id=bot_id, summaries={}, categories={}, metrics={})
+        db.add(agg_row)
+
+    # Получаем все успешные результаты для этого поста/бота
+    service_results = db.query(ProcessedServiceResult.service_name, ProcessedServiceResult.payload, ProcessedServiceResult.metrics).filter(
+        ProcessedServiceResult.post_id == post_id,
+        ProcessedServiceResult.public_bot_id == bot_id,
+        ProcessedServiceResult.status == 'success'
+    ).all()
+    
+    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем что результаты реальные, а не fallback
+    successful_services = {}
+    for res in service_results:
+        # Проверяем что в payload НЕТ ошибки (это не fallback результат)
+        
+        # Десериализация payload (может быть строкой JSON или уже словарем)
+        if isinstance(res.payload, str):
+            try:
+                payload = json.loads(res.payload)
+            except (json.JSONDecodeError, ValueError):
+                payload = {}
+        elif isinstance(res.payload, dict):
+            payload = res.payload
+        else:
+            payload = {}
+        
+        logger.info(f"🔍 DEBUG: Проверяем {res.service_name}: payload={payload}, type={type(res.payload)}")
+        
+        if not payload.get('error'):  # Если нет поля 'error' - это реальный результат
+            successful_services[res.service_name] = {'payload': payload, 'metrics': res.metrics}
+            logger.info(f"✅ Принимаем реальный результат для {res.service_name}")
+        else:
+            logger.warning(f"⚠️ Игнорируем fallback результат для {res.service_name}: {payload.get('error')}")
+
+    # Обновляем флаги только для РЕАЛЬНЫХ результатов
+    agg_row.is_categorized = "categorization" in successful_services
+    agg_row.is_summarized = "summarization" in successful_services
+    
+    # Обновляем агрегированные данные
+    if agg_row.is_categorized:
+        agg_row.categories = successful_services["categorization"]['payload']
+        agg_row.metrics.update(successful_services["categorization"]['metrics'])
+
+    if agg_row.is_summarized:
+        agg_row.summaries = successful_services["summarization"]['payload']
+        agg_row.metrics.update(successful_services["summarization"]['metrics'])
+
+        # Проверяем, все ли ОБЯЗАТЕЛЬНЫЕ сервисы завершены
+    required_services = {s['name'] for s in AI_SERVICES if s.get('required', False)}
+    if required_services.issubset(successful_services.keys()):
+        agg_row.processing_status = "completed"
+    else:
+        agg_row.processing_status = "processing"
+    
+    agg_row.processed_at = datetime.utcnow()
+    db.flush()
+
+# --------------------------------------------------------------------------
+AI_SERVICES = [
+    {"name": "categorization", "required": True},
+    {"name": "summarization", "required": True},
+]
+
+@app.post("/api/ai/service-results/batch", status_code=status.HTTP_201_CREATED)
+def create_service_results_batch(batch: ServiceResultsBatch, db: Session = Depends(get_db)):
+    """
+    Принимает батч результатов от одного из AI-сервисов,
+    сохраняя их в `processed_service_results` с помощью "UPSERT" (обновление при конфликте).
+    Для каждого уникального поста/бота вызывает функцию обновления агрегированного статуса.
+    """
+    if not batch.results:
+        logger.warning("Получен пустой батч результатов. Действий не требуется.")
+        return JSONResponse(status_code=200, content={"message": "Нет данных для сохранения."})
+
+    try:
+        # Шаг 1: Подготовить данные для "UPSERT"
+        results_to_upsert = [
+            {
+                "post_id": r.post_id,
+                "public_bot_id": r.public_bot_id,
+                "service_name": r.service_name,
+                "status": r.status,
+                "payload": r.payload,
+                "metrics": r.metrics,
+                "processed_at": datetime.utcnow()
+            }
+            for r in batch.results
+        ]
+        
+        # Шаг 2: Выполнить "UPSERT" (INSERT ... ON CONFLICT ...)
+        if USE_POSTGRESQL:
+            stmt = insert(ProcessedServiceResult).values(results_to_upsert)
+            update_dict = {
+                'status': stmt.excluded.status,
+                'payload': stmt.excluded.payload,
+                'metrics': stmt.excluded.metrics,
+                'processed_at': stmt.excluded.processed_at
+            }
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['post_id', 'public_bot_id', 'service_name'],
+                set_=update_dict
+            )
+            db.execute(stmt)
+        else: # Fallback для SQLite
+             for r in results_to_upsert:
+                existing = db.query(ProcessedServiceResult).filter_by(
+                    post_id=r['post_id'], 
+                    public_bot_id=r['public_bot_id'],
+                    service_name=r['service_name']
+                ).first()
+                if existing:
+                    existing.status = r['status']
+                    existing.payload = r['payload']
+                    existing.metrics = r['metrics']
+                    existing.processed_at = r['processed_at']
+                else:
+                    db.add(ProcessedServiceResult(**r))
+
+        logger.info(f"✅ Успешно сохранено/обновлено {len(results_to_upsert)} записей в `processed_service_results`.")
+
+        # Шаг 3: Асинхронно обновить агрегатные статусы для затронутых постов
+        unique_posts_to_update = {(r.post_id, r.public_bot_id) for r in batch.results}
+        
+        logger.info(f"🔄 Запуск обновления агрегатных статусов для {len(unique_posts_to_update)} уникальных постов/ботов.")
+        
+        for post_id, bot_id in unique_posts_to_update:
+            try:
+                _update_processed_data_flags(db, post_id, bot_id)
+            except Exception as e:
+                 logger.error(f"❌ Ошибка при обновлении агрегатного статуса для post_id={post_id}, bot_id={bot_id}: {e}", exc_info=True)
+
+        db.commit()
+        
+        return JSONResponse(
+            status_code=201,
+            content={"message": f"Успешно обработано {len(results_to_upsert)} результатов."}
+        )
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Критическая ошибка в create_service_results_batch: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Внутренняя ошибка сервера при обработке результатов: {e}"
+        )
 
 @app.put("/api/ai/results/sync-status")
 def sync_ai_service_status(request: SyncStatusRequest, db: Session = Depends(get_db)):
@@ -4818,6 +5119,9 @@ async def reprocess_all_posts(db: Session = Depends(get_db)):
         # Удаляем все AI результаты (мультитенантные статусы автоматически удалятся)
         db.query(ProcessedData).delete(synchronize_session=False)
         
+        # 🔧 ИСПРАВЛЕНИЕ: Удаляем все записи из processed_service_results  
+        db.query(ProcessedServiceResult).delete(synchronize_session=False)
+        
         db.commit()
         
         # 🚀 АВТОЗАПУСК AI ORCHESTRATOR
@@ -5102,6 +5406,9 @@ async def clear_ai_results(confirm: bool = False, db: Session = Depends(get_db))
         
         # Удаляем все AI результаты (мультитенантные статусы автоматически удалятся)
         db.query(ProcessedData).delete(synchronize_session=False)
+        
+        # 🔧 ИСПРАВЛЕНИЕ: Удаляем все записи из processed_service_results
+        db.query(ProcessedServiceResult).delete(synchronize_session=False)
         
         db.commit()
         
@@ -6321,7 +6628,7 @@ async def clear_data_by_bot(
                 
                 deleted_stats["posts_cache"] = posts_count
                 deleted_stats["affected_channels"] = len(telegram_ids)
-            
+        
         db.commit()
         
         logger.info(f"🧹 ОЧИСТКА ПО БОТУ {bot.name}: {deleted_stats}")

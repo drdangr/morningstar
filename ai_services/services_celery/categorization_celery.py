@@ -9,12 +9,16 @@ import re
 import time
 import logging
 import math
+import asyncio
 from typing import Dict, List, Optional, Tuple, Any
 from openai import OpenAI
 import requests
 from .base_celery import BaseAIServiceCelery
 
 logger = logging.getLogger(__name__)
+
+# 🔧 КОНТРОЛЬ CONCURRENCY: Ограничиваем одновременные запросы к OpenAI
+OPENAI_SEMAPHORE = asyncio.Semaphore(2)  # Максимум 2 одновременных запроса
 
 class CategorizationServiceCelery(BaseAIServiceCelery):
     """
@@ -50,61 +54,46 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         else:
             logger.warning(f"   ⚠️ SettingsManager не подключен")
     
-    def process_with_bot_config(self, posts: List[Dict], bot_id: int) -> List[Dict[str, Any]]:
+    async def process_with_bot_config_async(self, posts: List[Dict], bot_id: int) -> List[Dict[str, Any]]:
         """
-        🚀 БАТЧЕВАЯ категоризация постов с настройками конкретного PublicBot
-        
-        Args:
-            posts: Список постов для категоризации (dict format)
-            bot_id: ID публичного бота
-            
-        Returns:
-            Список результатов категоризации
+        🚀 АСИНХРОННАЯ БАТЧЕВАЯ категоризация постов с настройками конкретного PublicBot
         """
         try:
-            # Конвертируем dict в Post objects если нужно
             post_objects = self._convert_to_post_objects(posts)
             
-            # Получаем конфигурацию бота
             bot_config = self._get_bot_config(bot_id)
             if not bot_config:
                 logger.error(f"Не удалось получить конфигурацию бота {bot_id}")
                 return []
             
-            # Получаем категории бота с описаниями
             bot_categories = self._get_bot_categories(bot_id)
             if not bot_categories:
                 logger.error(f"Не удалось получить категории бота {bot_id}")
                 return []
             
-            logger.info(f"🤖 БАТЧЕВАЯ обработка {len(post_objects)} постов для бота '{bot_config['name']}'")
-            logger.info(f"📂 Доступно {len(bot_categories)} категорий")
+            logger.info(f"🤖 АСИНХРОННАЯ БАТЧЕВАЯ обработка {len(post_objects)} постов для бота '{bot_config['name']}'")
             logger.info(f"📦 Размер батча: {self.batch_size}")
             
-            # Разбиваем посты на батчи
             batches = self._split_posts_into_batches(post_objects)
             logger.info(f"📊 Создано {len(batches)} батчей")
             
-            # Обрабатываем батчи последовательно (не параллельно как в async версии)
             all_results = []
             for i, batch in enumerate(batches, 1):
                 try:
-                    logger.info(f"📝 Обработка батча {i}/{len(batches)} ({len(batch)} постов)")
-                    batch_results = self._process_batch(batch, bot_config, bot_categories, i, len(batches))
+                    logger.info(f"📝 Асинхронная обработка батча {i}/{len(batches)} ({len(batch)} постов)")
+                    batch_results = await self._process_batch_async(batch, bot_config, bot_categories, i, len(batches))
                     all_results.extend(batch_results)
-                    logger.info(f"✅ Батч {i} обработан: {len(batch_results)} результатов")
                 except Exception as e:
-                    logger.error(f"❌ Ошибка обработки батча {i}: {e}")
-                    # Создаем fallback результаты для постов этого батча
+                    logger.error(f"❌ Ошибка обработки async батча {i}: {e}")
                     for post in batch:
-                        fallback_result = self._create_fallback_result(post)
+                        fallback_result = self._create_fallback_result(post, bot_id)
                         all_results.append(fallback_result)
             
-            logger.info(f"✅ БАТЧЕВАЯ обработка завершена: {len(all_results)} результатов")
+            logger.info(f"✅ АСИНХРОННАЯ БАТЧЕВАЯ обработка завершена: {len(all_results)} результатов")
             return all_results
             
         except Exception as e:
-            logger.error(f"❌ Ошибка в process_with_bot_config: {str(e)}")
+            logger.error(f"❌ Ошибка в process_with_bot_config_async: {str(e)}")
             return []
     
     def _convert_to_post_objects(self, posts: List[Dict]) -> List[Any]:
@@ -135,39 +124,29 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             batches.append(batch)
         return batches
     
-    def _process_batch(self, batch_posts: List[Any], bot_config: Dict[str, Any], 
+    async def _process_batch_async(self, batch_posts: List[Any], bot_config: Dict[str, Any], 
                       bot_categories: List[Dict[str, Any]], batch_index: int, total_batches: int) -> List[Dict[str, Any]]:
         """
-        Обрабатывает один батч постов
-        
-        Args:
-            batch_posts: Посты в батче
-            bot_config: Конфигурация бота
-            bot_categories: Категории бота
-            batch_index: Номер текущего батча
-            total_batches: Общее количество батчей
+        Асинхронно обрабатывает один батч постов
         """
         try:
-            logger.info(f"🔄 Обработка батча {batch_index}/{total_batches} ({len(batch_posts)} постов)")
+            logger.info(f"🔄 Асинхронная обработка батча {batch_index}/{total_batches} ({len(batch_posts)} постов)")
             
-            # Строим батчевый промпт (как в N8N)
             system_prompt, user_message = self._build_batch_prompt(bot_config, bot_categories, batch_posts, batch_index, total_batches)
             
-            # Вызываем OpenAI API для всего батча
-            response = self._call_openai_batch_api(system_prompt, user_message)
+            response = await self._call_openai_batch_api_async(system_prompt, user_message)
             if not response:
                 logger.error(f"❌ Нет ответа от OpenAI для батча {batch_index}")
-                return [self._create_fallback_result(post) for post in batch_posts]
+                return [self._create_fallback_result(post, bot_config.get('id')) for post in batch_posts]
             
-            # Парсим батчевый ответ
-            batch_results = self._parse_batch_response(response, batch_posts, bot_categories)
+            batch_results = self._parse_batch_response(response, batch_posts, bot_categories, bot_config)
             
-            logger.info(f"✅ Батч {batch_index} обработан: {len(batch_results)} результатов")
+            logger.info(f"✅ Асинхронный батч {batch_index} обработан: {len(batch_results)} результатов")
             return batch_results
             
         except Exception as e:
-            logger.error(f"❌ Ошибка обработки батча {batch_index}: {str(e)}")
-            return [self._create_fallback_result(post) for post in batch_posts]
+            logger.error(f"❌ Ошибка асинхронной обработки батча {batch_index}: {str(e)}")
+            return [self._create_fallback_result(post, bot_config.get('id')) for post in batch_posts]
     
     def _build_batch_prompt(self, bot_config: Dict[str, Any], bot_categories: List[Dict[str, Any]], 
                            batch_posts: List[Any], batch_index: int, total_batches: int) -> Tuple[str, str]:
@@ -221,46 +200,48 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         # 4. Пользовательское сообщение с постами
         posts_text = []
         for i, post in enumerate(batch_posts, 1):
-            post_text = post.text[:1000] if post.text else "Пост без текста"
-            posts_text.append(f"Пост {post.id}: {post_text}")
+            post_text_raw = post.text[:1000] if post.text else "Пост без текста"
+            # 🐞 FIX: Экранируем спецсимволы, которые могут сломать JSON в ответе OpenAI
+            post_text_safe = post_text_raw.replace('\\', '\\\\').replace('"', "'")
+            posts_text.append(f"Пост {post.id}: {post_text_safe}")
         
         user_message = f"Батч {batch_index}/{total_batches} ({len(batch_posts)} постов):\n\n" + "\n\n".join(posts_text)
         
         return system_prompt, user_message
     
-    def _call_openai_batch_api(self, system_prompt: str, user_message: str) -> Optional[str]:
+    async def _call_openai_batch_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
         """
-        Вызывает OpenAI API для батчевой обработки (синхронно)
-        
-        Args:
-            system_prompt: Системный промпт
-            user_message: Пользовательское сообщение
-            
-        Returns:
-            Ответ от OpenAI или None при ошибке
+        Асинхронно вызывает OpenAI API для батчевой обработки с контролем concurrency
         """
-        try:
-            # Получаем настройки из SettingsManager или используем дефолтные
-            model, max_tokens, temperature = self._get_model_settings()
-            
-            response = self.openai_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=60
-            )
-            
-            return response.choices[0].message.content.strip()
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка OpenAI API: {str(e)}")
-            return None
+        async with OPENAI_SEMAPHORE:  # 🔧 ОГРАНИЧИВАЕМ CONCURRENCY
+            try:
+                logger.info(f"🔒 Получили слот для OpenAI запроса (активных запросов: {2 - OPENAI_SEMAPHORE._value})")
+                
+                model, max_tokens, temperature = await self._get_model_settings_async()
+                
+                # 🐞 ИСПРАВЛЕНО: Используем 'async with' для корректного управления жизненным циклом клиента
+                from openai import AsyncOpenAI
+                async with AsyncOpenAI(api_key=self.openai_api_key) as client:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message}
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        timeout=60
+                    )
+                
+                logger.info(f"✅ OpenAI запрос завершен, освобождаем слот")
+                return response.choices[0].message.content.strip()
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка Async OpenAI API: {str(e)}")
+                return None
     
-    def _parse_batch_response(self, response: str, batch_posts: List[Any], bot_categories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _parse_batch_response(self, response: str, batch_posts: List[Any], 
+                             bot_categories: List[Dict[str, Any]], bot_config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Парсит батчевый ответ от OpenAI
         
@@ -268,6 +249,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             response: Ответ от OpenAI
             batch_posts: Посты в батче
             bot_categories: Категории бота
+            bot_config: Конфигурация бота
             
         Returns:
             Список результатов категоризации
@@ -275,36 +257,73 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         results = []
         
         try:
-            # Пытаемся распарсить JSON
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                json_str = json_match.group(0)
-                parsed = json.loads(json_str)
-                
-                # Извлекаем результаты
-                ai_results = parsed.get('results', [])
-                
-                # Валидируем и нормализуем каждый результат
-                for ai_result in ai_results:
-                    validated_result = self._validate_and_normalize_batch_result(ai_result, None, bot_categories)
-                    if validated_result:
-                        results.append(validated_result)
-                
+            # 🔍 ОТЛАДКА: Логируем сырой ответ OpenAI
+            logger.info(f"🤖 DEBUG: OpenAI ответ (первые 500 символов): {response[:500]}")
+            logger.info(f"🤖 DEBUG: Длина ответа: {len(response)} символов")
+            
+            # 🔧 ИСПРАВЛЕНИЕ: Убираем markdown обертки ```json и ```
+            clean_response = response.strip()
+            if clean_response.startswith('```json'):
+                clean_response = clean_response[7:]  # Убираем ```json
+            if clean_response.startswith('```'):
+                clean_response = clean_response[3:]  # Убираем ```
+            if clean_response.endswith('```'):
+                clean_response = clean_response[:-3]  # Убираем завершающие ```
+            clean_response = clean_response.strip()
+            
+            logger.info(f"🧹 DEBUG: Очищенный ответ (первые 300 символов): {clean_response[:300]}")
+            
+            # 🐞 УЛУЧШЕННЫЙ ПАРСЕР: ищем все JSON-объекты в ответе
+            # OpenAI иногда возвращает несколько JSON в одном ответе или мусор между ними
+            json_objects = re.findall(r'\{.*?\}', clean_response, re.DOTALL)
+            logger.info(f"🔍 DEBUG: Найдено JSON объектов: {len(json_objects)}")
+            
+            # Сопоставляем посты по ID для удобства
+            post_map = {post.id: post for post in batch_posts}
+            
+            for json_str in json_objects:
+                try:
+                    parsed = json.loads(json_str)
+                    
+                    # Проверяем, есть ли это результат для одного поста
+                    if 'id' in parsed and 'category_name' in parsed:
+                        validated_result = self._validate_and_normalize_batch_result(parsed, post_map.get(parsed['id']), bot_categories, bot_config)
+                        if validated_result:
+                            results.append(validated_result)
+                            # Удаляем пост из карты, чтобы избежать дублирования
+                            if parsed['id'] in post_map:
+                                del post_map[parsed['id']]
+                    
+                    # Проверяем, есть ли это обертка с ключом 'results'
+                    elif 'results' in parsed and isinstance(parsed['results'], list):
+                        for ai_result in parsed['results']:
+                            if 'id' in ai_result:
+                                validated_result = self._validate_and_normalize_batch_result(ai_result, post_map.get(ai_result['id']), bot_categories, bot_config)
+                                if validated_result:
+                                    results.append(validated_result)
+                                    # Удаляем пост из карты
+                                    if ai_result['id'] in post_map:
+                                        del post_map[ai_result['id']]
+
+                except json.JSONDecodeError:
+                    logger.warning(f"⚠️ Не удалось распарсить JSON-фрагмент: {json_str[:100]}...")
+                    continue # Переходим к следующему фрагменту
+
         except Exception as e:
-            logger.error(f"❌ Ошибка парсинга batch ответа: {str(e)}")
+            logger.error(f"❌ Критическая ошибка парсинга batch ответа: {str(e)}")
         
-        # Если результатов меньше чем постов, создаем fallback
-        while len(results) < len(batch_posts):
-            post_index = len(results)
-            if post_index < len(batch_posts):
-                fallback_result = self._create_fallback_result(batch_posts[post_index])
+        # Для всех постов, которые НЕ получили результат, создаем fallback
+        if post_map: # Если в карте остались посты
+            logger.warning(f"⚠️ Для {len(post_map)} постов не найдено результатов в ответе AI, создаем fallback.")
+            for post_id, post in post_map.items():
+                bot_id = bot_config.get('id')
+                fallback_result = self._create_fallback_result(post, bot_id)
                 results.append(fallback_result)
-            else:
-                break
         
         return results
     
-    def _validate_and_normalize_batch_result(self, ai_result: Dict[str, Any], post: Any, bot_categories: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _validate_and_normalize_batch_result(self, ai_result: Dict[str, Any], post: Any, 
+                                            bot_categories: List[Dict[str, Any]], bot_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Валидирует и нормализует результат AI категоризации
         
@@ -312,6 +331,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             ai_result: Результат от AI
             post: Пост (может быть None)
             bot_categories: Категории бота
+            bot_config: Конфигурация бота
             
         Returns:
             Нормализованный результат или None при ошибке
@@ -339,13 +359,19 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             # Формируем результат
             result = {
                 'post_id': post_id,
-                'category_number': category_number,
-                'category_name': category_name,
-                'relevance_score': relevance_score,
-                'importance': importance,
-                'urgency': urgency,
-                'significance': significance,
-                'processing_status': 'completed'
+                'public_bot_id': bot_config.get('id') if bot_config else None,
+                'service_name': 'categorization',
+                'status': 'success',
+                'payload': {
+                    'primary': category_name,
+                    'secondary': [],
+                    'relevance_scores': [relevance_score]
+                },
+                'metrics': {
+                    'importance': importance,
+                    'urgency': urgency,
+                    'significance': significance
+                }
             }
             
             return result
@@ -404,28 +430,26 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         except (ValueError, TypeError):
             return (min_val + max_val) / 2  # Средняя оценка по умолчанию
     
-    def _create_fallback_result(self, post: Any) -> Dict[str, Any]:
+    def _create_fallback_result(self, post: Any, bot_id: int) -> Dict[str, Any]:
         """Создает fallback результат при ошибке AI"""
         return {
             'post_id': post.id if hasattr(post, 'id') else None,
-            'category_number': None,
-            'category_name': 'Не определено',
-            'relevance_score': 0.5,
-            'importance': 5,
-            'urgency': 5,
-            'significance': 5,
-            'processing_status': 'failed'
+            'public_bot_id': bot_id,
+            'service_name': 'categorization',
+            'status': 'success',
+            'payload': {'error': 'AI processing failed'},
+            'metrics': {}
         }
     
-    def _get_model_settings(self) -> Tuple[str, int, float]:
-        """Получает настройки модели из SettingsManager или использует дефолтные"""
+    async def _get_model_settings_async(self) -> Tuple[str, int, float]:
+        """Асинхронно получает настройки модели из SettingsManager"""
         if self.settings_manager:
             try:
-                config = self.settings_manager.get_ai_service_config('categorization')
+                config = await self.settings_manager.get_ai_service_config('categorization')
                 return (
                     config.get('model', 'gpt-4o-mini'),
-                    config.get('max_tokens', 1000),
-                    config.get('temperature', 0.3)
+                    int(config.get('max_tokens', 1000)),
+                    float(config.get('temperature', 0.3))
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка загрузки настроек: {e}")

@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 import asyncio
 from datetime import datetime
 import httpx
+from celery import group
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ def categorize_post(self, post: Dict, bot_id: int, **kwargs):
             }
 
         categorization_service = CategorizationService(
-            backend_url=os.getenv('BACKEND_API_URL', 'http://backend:8000'),
+            backend_url=BACKEND_URL,  # ИСПРАВЛЕНИЕ: используем единую переменную
             settings_manager=settings_manager
         )
         
@@ -232,130 +233,94 @@ def categorize_post(self, post: Dict, bot_id: int, **kwargs):
 def categorize_batch(self, posts: List[Dict], bot_id: int, **kwargs):
     """
     Батчевая категоризация постов
-    
-    Args:
-        posts: Список постов для категоризации
-        bot_id: ID публичного бота
-        **kwargs: Дополнительные параметры
-        
-    Returns:
-        Список результатов категоризации
     """
-    logger.info(f"🏷️ Categorize batch task started: {len(posts)} posts for bot {bot_id}")
-    
+    logger.info(f"🏷️ Async Categorize batch task started: {len(posts)} posts for bot {bot_id}")
     try:
-        results = []
+        from services_celery.categorization_celery import CategorizationServiceCelery
+        categorizer = CategorizationServiceCelery(
+            backend_url=BACKEND_URL, 
+            settings_manager=settings_manager
+        )
         
-        # Обрабатываем каждый пост отдельно
-        for post in posts:
-            result = categorize_post.delay(post, bot_id, **kwargs)
-            results.append(result.get(timeout=60))  # Ждем результат 60 секунд
-        
-        logger.info(f"✅ Categorize batch task completed: {len(results)} results")
-        
+        # Запускаем асинхронный метод из синхронного контекста Celery
+        results = asyncio.run(categorizer.process_with_bot_config_async(posts, bot_id))
+
+        # Отправляем на новый эндпоинт
+        if results:
+            batch_payload = {
+                "service": "categorization",
+                "results": results
+            }
+            with httpx.Client() as client:
+                response = client.post(f"{BACKEND_URL}/api/ai/service-results/batch", json=batch_payload, timeout=60)
+                response.raise_for_status()
+                logger.info(f"✅ Результаты категоризации отправлены: {response.json()}")
+
         return {
             'task_id': self.request.id,
             'bot_id': bot_id,
             'posts_count': len(posts),
             'results_count': len(results),
-            'results': results,
             'status': 'success',
             'timestamp': time.time()
         }
-        
     except Exception as e:
-        logger.error(f"❌ Categorize batch task failed: {e}")
-        
-        return {
-            'task_id': self.request.id,
-            'bot_id': bot_id,
-            'posts_count': len(posts),
-            'results_count': 0,
-            'results': [],
-            'status': 'error',
-            'error': str(e),
-            'timestamp': time.time()
-        }
+        logger.error(f"❌ Categorize batch task failed: {e}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}
 
 @app.task(bind=True, name='tasks.summarize_posts')
-def summarize_posts(self, posts: List[Dict], mode: str = 'individual', **kwargs):
+def summarize_posts(self, posts: List[Dict], bot_id: int, mode: str = 'individual', **kwargs):
     """
     Саммаризация постов
     
     Args:
         posts: Список постов для саммаризации
+        bot_id: ID публичного бота
         mode: Режим обработки ('individual' или 'batch')
         **kwargs: Дополнительные параметры
         
     Returns:
         Список результатов саммаризации
     """
-    logger.info(f"📝 Summarize posts task started: {len(posts)} posts in {mode} mode")
+    logger.info(f"📝 Async Summarize posts task started: {len(posts)} posts for bot {bot_id} in {mode} mode")
     
     try:
-        # Используем существующий сервис саммаризации
-        from services.summarization import SummarizationService
+        from services_celery.summarization_celery import SummarizationServiceCelery
+        summarizer = SummarizationServiceCelery(settings_manager=settings_manager)
         
-        # Создаем сервис саммаризации
-        summarization_service = SummarizationService(
-            model_name=kwargs.get('model_name', 'gpt-4o'),
-            max_tokens=kwargs.get('max_tokens', 2000),
-            temperature=kwargs.get('temperature', 0.7),
-            settings_manager=settings_manager
-        )
-        
-        # Выбираем режим обработки
-        if mode == 'individual':
-            import asyncio
-            results = []
-            for post in posts:
-                summary_res = asyncio.run(
-                    summarization_service.process(
-                        text=post.get('content') or '',
-                        max_summary_length=kwargs.get('max_summary_length', 150)
-                    )
-                )
-                results.append({
-                    'post_id': post.get('id'),
-                    'summary': summary_res.get('summary', ''),
-                    'status': summary_res.get('status', 'success')
-                })
-        else:
-            # Батчевый режим - пока не реализован
-            results = summarization_service.summarize_batch(posts)
-        
-        logger.info(f"✅ Summarize posts task completed: {len(results)} results")
-        
+        # Запускаем асинхронный метод из синхронного контекста Celery
+        results = asyncio.run(summarizer.process_posts_individually_async(posts, bot_id, **kwargs))
+
+        # Отправляем на новый эндпоинт
+        if results:
+            batch_payload = {
+                "service": "summarization",
+                "results": results
+            }
+            with httpx.Client() as client:
+                response = client.post(f"{BACKEND_URL}/api/ai/service-results/batch", json=batch_payload, timeout=60)
+                response.raise_for_status()
+                logger.info(f"✅ Результаты саммаризации отправлены: {response.json()}")
+
         return {
             'task_id': self.request.id,
+            'bot_id': bot_id,
             'posts_count': len(posts),
             'results_count': len(results),
-            'results': results,
-            'mode': mode,
             'status': 'success',
             'timestamp': time.time()
         }
         
     except Exception as e:
-        logger.error(f"❌ Summarize posts task failed: {e}")
-        
-        return {
-            'task_id': self.request.id,
-            'posts_count': len(posts),
-            'results_count': 0,
-            'results': [],
-            'mode': mode,
-            'status': 'error',
-            'error': str(e),
-            'timestamp': time.time()
-        }
+        logger.error(f"❌ Summarize posts task failed: {e}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}
 
 @app.task(bind=True, name='tasks.summarize_batch')
-def summarize_batch(self, posts: List[Dict], **kwargs):
+def summarize_batch(self, posts: List[Dict], bot_id: int, **kwargs):
     """
     Батчевая саммаризация постов
     """
-    return summarize_posts(posts, mode='batch', **kwargs)
+    return summarize_posts(posts, bot_id, mode='batch', **kwargs)
 
 @app.task(bind=True, name='tasks.process_digest')
 def process_digest(self, bot_id: int, posts: List[Dict], **kwargs):
@@ -381,7 +346,7 @@ def process_digest(self, bot_id: int, posts: List[Dict], **kwargs):
             raise Exception(f"Categorization failed: {categorization_data.get('error')}")
         
         # Шаг 2: Саммаризация
-        summarization_result = summarize_posts.delay(posts, mode='individual', **kwargs)
+        summarization_result = summarize_posts.delay(posts, bot_id, mode='individual', **kwargs)
         summarization_data = summarization_result.get(timeout=300)  # 5 минут
         
         if summarization_data['status'] != 'success':
@@ -737,6 +702,87 @@ def process_bot_digest(self, bot_id: int, limit: int = 50):
             'timestamp': time.time()
         }
 
+# НОВАЯ ЗАДАЧА-ДИСПЕТЧЕР ДЛЯ ПАРАЛЛЕЛЬНОГО ЗАПУСКА
+@app.task(bind=True, name='tasks.dispatch_ai_processing')
+def dispatch_ai_processing(self, post_ids: List[int], bot_id: int):
+    """
+    Диспетчер, который запускает все AI сервисы параллельно для списка постов.
+    """
+    logger.info(f"🚀 Диспетчер запущен для {len(post_ids)} постов, бот {bot_id}")
+    
+    # Реестр сервисов (в будущем можно вынести в конфиг)
+    AI_SERVICES = {
+        "categorization": {"queue": "categorization", "task": "tasks.categorize_batch"},
+        "summarization":  {"queue": "summarization",  "task": "tasks.summarize_posts"},
+    }
+
+    try:
+        group_tasks = []
+        for service, meta in AI_SERVICES.items():
+            # ИСПРАВЛЕНИЕ: Получаем конкретные посты по их ID через отдельные запросы
+            with httpx.Client(timeout=60) as client:
+                posts_data = []
+                
+                # Получаем каждый пост по отдельности через эндпоинт /api/posts/cache/{post_id}
+                for post_id in post_ids:
+                    try:
+                        post_resp = client.get(f"{BACKEND_URL}/api/posts/cache/{post_id}")
+                        if post_resp.status_code == 200:
+                            post_data = post_resp.json()
+                            if post_data:
+                                posts_data.append(post_data)
+                                # ИСПРАВЛЕНИЕ: безопасное извлечение title с fallback
+                                title = post_data.get('title') or post_data.get('content', 'Без содержимого')[:50] or 'Неизвестный пост'
+                                logger.info(f"✅ Получен пост {post_id}: {title[:50]}...")
+                            else:
+                                logger.warning(f"⚠️ Пост {post_id} вернул пустые данные")
+                        else:
+                            logger.warning(f"❌ Не удалось получить пост {post_id}: HTTP {post_resp.status_code}")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка получения поста {post_id}: {e}")
+                        continue
+                
+                if not posts_data:
+                    logger.error(f"❌ Не найдены посты {post_ids} для сервиса {service}")
+                    continue
+                
+                task_name = meta['task']
+                queue_name = meta['queue']
+                
+                if task_name == 'tasks.summarize_posts':
+                    # summarize_posts ожидает доп. аргументы
+                    task_signature = app.signature(
+                        task_name, 
+                        args=[posts_data, bot_id], 
+                        kwargs={'mode': 'individual'}, 
+                        queue=queue_name
+                    )
+                else:
+                    task_signature = app.signature(
+                        task_name, 
+                        args=[posts_data, bot_id], 
+                        queue=queue_name
+                    )
+
+                group_tasks.append(task_signature)
+                logger.info(f"✅ Задача {service} подготовлена для {len(posts_data)} постов")
+
+        if not group_tasks:
+            logger.error(f"❌ Не удалось подготовить ни одной задачи для постов {post_ids}")
+            return {'status': 'error', 'error': 'no_tasks_prepared'}
+
+        # Запускаем все задачи параллельно
+        job = group(group_tasks)
+        result = job.apply_async()
+        
+        logger.info(f"✅ Все {len(group_tasks)} сервисов запущены параллельно, group_id: {result.id}")
+        return {'status': 'success', 'group_id': result.id, 'services_count': len(group_tasks)}
+
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в dispatch_ai_processing: {e}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}
+
+
 @app.task(bind=True, name='tasks.check_for_new_posts')
 def check_for_new_posts(self):
     """
@@ -750,38 +796,49 @@ def check_for_new_posts(self):
     try:
         import httpx
         
-        # Быстрая проверка - есть ли хотя бы 1 необработанный пост
-        with httpx.Client(timeout=10) as client:
-            response = client.get(
+        # 1. Получаем список активных ботов
+        active_bots_resp = httpx.get(f"{BACKEND_URL}/api/public-bots?status_filter=active")
+        active_bots_resp.raise_for_status()
+        active_bots = active_bots_resp.json()
+
+        if not active_bots:
+            logger.info("✅ Нет активных ботов для обработки.")
+            return {'status': 'no_active_bots'}
+
+        total_dispatched_posts = 0
+        dispatched_bots_count = 0
+
+        # 2. Для каждого бота ищем необработанные посты
+        for bot in active_bots:
+            bot_id = bot['id']
+            # Лимит 500, как договорились
+            response = httpx.get(
                 f"{BACKEND_URL}/api/posts/unprocessed",
-                params={
-                    'limit': 1,
-                    'require_categorization': True
-                }
+                params={'bot_id': bot_id, 'limit': 500, 'require_categorization': True} 
             )
             response.raise_for_status()
             unprocessed_posts = response.json()
+
+            if unprocessed_posts:
+                post_ids = [p['id'] for p in unprocessed_posts]
+                logger.info(f"🚀 Для бота {bot_id} найдено {len(post_ids)} постов. Запускаем диспетчер...")
+                dispatch_ai_processing.delay(post_ids=post_ids, bot_id=bot_id)
+                total_dispatched_posts += len(post_ids)
+                dispatched_bots_count += 1
         
-        if unprocessed_posts:
-            post_count = len(unprocessed_posts)
-            logger.info(f"🚀 Найдены необработанные посты, запускаем AI обработку...")
-            
-            # Запускаем существующую логику обработки
-            task_result = trigger_ai_processing.delay()
-            
+        if total_dispatched_posts > 0:
             return {
                 'task_id': self.request.id,
                 'status': 'triggered',
-                'found_posts': post_count,
-                'ai_task_id': task_result.id,
+                'found_posts': total_dispatched_posts,
+                'dispatched_bots': dispatched_bots_count,
                 'timestamp': time.time()
             }
         else:
-            logger.debug("✅ Новых постов для обработки не найдено")
+            logger.info("✅ Нет новых постов для обработки.")
             return {
                 'task_id': self.request.id,
-                'status': 'no_work',
-                'found_posts': 0,
+                'status': 'nothing_to_do',
                 'timestamp': time.time()
             }
             

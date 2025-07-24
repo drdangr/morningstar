@@ -129,6 +129,26 @@ services:
     networks:
       - morningstar_network
 
+  summarization-worker:
+    build: ./ai_services
+    container_name: morningstar_summarization_worker
+    env_file:
+      - .env
+    volumes:
+      - ./ai_services:/app/ai_services
+    command: >
+      sh -c "
+        # Ожидаем Redis и Backend
+        ./entrypoint.sh wait-for-redis &&
+        ./entrypoint.sh wait-for-backend &&
+        # Запускаем worker ТОЛЬКО для очереди суммаризации
+        celery -A celery_app worker -l info --concurrency=2 -Q summarization"
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - morningstar_network
+
   # Frontend (React + Nginx)
   frontend:
     build:

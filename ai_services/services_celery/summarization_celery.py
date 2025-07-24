@@ -10,11 +10,16 @@ import re
 import time
 import logging
 import os
+import asyncio
 from typing import Dict, List, Optional, Any
 from openai import OpenAI
 from .base_celery import BaseAIServiceCelery
 
 logger = logging.getLogger(__name__)
+
+# 🔧 КОНТРОЛЬ CONCURRENCY: Ограничиваем одновременные запросы к OpenAI  
+OPENAI_SEMAPHORE = asyncio.Semaphore(2)  # Максимум 2 одновременных запроса
+
 
 class SummarizationServiceCelery(BaseAIServiceCelery):
     """
@@ -22,83 +27,60 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
     Поддерживает одиночный режим (рекомендуется) и батчевый режим
     """
     
-    def __init__(self, model_name: str = "gpt-4", max_tokens: int = 4000, temperature: float = 0.3,
-                 max_summary_length: int = 150, settings_manager=None):
+    def __init__(self, settings_manager=None):
         """
         Инициализация сервиса
         
         Args:
-            model_name: Модель OpenAI для саммаризации
-            max_tokens: Максимальное количество токенов
-            temperature: Температура генерации
-            max_summary_length: Максимальная длина summary
             settings_manager: Менеджер настроек для динамических LLM
         """
         super().__init__(settings_manager)
         
-        self.model_name = model_name
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self.max_summary_length = max_summary_length
-        
-        # Инициализируем OpenAI клиент (синхронный)
-        api_key = self._get_openai_key()
-        self.client = OpenAI(api_key=api_key)
+        # OpenAI клиент будет инициализирован асинхронно при первом вызове
+        self.async_client = None
         
         logger.info(f"📝 SummarizationServiceCelery инициализирован")
-        logger.info(f"   Модель: {model_name}")
-        logger.info(f"   Max tokens: {max_tokens}")
-        logger.info(f"   Temperature: {temperature}")
-        logger.info(f"   Max summary length: {max_summary_length}")
         if settings_manager:
-            logger.info(f"   SettingsManager: подключен")
+            logger.info(f"   Настройки будут получены динамически через SettingsManager")
         else:
-            logger.warning(f"   ⚠️ SettingsManager не подключен")
+            logger.warning(f"   ⚠️ SettingsManager не подключен. Будут использованы стандартные настройки.")
     
-    def process(self, text: str, language: str = "ru", custom_prompt: Optional[str] = None, 
+    async def process_async(self, text: str, language: str = "ru", custom_prompt: Optional[str] = None, 
                 max_summary_length: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         """
-        Создание краткого содержания одного текста
-        
-        Args:
-            text: Текст для саммаризации
-            language: Язык текста
-            custom_prompt: Кастомный промпт
-            max_summary_length: Максимальная длина summary
-            **kwargs: Дополнительные параметры
-            
-        Returns:
-            Результат саммаризации
+        Асинхронно создает краткое содержание одного текста
         """
         try:
-            # Проверяем валидность входных данных
             if not text or not text.strip():
-                return {
-                    "summary": "",
-                    "status": "skipped",
-                    "reason": "empty_text"
-                }
+                return { "summary": "", "status": "skipped", "reason": "empty_text" }
             
-            # Получаем настройки из SettingsManager или используем дефолтные
-            model, max_tokens, temperature, top_p = self._get_model_settings()
+            model, max_tokens, temperature, top_p = await self._get_model_settings_async()
             
-            # Формируем промпт
             summary_length = max_summary_length or self.max_summary_length
             prompt = self._build_single_prompt(custom_prompt, language, summary_length)
             
-            # Вызываем OpenAI API
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p
-            )
+            # 🔧 ОГРАНИЧИВАЕМ CONCURRENCY для OpenAI запросов
+            async with OPENAI_SEMAPHORE:
+                logger.info(f"🔒 Получили слот для OpenAI запроса саммаризации (активных: {2 - OPENAI_SEMAPHORE._value})")
+                
+                # Используем асинхронный клиент
+                if not hasattr(self, 'async_client'):
+                    from openai import AsyncOpenAI
+                    self.async_client = AsyncOpenAI(api_key=self._get_openai_key())
+
+                response = await self.async_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": text}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p
+                )
+                
+                logger.info(f"✅ OpenAI запрос саммаризации завершен, освобождаем слот")
             
-            # Извлекаем результат
             summary = response.choices[0].message.content.strip()
             
             return {
@@ -109,161 +91,116 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             }
             
         except Exception as e:
-            logger.error(f"❌ Ошибка в process: {e}")
-            return {
-                "summary": f"Ошибка обработки: {str(e)}",
-                "status": "error",
-                "error": str(e)
-            }
-    
-    def process_batch(self, texts: List[str], language: str = "ru", custom_prompt: Optional[str] = None,
-                     max_summary_length: Optional[int] = None, **kwargs) -> List[Dict[str, Any]]:
-        """
-        Батчевая обработка текстов одним запросом
-        
-        ВНИМАНИЕ: Батчевая саммаризация может давать некачественные результаты!
-        Рекомендуется использовать одиночный режим или OpenAI Batch API
-        
-        Args:
-            texts: Список текстов для саммаризации
-            language: Язык текстов
-            custom_prompt: Кастомный промпт
-            max_summary_length: Максимальная длина summary
-            **kwargs: Дополнительные параметры
-            
-        Returns:
-            Список результатов саммаризации
-        """
-        
-        if not texts:
-            return []
-        
-        logger.info(f"🚀 Батчевая саммаризация {len(texts)} текстов")
-        logger.warning(f"⚠️ Батчевая саммаризация может давать некачественные результаты!")
-        
-        try:
-            # Получаем настройки
-            model, max_tokens, temperature, top_p = self._get_model_settings()
-            
-            # Формируем батчевый промпт
-            summary_length = max_summary_length or self.max_summary_length
-            batch_prompt = self._build_batch_prompt(texts, custom_prompt, language, summary_length)
-            
-            # Отправляем запрос к OpenAI
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "user", "content": batch_prompt}
-                ],
-                max_tokens=max_tokens * 2,  # Увеличиваем для батча
-                temperature=temperature,
-                top_p=top_p
-            )
-            
-            # Парсим результат
-            response_text = response.choices[0].message.content.strip()
-            summaries = self._parse_batch_response(response_text, len(texts))
-            
-            # Формируем результаты
-            total_tokens = response.usage.total_tokens
-            tokens_per_text = total_tokens // len(texts) if texts else 0
-            
-            results = []
-            for i, summary in enumerate(summaries):
-                results.append({
-                    "summary": summary,
-                    "language": language,
-                    "tokens_used": tokens_per_text,
-                    "status": "success"
-                })
-            
-            logger.info(f"✅ Батчевая саммаризация завершена: {len(results)} результатов")
-            return results
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка батчевой саммаризации: {e}")
-            
-            # Возвращаем ошибки для всех текстов
-            return [{
-                "summary": f"Ошибка обработки текста {i+1}",
-                "language": language,
-                "tokens_used": 0,
-                "status": "error",
-                "error": str(e)
-            } for i in range(len(texts))]
-    
-    def process_posts_individually(self, posts: List[Dict], language: str = "ru", 
+            logger.error(f"❌ Ошибка в process_async: {e}")
+            return { "summary": f"Ошибка обработки: {str(e)}", "status": "error", "error": str(e) }
+
+    async def process_posts_individually_async(self, posts: List[Dict], bot_id: int, language: str = "ru", 
                                   custom_prompt: Optional[str] = None, **kwargs) -> List[Dict[str, Any]]:
         """
-        Обрабатывает посты по одному (рекомендуемый режим)
-        
-        Args:
-            posts: Список постов для саммаризации
-            language: Язык текстов
-            custom_prompt: Кастомный промпт
-            **kwargs: Дополнительные параметры
-            
-        Returns:
-            Список результатов саммаризации
+        Асинхронно обрабатывает посты по одному (рекомендуемый режим)
         """
-        logger.info(f"📝 Индивидуальная саммаризация {len(posts)} постов")
+        logger.info(f"📝 Асинхронная индивидуальная саммаризация {len(posts)} постов")
         
         results = []
         for i, post in enumerate(posts, 1):
             try:
-                # Извлекаем текст поста
                 text = post.get('text', '')
                 if not text or not text.strip():
                     results.append({
                         "post_id": post.get('id'),
-                        "summary": "",
+                        "public_bot_id": bot_id,
+                        "service_name": "summarization",
                         "status": "skipped",
-                        "reason": "empty_text"
+                        "payload": {"summary": "", "reason": "empty_text"},
+                        "metrics": {}
                     })
                     continue
                 
-                # Саммаризуем пост
-                result = self.process(text, language, custom_prompt, **kwargs)
+                result = await self.process_async(text, language, custom_prompt, **kwargs)
                 
-                # Добавляем ID поста к результату
                 result['post_id'] = post.get('id')
-                results.append(result)
-                
-                logger.info(f"✅ Пост {i}/{len(posts)} обработан")
+                result['public_bot_id'] = bot_id
+                result['service_name'] = 'summarization'
+
+                final_result = {
+                    'post_id': result.get('post_id'),
+                    'public_bot_id': result.get('public_bot_id'),
+                    'service_name': 'summarization',
+                    'status': result.get('status', 'success'),
+                    'payload': { 'summary': result.get('summary'), 'language': result.get('language') },
+                    'metrics': { 'tokens_used': result.get('tokens_used', 0) }
+                }
+                if result.get('status') == 'error':
+                    final_result['payload']['error'] = result.get('error')
+
+                results.append(final_result)
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки поста {i}: {e}")
                 results.append({
                     "post_id": post.get('id'),
-                    "summary": f"Ошибка обработки: {str(e)}",
-                    "status": "error",
-                    "error": str(e)
+                    "public_bot_id": bot_id,
+                    "service_name": "summarization",
+                    'status': 'success',
+                    'payload': {'error': str(e)},
+                    'metrics': {}
                 })
         
-        logger.info(f"✅ Индивидуальная саммаризация завершена: {len(results)} результатов")
+        logger.info(f"✅ Асинхронная индивидуальная саммаризация завершена: {len(results)} результатов")
         return results
     
-    def _get_model_settings(self) -> tuple:
-        """Получает настройки модели из SettingsManager или использует дефолтные"""
+    async def _call_openai_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
+        """
+        Асинхронно вызывает OpenAI API для индивидуальной обработки
+        """
+        try:
+            model, max_tokens, temperature, top_p = await self._get_model_settings_async()
+
+            # 🐞 ИСПРАВЛЕНО: Используем 'async with' для корректного управления жизненным циклом клиента
+            from openai import AsyncOpenAI
+            async with AsyncOpenAI(api_key=self.openai_api_key) as client:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    timeout=30
+                )
+            
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка Async OpenAI API: {str(e)}")
+            return None
+        
+    async def _get_model_settings_async(self) -> tuple:
+        """Асинхронно получает настройки модели из SettingsManager"""
+        # 🐞 FIX: Определяем безопасные значения по умолчанию прямо здесь
+        defaults = {
+            'model': 'gpt-4o-mini',
+            'max_tokens': 2000,
+            'temperature': 0.7,
+            'top_p': 1.0,
+            'max_summary_length': 150
+        }
+
         if self.settings_manager:
             try:
-                config = self.settings_manager.get_ai_service_config('summarization')
+                config = await self.settings_manager.get_ai_service_config('summarization')
                 return (
-                    config.get('model', self.model_name),
-                    config.get('max_tokens', self.max_tokens),
-                    config.get('temperature', self.temperature),
-                    config.get('top_p', 1.0)
+                    config.get('model', defaults['model']),
+                    int(config.get('max_tokens', defaults['max_tokens'])),
+                    float(config.get('temperature', defaults['temperature'])),
+                    float(config.get('top_p', defaults['top_p']))
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка загрузки настроек: {e}")
         
-        # Дефолтные значения
-        return (
-            self.model_name,
-            self.max_tokens,
-            self.temperature,
-            1.0
-        )
+        return (defaults['model'], defaults['max_tokens'], defaults['temperature'], defaults['top_p'])
     
     def _build_single_prompt(self, custom_prompt: Optional[str], language: str, max_length: int) -> str:
         """Строит промпт для одиночной саммаризации"""

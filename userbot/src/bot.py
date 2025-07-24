@@ -195,29 +195,16 @@ print(f"   📋 Сравнение с 'true': {TEST_MODE_RAW.lower()} == 'true' 
 TEST_MODE = TEST_MODE_RAW.lower() == "true"
 print(f"   ✅ Финальное значение TEST_MODE: {TEST_MODE}")
 
-# Получение каналов из переменных окружения (fallback для тестирования)
-CHANNELS_ENV = os.getenv("CHANNELS", "")
-print(f"🔍 CHANNELS_ENV из .env: '{CHANNELS_ENV}'")
-
-FALLBACK_CHANNELS = []
-if CHANNELS_ENV:
-    FALLBACK_CHANNELS = [ch.strip() for ch in CHANNELS_ENV.split(",") if ch.strip()]
-else:
-    FALLBACK_CHANNELS = [
-        "@rt_russian",
-        "@rian_ru", 
-        "@lentachold"
-    ]
+# Fallback-логика полностью удалена. Userbot теперь получает каналы ТОЛЬКО из Backend API.
+# Если API недоступен или не возвращает каналов, userbot завершит работу.
 
 print(f"🌐 Backend API: {BACKEND_API_URL}")
 print(f"🧪 Режим тестирования: {TEST_MODE}")
-print(f"📡 Fallback каналы: {FALLBACK_CHANNELS}")
 
 logger.info("📁 Логи сохраняются в: %s", LOGS_DIR)
 logger.info("💾 Сессия сохраняется в: %s", SESSION_DIR)
 logger.info("🌐 Backend API: %s", BACKEND_API_URL)
 logger.info("🧪 Режим тестирования: %s", TEST_MODE)
-logger.info("📡 Fallback каналы: %s", FALLBACK_CHANNELS)
 
 
 class MorningStarUserbot:
@@ -269,7 +256,10 @@ class MorningStarUserbot:
             return default
 
     async def get_channels_from_api(self):
-        """Получение списка активных каналов из Backend API с метаданными"""
+        """Получение списка активных каналов из Backend API.
+        В случае любой ошибки или отсутствия каналов возвращает пустой список,
+        что приводит к корректному завершению работы без сбора данных.
+        """
         try:
             url = f"{BACKEND_API_URL}/api/channels"
             params = {"active_only": "true"}
@@ -311,22 +301,22 @@ class MorningStarUserbot:
                                     }
                                     api_channels.append(telegram_id)
                         
-                        logger.info("✅ Получено %d активных каналов из API", len(api_channels))
-                        logger.info("📡 Каналы из API: %s", api_channels)
-                        logger.info("🧠 Категории будут назначены AI сервисами согласно РЕВОЛЮЦИОННОМУ РЕШЕНИЮ v7.3")
+                        if not api_channels:
+                            logger.warning("✅ API запрос успешен, но не найдено активных каналов, привязанных к ботам. Userbot завершает работу.")
+                        else:
+                            logger.info("✅ Получено %d активных каналов из API: %s", len(api_channels), api_channels)
                         
                         return api_channels
                     
                     else:
-                        logger.warning("⚠️ API вернул статус %d, используем fallback каналы", response.status)
-                        self.channels_metadata = {}
-                        return FALLBACK_CHANNELS
+                        logger.error("❌ API вернул ошибку: статус %d. Userbot прекращает работу.", response.status)
+                        logger.error("   Ответ API: %s", await response.text())
+                        return [] # Возвращаем пустой список, чтобы остановить сбор
                         
         except Exception as e:
-            logger.error("❌ Ошибка при получении каналов из API: %s", e)
-            logger.info("🔄 Используем fallback каналы: %s", FALLBACK_CHANNELS)
-            self.channels_metadata = {}
-            return FALLBACK_CHANNELS
+            logger.error("❌ Критическая ошибка при получении каналов из API: %s", e)
+            logger.info("   Userbot прекращает работу. Проверьте доступность Backend API по адресу: %s", BACKEND_API_URL)
+            return [] # Возвращаем пустой список, чтобы остановить сбор
 
     async def get_channel_info(self, channel_identifier):
         """Получение информации о канале с fallback логикой"""
