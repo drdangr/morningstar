@@ -1,0 +1,14 @@
+{
+  "digest_id": "test_digest_123",
+  "total_posts": 4,
+  "channels_processed": 2,
+  "original_posts": 10,
+  "relevant_posts": 4,
+  "avg_importance": 8.0,
+  "avg_urgency": 6.75,
+  "avg_significance": 7.5,
+  "binary_relevance_applied": true,
+  "with_metrics": true,
+  "digest_data": "{\"channels\":[{\"title\":\"Breaking Mash\",\"username\":\"@breakingmash\",\"posts_count\":2,\"posts\":[{\"title\":\"Test post 1...\",\"url\":\"https://t.me/breakingmash/1\",\"views\":1500,\"ai_importance\":8,\"ai_urgency\":7,\"summary\":\"Test summary 1\"}]}]}",
+  "processed_at": "2025-12-08T10:00:00Z"
+} 

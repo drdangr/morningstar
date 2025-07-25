@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "ROADMAP_v2.md",
+                "file": "ROADMAP_v3.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "ROADMAP_v2"
+              "title": "ROADMAP_v3"
             }
           },
           {
@@ -35,8 +35,7 @@
               "title": "Meta_Digest"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
@@ -183,11 +182,12 @@
       "command-palette:Открыть палитру команд": false
     }
   },
-  "active": "591722847412d32a",
+  "active": "b756a401bf60d577",
   "lastOpenFiles": [
-    "Integration-Scenarios.md",
-    "CELERY.md",
     "ROADMAP_v2.md",
-    "Meta_Digest.md"
+    "ROADMAP_v3.md",
+    "Meta_Digest.md",
+    "Integration-Scenarios.md",
+    "CELERY.md"
   ]
 }

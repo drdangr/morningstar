@@ -1,0 +1,143 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: morningstar_postgres
+    environment:
+      - POSTGRES_DB=digest_bot
+      - POSTGRES_USER=digest_bot
+      - POSTGRES_PASSWORD=Demiurg12@
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U digest_bot -d digest_bot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - morningstar_network
+
+  # Redis Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: morningstar_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - morningstar_network
+
+  # Backend API (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: morningstar_backend
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=digest_bot
+      - DB_USER=digest_bot
+      - DB_PASSWORD=Demiurg12@
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./backend/logs:/app/logs
+    networks:
+      - morningstar_network
+
+  # AI Services с Celery Worker
+  ai_services:
+    build:
+      context: ./ai_services
+      dockerfile: Dockerfile
+    container_name: morningstar_ai_services
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_WORKER_LOGLEVEL=INFO
+      - CELERY_WORKER_CONCURRENCY=4
+      - PYTHONPATH=/app
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BACKEND_API_URL=http://backend:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./ai_services:/app
+      - ./ai_services/logs:/app/logs
+    networks:
+      - morningstar_network
+
+  # Frontend (React + Nginx)
+  frontend:
+    build:
+      context: ./frontend/admin-panel
+      dockerfile: Dockerfile
+    container_name: morningstar_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - morningstar_network
+
+  # Flower dashboard для мониторинга Celery
+  flower:
+    image: mher/flower:2.0
+    container_name: morningstar_flower
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_BASIC_AUTH=${FLOWER_BASIC_AUTH:-admin:admin}
+    depends_on:
+      redis:
+        condition: service_healthy
+      ai_services:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - morningstar_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  morningstar_network:
+    driver: bridge 

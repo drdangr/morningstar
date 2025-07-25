@@ -1,0 +1,26 @@
+# Зависимости для telegram bot Docker контейнера
+# Минимальный набор для продакшена
+
+# Telegram Bot API
+python-telegram-bot==20.7
+
+# Database ORM и миграции
+sqlalchemy==2.0.23
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# HTTP клиент
+aiohttp==3.9.3
+
+# Переменные окружения
+python-dotenv==1.0.1
+
+# Структурированное логирование
+structlog==23.2.0
+
+# Работа с временными зонами
+pytz==2024.1
+
+# Валидация данных
+pydantic==2.5.3
