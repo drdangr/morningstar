@@ -236,7 +236,8 @@ function AIResultsTab({ stats, onStatsUpdate }) {
     setError('');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/posts/cache/bulk-delete`, {
+      // 🧠 ИСПОЛЬЗУЕМ СПЕЦИАЛЬНЫЙ ENDPOINT ДЛЯ УДАЛЕНИЯ ТОЛЬКО AI РЕЗУЛЬТАТОВ
+      const response = await fetch(`${API_BASE_URL}/api/ai/results/bulk-delete`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -248,13 +249,15 @@ function AIResultsTab({ stats, onStatsUpdate }) {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || 'Ошибка удаления постов');
+        throw new Error(errorData.detail || 'Ошибка удаления AI результатов');
       }
 
       const result = await response.json();
       
-      // Успешное удаление
-      setBulkDeleteSuccess(`Успешно удалено ${result.deleted_count} постов`);
+      // Успешное удаление AI результатов
+      setBulkDeleteSuccess(
+        `Удалены AI результаты для ${result.posts_preserved} постов (${result.deleted_ai_results} записей)`
+      );
       setSelectedPosts(new Set());
       setBulkDeleteConfirmDialog(false);
       
@@ -263,8 +266,8 @@ function AIResultsTab({ stats, onStatsUpdate }) {
       if (onStatsUpdate) onStatsUpdate();
       
     } catch (err) {
-      console.error('❌ Ошибка bulk delete:', err);
-      setError('Ошибка удаления постов: ' + err.message);
+      console.error('❌ Ошибка bulk delete AI результатов:', err);
+      setError('Ошибка удаления AI результатов: ' + err.message);
     } finally {
       setBulkDeleting(false);
     }
@@ -552,10 +555,10 @@ function AIResultsTab({ stats, onStatsUpdate }) {
                 variant="outlined"
                 color="error"
                 onClick={() => setBulkDeleteConfirmDialog(true)}
-                startIcon={<DeleteIcon />}
+                startIcon={<SmartToyIcon />}
                 disabled={selectedPosts.size === 0}
               >
-                Удалить выделенные ({selectedPosts.size})
+                Очистить AI данные ({selectedPosts.size})
               </Button>
             </Box>
           </Box>
@@ -838,14 +841,18 @@ function AIResultsTab({ stats, onStatsUpdate }) {
       <Dialog open={bulkDeleteConfirmDialog} onClose={() => setBulkDeleteConfirmDialog(false)}>
         <DialogTitle>
           <Box display="flex" alignItems="center" gap={1}>
-            <DeleteIcon color="error" />
-            Удаление выбранных постов
+            <SmartToyIcon color="error" />
+            Очистка AI результатов
           </Box>
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Вы уверены, что хотите удалить {selectedPosts.size} выбранных постов?
-            Это действие также удалит все связанные AI результаты и нельзя отменить.
+            Вы уверены, что хотите удалить AI результаты для {selectedPosts.size} выбранных постов?
+            <br /><br />
+            <strong>⚠️ Важно:</strong> Будут удалены только AI данные (категории, summary, метрики). 
+            Оригинальные посты останутся в системе.
+            <br /><br />
+            Это действие нельзя отменить.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -857,9 +864,9 @@ function AIResultsTab({ stats, onStatsUpdate }) {
             color="error"
             variant="contained"
             disabled={bulkDeleting}
-            startIcon={bulkDeleting ? <CircularProgress size={20} /> : <DeleteIcon />}
+            startIcon={bulkDeleting ? <CircularProgress size={20} /> : <SmartToyIcon />}
           >
-            {bulkDeleting ? 'Удаление...' : 'Удалить'}
+            {bulkDeleting ? 'Очистка...' : 'Очистить AI данные'}
           </Button>
         </DialogActions>
       </Dialog>

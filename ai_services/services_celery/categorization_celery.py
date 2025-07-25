@@ -106,7 +106,8 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         class SimplePost:
             def __init__(self, data):
                 self.id = data.get('id')
-                self.text = data.get('text', '')
+                # 🔧 ИСПРАВЛЕНИЕ: Backend API возвращает 'content', а не 'text'
+                self.text = data.get('content', '') or data.get('text', '')  # Fallback на 'text' для совместимости
                 self.media_path = data.get('media_path', '')
                 self.views = data.get('views', 0)
                 self.channel_telegram_id = data.get('channel_telegram_id', '')
@@ -219,9 +220,11 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
                 
                 model, max_tokens, temperature = await self._get_model_settings_async()
                 
-                # 🐞 ИСПРАВЛЕНО: Используем 'async with' для корректного управления жизненным циклом клиента
+                # 🐞 ИСПРАВЛЕНО: Создаем клиент и явно закрываем его
                 from openai import AsyncOpenAI
-                async with AsyncOpenAI(api_key=self.openai_api_key) as client:
+                client = AsyncOpenAI(api_key=self.openai_api_key)
+                
+                try:
                     response = await client.chat.completions.create(
                         model=model,
                         messages=[
@@ -232,6 +235,9 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
                         temperature=temperature,
                         timeout=60
                     )
+                finally:
+                    # Явно закрываем HTTP клиент чтобы избежать RuntimeError
+                    await client.close()
                 
                 logger.info(f"✅ OpenAI запрос завершен, освобождаем слот")
                 return response.choices[0].message.content.strip()
@@ -239,6 +245,31 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             except Exception as e:
                 logger.error(f"❌ Ошибка Async OpenAI API: {str(e)}")
                 return None
+    
+    def _extract_json_objects(self, text: str) -> List[str]:
+        """
+        Корректно извлекает JSON объекты из текста, учитывая вложенные скобки
+        Исправляет проблему с регулярным выражением \{.*?\} которое обрезало JSON
+        """
+        json_objects = []
+        brace_count = 0
+        start_pos = None
+        
+        for i, char in enumerate(text):
+            if char == '{':
+                if brace_count == 0:
+                    start_pos = i  # Начало JSON объекта
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_pos is not None:
+                    # Конец JSON объекта - извлекаем полный объект
+                    json_str = text[start_pos:i+1]
+                    json_objects.append(json_str)
+                    start_pos = None
+        
+        logger.info(f"📋 DEBUG: Извлечено {len(json_objects)} JSON объектов правильным парсером")
+        return json_objects
     
     def _parse_batch_response(self, response: str, batch_posts: List[Any], 
                              bot_categories: List[Dict[str, Any]], bot_config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -273,9 +304,9 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             
             logger.info(f"🧹 DEBUG: Очищенный ответ (первые 300 символов): {clean_response[:300]}")
             
-            # 🐞 УЛУЧШЕННЫЙ ПАРСЕР: ищем все JSON-объекты в ответе
-            # OpenAI иногда возвращает несколько JSON в одном ответе или мусор между ними
-            json_objects = re.findall(r'\{.*?\}', clean_response, re.DOTALL)
+            # 🔧 ИСПРАВЛЕННЫЙ ПАРСЕР: корректно парсим вложенные JSON
+            # Старая регулярка \{.*?\} неправильно обрезала вложенные объекты
+            json_objects = self._extract_json_objects(clean_response)
             logger.info(f"🔍 DEBUG: Найдено JSON объектов: {len(json_objects)}")
             
             # Сопоставляем посты по ID для удобства

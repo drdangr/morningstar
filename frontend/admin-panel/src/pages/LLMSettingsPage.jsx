@@ -36,7 +36,8 @@ import {
   Article as DigestIcon,
   Info as InfoIcon,
   Public as GlobalIcon,
-  SmartToy as BotTemplateIcon
+  SmartToy as BotTemplateIcon,
+  AccountCircle as UserbotIcon
 } from '@mui/icons-material';
 
 const API_BASE_URL = 'http://localhost:8000';
@@ -88,6 +89,12 @@ const SETTING_CATEGORIES = {
     icon: <DigestIcon />,
     color: 'warning',
     description: 'Параметры генерации и доставки дайджестов'
+  },
+  userbot: {
+    title: 'Настройки Userbot',
+    icon: <UserbotIcon />,
+    color: 'secondary',
+    description: 'Параметры сбора данных и работы userbot'
   }
 };
 

@@ -39,6 +39,9 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         # OpenAI клиент будет инициализирован асинхронно при первом вызове
         self.async_client = None
         
+        # 🔧 ИСПРАВЛЕНИЕ: Добавляем отсутствующий атрибут max_summary_length
+        self.max_summary_length = 150  # Дефолтное значение для длины саммари
+        
         logger.info(f"📝 SummarizationServiceCelery инициализирован")
         if settings_manager:
             logger.info(f"   Настройки будут получены динамически через SettingsManager")
@@ -54,30 +57,33 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             if not text or not text.strip():
                 return { "summary": "", "status": "skipped", "reason": "empty_text" }
             
-            model, max_tokens, temperature, top_p = await self._get_model_settings_async()
+            model, max_tokens, temperature, top_p, settings_max_length = await self._get_model_settings_async()
             
-            summary_length = max_summary_length or self.max_summary_length
+            summary_length = max_summary_length or settings_max_length or self.max_summary_length
             prompt = self._build_single_prompt(custom_prompt, language, summary_length)
             
             # 🔧 ОГРАНИЧИВАЕМ CONCURRENCY для OpenAI запросов
             async with OPENAI_SEMAPHORE:
                 logger.info(f"🔒 Получили слот для OpenAI запроса саммаризации (активных: {2 - OPENAI_SEMAPHORE._value})")
                 
-                # Используем асинхронный клиент
-                if not hasattr(self, 'async_client'):
-                    from openai import AsyncOpenAI
-                    self.async_client = AsyncOpenAI(api_key=self._get_openai_key())
-
-                response = await self.async_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": text}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p
-                )
+                # 🔧 ИСПРАВЛЕНИЕ: Создаем клиент и явно закрываем его
+                from openai import AsyncOpenAI
+                async_client = AsyncOpenAI(api_key=self._get_openai_key())
+                
+                try:
+                    response = await async_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": prompt},
+                            {"role": "user", "content": text}
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p
+                    )
+                finally:
+                    # Явно закрываем HTTP клиент чтобы избежать RuntimeError
+                    await async_client.close()
                 
                 logger.info(f"✅ OpenAI запрос саммаризации завершен, освобождаем слот")
             
@@ -104,7 +110,8 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         results = []
         for i, post in enumerate(posts, 1):
             try:
-                text = post.get('text', '')
+                # 🔧 ИСПРАВЛЕНИЕ: Backend API возвращает 'content', а не 'text'  
+                text = post.get('content', '') or post.get('text', '')  # Fallback на 'text' для совместимости
                 if not text or not text.strip():
                     results.append({
                         "post_id": post.get('id'),
@@ -154,11 +161,13 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         Асинхронно вызывает OpenAI API для индивидуальной обработки
         """
         try:
-            model, max_tokens, temperature, top_p = await self._get_model_settings_async()
+            model, max_tokens, temperature, top_p, settings_max_length = await self._get_model_settings_async()
 
-            # 🐞 ИСПРАВЛЕНО: Используем 'async with' для корректного управления жизненным циклом клиента
+            # 🐞 ИСПРАВЛЕНО: Создаем клиент и явно закрываем его
             from openai import AsyncOpenAI
-            async with AsyncOpenAI(api_key=self.openai_api_key) as client:
+            client = AsyncOpenAI(api_key=self.openai_api_key)
+            
+            try:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=[
@@ -170,6 +179,9 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                     top_p=top_p,
                     timeout=30
                 )
+            finally:
+                # Явно закрываем HTTP клиент чтобы избежать RuntimeError
+                await client.close()
             
             return response.choices[0].message.content.strip()
 
@@ -191,16 +203,40 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         if self.settings_manager:
             try:
                 config = await self.settings_manager.get_ai_service_config('summarization')
-                return (
-                    config.get('model', defaults['model']),
-                    int(config.get('max_tokens', defaults['max_tokens'])),
-                    float(config.get('temperature', defaults['temperature'])),
-                    float(config.get('top_p', defaults['top_p']))
-                )
+                
+                # 🔍 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ НАСТРОЕК
+                model = config.get('model', defaults['model'])
+                max_tokens = int(config.get('max_tokens', defaults['max_tokens']))
+                temperature = float(config.get('temperature', defaults['temperature']))
+                top_p = float(config.get('top_p', defaults['top_p']))
+                max_summary_length = int(config.get('max_summary_length', defaults['max_summary_length']))
+                
+                logger.info(f"📋 Настройки саммаризации из SettingsManager:")
+                logger.info(f"   🤖 Модель: {model} (ожидалось: gpt-4o)")
+                logger.info(f"   🎯 Max tokens: {max_tokens} (ожидалось: 2000)")
+                logger.info(f"   🌡️ Temperature: {temperature} (ожидалось: 0.7)")
+                logger.info(f"   🎲 Top_p: {top_p} (ожидалось: 1.0)")
+                logger.info(f"   📏 Max summary length: {max_summary_length} (fallback: 150)")
+                
+                return (model, max_tokens, temperature, top_p, max_summary_length)
+                
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка загрузки настроек: {e}")
+                logger.info(f"📋 Используются дефолтные настройки саммаризации:")
+                logger.info(f"   🤖 Модель: {defaults['model']}")
+                logger.info(f"   🎯 Max tokens: {defaults['max_tokens']}")
+                logger.info(f"   🌡️ Temperature: {defaults['temperature']}")
+                logger.info(f"   🎲 Top_p: {defaults['top_p']}")
+                logger.info(f"   📏 Max summary length: {defaults['max_summary_length']}")
+        else:
+            logger.info(f"📋 SettingsManager отсутствует, используются дефолтные настройки:")
+            logger.info(f"   🤖 Модель: {defaults['model']}")
+            logger.info(f"   🎯 Max tokens: {defaults['max_tokens']}")
+            logger.info(f"   🌡️ Temperature: {defaults['temperature']}")
+            logger.info(f"   🎲 Top_p: {defaults['top_p']}")
+            logger.info(f"   📏 Max summary length: {defaults['max_summary_length']}")
         
-        return (defaults['model'], defaults['max_tokens'], defaults['temperature'], defaults['top_p'])
+        return (defaults['model'], defaults['max_tokens'], defaults['temperature'], defaults['top_p'], defaults['max_summary_length'])
     
     def _build_single_prompt(self, custom_prompt: Optional[str], language: str, max_length: int) -> str:
         """Строит промпт для одиночной саммаризации"""

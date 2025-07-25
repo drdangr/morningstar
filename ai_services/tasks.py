@@ -683,14 +683,8 @@ def process_bot_digest(self, bot_id: int, limit: int = 50):
                 }
                 
             finally:
-                # 🔒 ЯВНО закрываем AI сервисы для предотвращения ошибок Event loop is closed
-                try:
-                    import asyncio
-                    asyncio.run(categorizer.close())
-                    asyncio.run(summarizer.close())
-                    logger.info("🔒 AI сервисы закрыты в process_bot_digest")
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка закрытия AI сервисов: {e}")
+                # 🔒 Сервисы не требуют явного закрытия - они используют одноразовые клиенты
+                pass
 
     except Exception as e:
         logger.error(f"❌ process_bot_digest failed for bot {bot_id}: {e}")
@@ -704,21 +698,33 @@ def process_bot_digest(self, bot_id: int, limit: int = 50):
 
 # НОВАЯ ЗАДАЧА-ДИСПЕТЧЕР ДЛЯ ПАРАЛЛЕЛЬНОГО ЗАПУСКА
 @app.task(bind=True, name='tasks.dispatch_ai_processing')
-def dispatch_ai_processing(self, post_ids: List[int], bot_id: int):
+def dispatch_ai_processing(self, post_ids: List[int], bot_id: int, services: Optional[List[str]] = None):
     """
-    Диспетчер, который запускает все AI сервисы параллельно для списка постов.
+    Диспетчер, который запускает AI сервисы параллельно для списка постов.
+    
+    Args:
+        post_ids: Список ID постов для обработки
+        bot_id: ID бота
+        services: Список сервисов для запуска. Если None - запускаются все сервисы.
+                 Возможные значения: ["categorization", "summarization"]
     """
-    logger.info(f"🚀 Диспетчер запущен для {len(post_ids)} постов, бот {bot_id}")
+    logger.info(f"🚀 Диспетчер запущен для {len(post_ids)} постов, бот {bot_id}, сервисы: {services or 'ВСЕ'}")
     
     # Реестр сервисов (в будущем можно вынести в конфиг)
     AI_SERVICES = {
         "categorization": {"queue": "categorization", "task": "tasks.categorize_batch"},
         "summarization":  {"queue": "summarization",  "task": "tasks.summarize_posts"},
     }
+    
+    # Определяем какие сервисы запускать
+    if services:
+        services_to_run = {k: v for k, v in AI_SERVICES.items() if k in services}
+    else:
+        services_to_run = AI_SERVICES
 
     try:
         group_tasks = []
-        for service, meta in AI_SERVICES.items():
+        for service, meta in services_to_run.items():
             # ИСПРАВЛЕНИЕ: Получаем конкретные посты по их ID через отдельные запросы
             with httpx.Client(timeout=60) as client:
                 posts_data = []
@@ -775,7 +781,7 @@ def dispatch_ai_processing(self, post_ids: List[int], bot_id: int):
         job = group(group_tasks)
         result = job.apply_async()
         
-        logger.info(f"✅ Все {len(group_tasks)} сервисов запущены параллельно, group_id: {result.id}")
+        logger.info(f"✅ {len(group_tasks)} сервисов запущены параллельно, group_id: {result.id}")
         return {'status': 'success', 'group_id': result.id, 'services_count': len(group_tasks)}
 
     except Exception as e:
@@ -811,18 +817,36 @@ def check_for_new_posts(self):
         # 2. Для каждого бота ищем необработанные посты
         for bot in active_bots:
             bot_id = bot['id']
-            # Лимит 500, как договорились
-            response = httpx.get(
+            
+            # 🔧 ИСПРАВЛЕНИЕ: Проверяем КАТЕГОРИЗАЦИЮ
+            response_cat = httpx.get(
                 f"{BACKEND_URL}/api/posts/unprocessed",
                 params={'bot_id': bot_id, 'limit': 500, 'require_categorization': True} 
             )
-            response.raise_for_status()
-            unprocessed_posts = response.json()
+            response_cat.raise_for_status()
+            categorization_posts = response_cat.json()
 
-            if unprocessed_posts:
-                post_ids = [p['id'] for p in unprocessed_posts]
-                logger.info(f"🚀 Для бота {bot_id} найдено {len(post_ids)} постов. Запускаем диспетчер...")
-                dispatch_ai_processing.delay(post_ids=post_ids, bot_id=bot_id)
+            # 🔧 ИСПРАВЛЕНИЕ: Проверяем САММАРИЗАЦИЮ
+            response_sum = httpx.get(
+                f"{BACKEND_URL}/api/posts/unprocessed",
+                params={'bot_id': bot_id, 'limit': 500, 'require_summarization': True} 
+            )
+            response_sum.raise_for_status()
+            summarization_posts = response_sum.json()
+
+            # Запускаем диспетчер для категоризации
+            if categorization_posts:
+                post_ids = [p['id'] for p in categorization_posts]
+                logger.info(f"🏷️ Для бота {bot_id} найдено {len(post_ids)} постов для КАТЕГОРИЗАЦИИ. Запускаем диспетчер...")
+                dispatch_ai_processing.delay(post_ids=post_ids, bot_id=bot_id, services=["categorization"])
+                total_dispatched_posts += len(post_ids)
+                dispatched_bots_count += 1
+            
+            # Запускаем диспетчер для саммаризации
+            if summarization_posts:
+                post_ids = [p['id'] for p in summarization_posts]
+                logger.info(f"📝 Для бота {bot_id} найдено {len(post_ids)} постов для САММАРИЗАЦИИ. Запускаем диспетчер...")
+                dispatch_ai_processing.delay(post_ids=post_ids, bot_id=bot_id, services=["summarization"])
                 total_dispatched_posts += len(post_ids)
                 dispatched_bots_count += 1
         

@@ -2152,6 +2152,7 @@ def get_posts_cache_with_ai(
     
     # 🚀 НОВЫЙ ФИЛЬТР: по bot_id (мультитенантность)
     if bot_id:
+        logger.info(f"🔍 Фильтрация по bot_id={bot_id}")
         query = query.filter(ProcessedData.public_bot_id == bot_id)
     
     # Фильтр по каналу
@@ -2220,6 +2221,8 @@ def get_posts_cache_with_ai(
     
     # Выполняем запрос
     results = query.offset(skip).limit(limit).all()
+    
+    logger.info(f"📊 cache-with-ai: Найдено {len(results)} записей для bot_id={bot_id}")
     
     # ИСПРАВЛЕНО: отдельный count запрос для правильной пагинации
     # Создаем count запрос с теми же фильтрами, но без offset/limit
@@ -2646,6 +2649,87 @@ def update_post_status(
         "new_status": new_status
     }
 
+@app.delete("/api/posts/cache/bulk-delete", response_model=dict)
+def bulk_delete_posts(
+    request: PostsBulkDeleteRequest,
+    db: Session = Depends(get_db)
+):
+    """Удалить посты по их ID"""
+    try:
+        post_ids = request.post_ids
+        
+        # Получаем посты для удаления
+        posts = db.query(PostCache).filter(PostCache.id.in_(post_ids)).all()
+        found_post_ids = {post.id for post in posts}
+        missing_post_ids = set(post_ids) - found_post_ids
+        
+        if missing_post_ids:
+            logger.warning(f"Не найдены посты с ID: {missing_post_ids}")
+        
+        # Удаляем найденные посты
+        if posts:
+            post_ids_list = [post.id for post in posts]
+            
+            # 📊 ПОДСЧЕТ СВЯЗАННЫХ ДАННЫХ ДЛЯ ОТЧЕТНОСТИ
+            # Считаем записи в processed_data перед удалением
+            processed_data_count = db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_(post_ids_list)
+            ).count()
+            
+            # Считаем записи в processed_service_results перед удалением  
+            service_results_count = db.query(ProcessedServiceResult).filter(
+                ProcessedServiceResult.post_id.in_(post_ids_list)
+            ).count()
+            
+            # 🗑️ УДАЛЕНИЕ СВЯЗАННЫХ AI ДАННЫХ (согласно Data_Structure.md)
+            # 1. Удаляем из processed_data (основная таблица AI результатов)
+            deleted_processed_data = db.query(ProcessedData).filter(
+                ProcessedData.post_id.in_(post_ids_list)
+            ).delete(synchronize_session=False)
+            
+            # 2. Удаляем из processed_service_results (журнальная таблица AI сервисов)
+            deleted_service_results = db.query(ProcessedServiceResult).filter(
+                ProcessedServiceResult.post_id.in_(post_ids_list)
+            ).delete(synchronize_session=False)
+            
+            # 3. Удаляем основные посты из posts_cache
+            deleted_posts = db.query(PostCache).filter(
+                PostCache.id.in_(post_ids_list)
+            ).delete(synchronize_session=False)
+            
+            db.commit()
+            
+            logger.info(f"✅ Bulk delete завершен: {deleted_posts} постов, {deleted_processed_data} processed_data, {deleted_service_results} service_results")
+            
+            return {
+                "message": f"Удалено {deleted_posts} постов с полной очисткой AI данных",
+                "deleted_count": deleted_posts,
+                "deleted_processed_data": deleted_processed_data,
+                "deleted_service_results": deleted_service_results,
+                "requested_count": len(post_ids),
+                "found_count": len(posts),
+                "missing_post_ids": list(missing_post_ids) if missing_post_ids else [],
+                "cleanup_summary": {
+                    "posts_cache": deleted_posts,
+                    "processed_data": deleted_processed_data, 
+                    "processed_service_results": deleted_service_results,
+                    "total_ai_records_cleaned": deleted_processed_data + deleted_service_results
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Ни один из запрошенных постов не найден: {post_ids}"
+            )
+            
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Ошибка удаления постов: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления постов: {str(e)}"
+        )
+
 @app.delete("/api/posts/cache/{post_id}")
 def delete_post_by_id(post_id: int, db: Session = Depends(get_db)):
     """🔧 НОВЫЙ ЭНДПОИНТ: Удалить конкретный пост и все связанные AI результаты"""
@@ -2806,64 +2890,80 @@ def cleanup_orphan_posts(
             detail=f"Ошибка очистки orphan постов: {str(e)}"
         )
 
-@app.delete("/api/posts/cache/bulk-delete", response_model=dict)
-def bulk_delete_posts(
+@app.delete("/api/ai/results/bulk-delete", response_model=dict)
+def bulk_delete_ai_results(
     request: PostsBulkDeleteRequest,
     db: Session = Depends(get_db)
 ):
-    """Удалить посты по их ID"""
+    """🧠 УДАЛИТЬ ТОЛЬКО AI РЕЗУЛЬТАТЫ (НЕ ТРОГАЯ ОРИГИНАЛЬНЫЕ ПОСТЫ)
+    
+    Специально для AI RESULTS таба - удаляет только AI данные из:
+    - processed_data (основная таблица AI результатов)
+    - processed_service_results (журнальная таблица AI сервисов)
+    
+    НЕ ТРОГАЕТ posts_cache - оригинальные посты остаются в системе!
+    """
     try:
         post_ids = request.post_ids
         
-        # Получаем посты для удаления
-        posts = db.query(PostCache).filter(PostCache.id.in_(post_ids)).all()
-        found_post_ids = {post.id for post in posts}
+        # Проверяем существование постов (но НЕ удаляем их)
+        existing_posts = db.query(PostCache).filter(PostCache.id.in_(post_ids)).all()
+        found_post_ids = {post.id for post in existing_posts}
         missing_post_ids = set(post_ids) - found_post_ids
         
         if missing_post_ids:
             logger.warning(f"Не найдены посты с ID: {missing_post_ids}")
         
-        # Удаляем найденные посты
-        if posts:
-            delete_count = db.query(PostCache).filter(
-                PostCache.id.in_([post.id for post in posts])
-            ).delete(synchronize_session=False)
-            
-            # Удаляем связанные записи из processed_data
-            db.query(ProcessedData).filter(
-                ProcessedData.post_id.in_([post.id for post in posts])
-            ).delete(synchronize_session=False)
-            
-            # 🔧 ИСПРАВЛЕНИЕ: Удаляем связанные записи из processed_service_results
-            post_ids_list = [post.id for post in posts]
-            if post_ids_list:
-                db.query(ProcessedServiceResult).filter(
-                    ProcessedServiceResult.post_id.in_(post_ids_list)
-                ).delete(synchronize_session=False)
-            
-            db.commit()
-            
-            logger.info(f"✅ Удалено {delete_count} постов")
-            
-            return {
-                "message": f"Удалено {delete_count} постов",
-                "deleted_count": delete_count,
-                "requested_count": len(post_ids),
-                "found_count": len(posts),
-                "missing_post_ids": list(missing_post_ids) if missing_post_ids else []
+        # Подсчитываем AI данные перед удалением
+        processed_data_count = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids)
+        ).count()
+        
+        service_results_count = db.query(ProcessedServiceResult).filter(
+            ProcessedServiceResult.post_id.in_(post_ids)
+        ).count()
+        
+        # 🗑️ УДАЛЯЕМ ТОЛЬКО AI ДАННЫЕ (посты остаются!)
+        # 1. Удаляем из processed_data (основная таблица AI результатов)
+        deleted_processed_data = db.query(ProcessedData).filter(
+            ProcessedData.post_id.in_(post_ids)
+        ).delete(synchronize_session=False)
+        
+        # 2. Удаляем из processed_service_results (журнальная таблица AI сервисов)
+        deleted_service_results = db.query(ProcessedServiceResult).filter(
+            ProcessedServiceResult.post_id.in_(post_ids)
+        ).delete(synchronize_session=False)
+        
+        # ✅ posts_cache НЕ ТРОГАЕМ - посты остаются в системе!
+        
+        db.commit()
+        
+        logger.info(f"✅ Удалены только AI результаты: {deleted_processed_data} processed_data, {deleted_service_results} service_results. Посты сохранены!")
+        
+        return {
+            "message": f"Удалены AI результаты для {len(found_post_ids)} постов (посты сохранены)",
+            "deleted_ai_results": deleted_processed_data + deleted_service_results,
+            "deleted_processed_data": deleted_processed_data,
+            "deleted_service_results": deleted_service_results,
+            "posts_preserved": len(found_post_ids),  # Количество сохраненных постов
+            "requested_count": len(post_ids),
+            "found_post_ids": list(found_post_ids),
+            "missing_post_ids": list(missing_post_ids) if missing_post_ids else [],
+            "cleanup_summary": {
+                "posts_cache": 0,  # Посты НЕ удалены!
+                "processed_data": deleted_processed_data,
+                "processed_service_results": deleted_service_results,
+                "total_ai_records_cleaned": deleted_processed_data + deleted_service_results,
+                "posts_preserved": len(found_post_ids)
             }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Ни один из запрошенных постов не найден: {post_ids}"
-            )
-            
+        }
+        
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Ошибка удаления постов: {str(e)}")
+        logger.error(f"❌ Ошибка удаления AI результатов: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка удаления постов: {str(e)}"
+            detail=f"Ошибка удаления AI результатов: {str(e)}"
         )
 
 # ==================== USERBOT API ====================
@@ -4218,19 +4318,44 @@ def get_ai_results(
 
 @app.get("/api/posts/unprocessed", response_model=List[PostCacheResponseWithBot])
 def get_unprocessed_posts(
+    bot_id: int = Query(..., description="Bot ID for filtering processed posts - REQUIRED"),
     limit: int = Query(500, ge=1, le=1000), # Увеличен лимит по умолчанию
     channel_telegram_ids: Optional[str] = Query(None, description="Comma-separated list of channel telegram IDs"),
-    bot_id: Optional[int] = Query(None, description="Bot ID for filtering processed posts"),
     require_categorization: Optional[bool] = Query(None, description="Only posts that need categorization"),
     require_summarization: Optional[bool] = Query(None, description="Only posts that need summarization"),
     db: Session = Depends(get_db)
 ):
     """✅ УНИВЕРСАЛЬНЫЙ ENDPOINT для v4 и v5: Поддержка фильтрации для параллельной архитектуры"""
     
-    # Базовый запрос
-    query = db.query(PostCache)
+    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Фильтрация по каналам бота
+    # Получаем каналы бота
+    bot_channels = db.query(BotChannel).filter(
+        BotChannel.public_bot_id == bot_id,
+        BotChannel.is_active == True
+    ).all()
     
-    # Фильтр по каналам
+    if not bot_channels:
+        return []  # У бота нет каналов - нет постов для обработки
+    
+    channel_ids = [bc.channel_id for bc in bot_channels]
+    
+    # Получаем telegram_id каналов
+    channels = db.query(Channel).filter(
+        Channel.id.in_(channel_ids),
+        Channel.is_active == True
+    ).all()
+    
+    bot_channel_telegram_ids = [ch.telegram_id for ch in channels]
+    
+    if not bot_channel_telegram_ids:
+        return []  # У бота нет активных каналов
+    
+    # Базовый запрос с фильтрацией по каналам бота
+    query = db.query(PostCache).filter(
+        PostCache.channel_telegram_id.in_(bot_channel_telegram_ids)
+    )
+    
+    # Фильтр по каналам (если передан Query параметр channel_telegram_ids)
     if channel_telegram_ids:
         try:
             channel_ids_list = [int(cid.strip()) for cid in channel_telegram_ids.split(',') if cid.strip()]
@@ -4246,47 +4371,96 @@ def get_unprocessed_posts(
     # Не добавляем общую дедупликацию здесь - она будет специфична для каждого сервиса ниже
     
     # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Фильтрация по processed_service_results
-    if bot_id and (require_categorization or require_summarization):
+    if require_categorization or require_summarization:
         if require_categorization:
             # 🎯 УМНАЯ ДЕДУПЛИКАЦИЯ: Исключаем посты уже обрабатываемые или готовые по категоризации
-            # Исключаем посты с записью: service_name='categorization' AND status IN ('processing', 'success')
-            already_categorized_or_processing = db.query(ProcessedServiceResult.post_id).filter(
+            # ИСКЛЮЧАЕМ: 1) processing статус, 2) success БЕЗ payload.error (реальные результаты)
+            # НЕ ИСКЛЮЧАЕМ: success С payload.error (fallback результаты)
+            
+            # Подзапрос: посты в processing (точно исключаем)
+            processing_posts = db.query(ProcessedServiceResult.post_id).filter(
                 ProcessedServiceResult.public_bot_id == bot_id,
                 ProcessedServiceResult.service_name == 'categorization',
-                ProcessedServiceResult.status.in_(['processing', 'success'])
+                ProcessedServiceResult.status == 'processing'
             ).subquery()
             
-            # Исключаем уже обрабатываемые/готовые посты
-            query = query.filter(~PostCache.id.in_(already_categorized_or_processing))
+            # Подзапрос: посты с success статусом БЕЗ payload.error (реальные успешные результаты)
+            if USE_POSTGRESQL:
+                real_success_posts = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'categorization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.has_key('error')  # PostgreSQL: нет ключа 'error'
+                ).subquery()
+            else:
+                # SQLite fallback: проверяем что payload не содержит "error"
+                real_success_posts = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'categorization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.like('%"error"%')
+                ).subquery()
             
-            logger.info(f"🛡️ Дедупликация категоризации: исключены посты в статусе processing/success для бота {bot_id}")
+            # Исключаем обе группы постов
+            query = query.filter(
+                ~PostCache.id.in_(processing_posts),
+                ~PostCache.id.in_(real_success_posts)
+            )
+            
+            logger.info(f"🛡️ Умная дедупликация категоризации: исключены processing + success без payload.error для бота {bot_id}")
         
         elif require_summarization:
             # 🎯 УМНАЯ ДЕДУПЛИКАЦИЯ ДЛЯ САММАРИЗАЦИИ: 
-            # 1) ДОЛЖНЫ быть успешно категоризированы
-            # 2) НЕ должны быть в процессе саммаризации или уже саммаризированы
+            # 1) ДОЛЖНЫ быть успешно категоризированы (БЕЗ payload.error)
+            # 2) НЕ должны быть в процессе саммаризации или уже саммаризированы (БЕЗ payload.error)
             
-            # Подзапрос: посты с успешной категоризацией 
-            successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
-                ProcessedServiceResult.public_bot_id == bot_id,
-                ProcessedServiceResult.service_name == 'categorization',
-                ProcessedServiceResult.status == 'success'
-            ).subquery()
+            # Подзапрос: посты с РЕАЛЬНОЙ успешной категоризацией (без payload.error)
+            if USE_POSTGRESQL:
+                successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'categorization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.has_key('error')  # PostgreSQL: нет ключа 'error'
+                ).subquery()
+            else:
+                successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'categorization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.like('%"error"%')
+                ).subquery()
             
-            # Подзапрос: посты уже обрабатываемые или готовые по саммаризации
-            already_summarized_or_processing = db.query(ProcessedServiceResult.post_id).filter(
+            # Подзапрос: посты в processing по саммаризации
+            processing_summarization = db.query(ProcessedServiceResult.post_id).filter(
                 ProcessedServiceResult.public_bot_id == bot_id,
                 ProcessedServiceResult.service_name == 'summarization', 
-                ProcessedServiceResult.status.in_(['processing', 'success'])
+                ProcessedServiceResult.status == 'processing'
             ).subquery()
             
-            # Берем категоризированные, но исключаем уже обрабатываемые/готовые по саммаризации
+            # Подзапрос: посты с РЕАЛЬНОЙ успешной саммаризацией (без payload.error)
+            if USE_POSTGRESQL:
+                real_success_summarization = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'summarization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.has_key('error')
+                ).subquery()
+            else:
+                real_success_summarization = db.query(ProcessedServiceResult.post_id).filter(
+                    ProcessedServiceResult.public_bot_id == bot_id,
+                    ProcessedServiceResult.service_name == 'summarization',
+                    ProcessedServiceResult.status == 'success',
+                    ~ProcessedServiceResult.payload.like('%"error"%')
+                ).subquery()
+            
+            # Берем РЕАЛЬНО категоризированные, но исключаем processing/success по саммаризации
             query = query.filter(
                 PostCache.id.in_(successfully_categorized),
-                ~PostCache.id.in_(already_summarized_or_processing)
+                ~PostCache.id.in_(processing_summarization),
+                ~PostCache.id.in_(real_success_summarization)
             )
             
-            logger.info(f"🛡️ Дедупликация саммаризации: посты категоризированы но НЕ в process/success саммаризации для бота {bot_id}")
+            logger.info(f"🛡️ Умная дедупликация саммаризации: посты реально категоризированы но НЕ реально саммаризированы для бота {bot_id}")
     
     # Возвращаем результат
     results = query.order_by(PostCache.post_date.desc()).limit(limit).all()
@@ -4516,6 +4690,8 @@ AI_SERVICES = [
 def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
     """🔧 ИСПРАВЛЕНО: Пересчитывает флаги и статусы с проверкой реальных AI результатов."""
     
+    logger.info(f"🔄 Обновление флагов для post_id={post_id}, bot_id={bot_id}")
+    
     # Получаем или создаем агрегированную запись
     agg_row = db.query(ProcessedData).filter(
         ProcessedData.post_id == post_id,
@@ -4523,6 +4699,7 @@ def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
     ).with_for_update().first()
 
     if not agg_row:
+        logger.info(f"📝 Создаем новую запись ProcessedData для post_id={post_id}, bot_id={bot_id}")
         agg_row = ProcessedData(post_id=post_id, public_bot_id=bot_id, summaries={}, categories={}, metrics={})
         db.add(agg_row)
 
@@ -4533,11 +4710,11 @@ def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
         ProcessedServiceResult.status == 'success'
     ).all()
     
+    logger.info(f"📊 Найдено {len(service_results)} успешных результатов для post_id={post_id}, bot_id={bot_id}")
+    
     # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем что результаты реальные, а не fallback
     successful_services = {}
     for res in service_results:
-        # Проверяем что в payload НЕТ ошибки (это не fallback результат)
-        
         # Десериализация payload (может быть строкой JSON или уже словарем)
         if isinstance(res.payload, str):
             try:
@@ -4561,21 +4738,52 @@ def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
     agg_row.is_categorized = "categorization" in successful_services
     agg_row.is_summarized = "summarization" in successful_services
     
+    logger.info(f"🏁 Флаги обновлены: is_categorized={agg_row.is_categorized}, is_summarized={agg_row.is_summarized}")
+    
     # Обновляем агрегированные данные
     if agg_row.is_categorized:
-        agg_row.categories = successful_services["categorization"]['payload']
-        agg_row.metrics.update(successful_services["categorization"]['metrics'])
+        cat_payload = successful_services["categorization"]['payload']
+        cat_metrics = successful_services["categorization"]['metrics']
+        
+        # Преобразуем формат из новой архитектуры в ожидаемый формат
+        agg_row.categories = {
+            'category_name': cat_payload.get('primary', ''),
+            'secondary': cat_payload.get('secondary', []),
+            'relevance_scores': cat_payload.get('relevance_scores', [])
+        }
+        
+        # Обновляем метрики
+        if not agg_row.metrics:
+            agg_row.metrics = {}
+        agg_row.metrics.update(cat_metrics)
+        
+        logger.info(f"📂 Категории обновлены: {agg_row.categories}")
 
     if agg_row.is_summarized:
-        agg_row.summaries = successful_services["summarization"]['payload']
-        agg_row.metrics.update(successful_services["summarization"]['metrics'])
+        sum_payload = successful_services["summarization"]['payload']
+        sum_metrics = successful_services["summarization"]['metrics']
+        
+        # Преобразуем формат из новой архитектуры в ожидаемый формат
+        agg_row.summaries = {
+            'summary': sum_payload.get('summary', ''),
+            'language': sum_payload.get('language', 'ru')
+        }
+        
+        # Обновляем метрики
+        if not agg_row.metrics:
+            agg_row.metrics = {}
+        agg_row.metrics.update(sum_metrics)
+        
+        logger.info(f"📄 Summary обновлено: {agg_row.summaries}")
 
-        # Проверяем, все ли ОБЯЗАТЕЛЬНЫЕ сервисы завершены
+    # Проверяем, все ли ОБЯЗАТЕЛЬНЫЕ сервисы завершены
     required_services = {s['name'] for s in AI_SERVICES if s.get('required', False)}
     if required_services.issubset(successful_services.keys()):
         agg_row.processing_status = "completed"
     else:
         agg_row.processing_status = "processing"
+    
+    logger.info(f"✅ Обновление завершено. Статус: {agg_row.processing_status}")
     
     agg_row.processed_at = datetime.utcnow()
     db.flush()
