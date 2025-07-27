@@ -100,7 +100,48 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
 
   // Bulk добавление выбранных каналов
   const handleBulkAdd = async () => {
-    if (selectedChannels.length === 0) return;
+    console.log('🔍 BotChannelsManager.handleBulkAdd called with:', {
+      botId: botId,
+      botIdType: typeof botId,
+      selectedChannels: selectedChannels,
+      selectedChannelsLength: selectedChannels.length,
+      botChannels: botChannels,
+      botChannelsLength: botChannels?.length || 0
+    });
+
+    if (selectedChannels.length === 0) {
+      console.log('❌ No channels selected, returning');
+      return;
+    }
+
+    // 🆕 РЕЖИМ СОЗДАНИЯ: Локальное состояние (botId = undefined)
+    if (!botId) {
+      console.log('🆕 Bot creation mode: Adding channels locally');
+      console.log('📋 Available channels:', availableChannels);
+      console.log('🔍 Selected channel IDs:', selectedChannels);
+      
+      // Добавляем выбранные каналы к локальному списку
+      const newChannels = availableChannels.filter(channel => 
+        selectedChannels.includes(channel.id)
+      );
+      console.log('➕ New channels to add:', newChannels);
+      
+      const updatedChannels = [...(botChannels || []), ...newChannels];
+      console.log('✅ Updated channels list:', updatedChannels);
+      
+      onChannelsChange(updatedChannels);
+      setSelectedChannels([]);
+      console.log('🎯 Local mode completed successfully');
+      return;
+    }
+
+    // ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ: API запросы (botId существует)
+    console.log('✏️ Bot editing mode: Adding channels via API');
+    console.log('🌐 API Request details:', {
+      url: `http://localhost:8000/api/public-bots/${botId}/channels`,
+      method: 'POST',
+      body: { channel_ids: selectedChannels }
+    });
 
     setLoading(true);
     try {
@@ -113,6 +154,12 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
         body: JSON.stringify({
           channel_ids: selectedChannels
         })
+      });
+
+      console.log('📡 API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
       });
 
       if (!response.ok) {
@@ -141,7 +188,29 @@ const BotChannelsManager = ({ botId, botChannels, onChannelsChange }) => {
 
   // Удаление канала из бота
   const handleRemoveChannel = async (channelId) => {
+    console.log('🗑️ BotChannelsManager.handleRemoveChannel called with:', {
+      channelId: channelId,
+      botId: botId,
+      botIdType: typeof botId,
+      currentBotChannels: botChannels
+    });
+
+    // 🆕 РЕЖИМ СОЗДАНИЯ: Локальное состояние (botId = undefined)
+    if (!botId) {
+      console.log('🆕 Bot creation mode: Removing channel locally');
+      
+      const updatedChannels = (botChannels || []).filter(channel => channel.id !== channelId);
+      console.log('✅ Updated channels after removal:', updatedChannels);
+      
+      onChannelsChange(updatedChannels);
+      console.log('🎯 Local removal completed successfully');
+      return;
+    }
+
+    // ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ: API запросы (botId существует)
     try {
+      console.log('✏️ Bot editing mode: Removing channel via API:', channelId, 'from bot:', botId);
+      
       // Используем реальный API для удаления канала из бота
       const response = await fetch(`http://localhost:8000/api/public-bots/${botId}/channels/${channelId}`, {
         method: 'DELETE'

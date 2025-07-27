@@ -112,10 +112,48 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
 
   // Bulk добавление выбранных категорий
   const handleBulkAdd = async () => {
-    if (selectedCategories.length === 0) return;
+    console.log('🔍 BotCategoriesManager.handleBulkAdd called with:', {
+      botId: botId,
+      botIdType: typeof botId,
+      selectedCategories: selectedCategories,
+      selectedCategoriesLength: selectedCategories.length,
+      botCategories: botCategories,
+      botCategoriesLength: botCategories?.length || 0
+    });
 
+    if (selectedCategories.length === 0) {
+      console.log('❌ No categories selected, returning');
+      return;
+    }
+
+    // 🆕 РЕЖИМ СОЗДАНИЯ: Локальное состояние (botId = undefined)
+    if (!botId) {
+      console.log('🆕 Bot creation mode: Adding categories locally');
+      
+      // Генерируем автоматические приоритеты
+      const priorities = selectedCategories.map((_, index) => 
+        (botCategories || []).length + index + 1
+      );
+
+      // Добавляем выбранные категории к локальному списку
+      const newCategories = availableCategories
+        .filter(category => selectedCategories.includes(category.id))
+        .map((category, index) => ({
+          ...category,
+          priority: priorities[index]
+        }));
+      
+      const updatedCategories = [...(botCategories || []), ...newCategories];
+      onCategoriesChange(updatedCategories);
+      setSelectedCategories([]);
+      return;
+    }
+
+    // ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ: API запросы (botId существует)
     setLoading(true);
     try {
+      console.log('✏️ Bot editing mode: Adding categories via API');
+      
       // Генерируем автоматические приоритеты
       const priorities = selectedCategories.map((_, index) => 
         (botCategories || []).length + index + 1
@@ -160,7 +198,29 @@ const BotCategoriesManager = ({ botId, botCategories, onCategoriesChange, onPrio
 
   // Удаление категории из бота
   const handleRemoveCategory = async (categoryId) => {
+    console.log('🗑️ BotCategoriesManager.handleRemoveCategory called with:', {
+      categoryId: categoryId,
+      botId: botId,
+      botIdType: typeof botId,
+      currentBotCategories: botCategories
+    });
+
+    // 🆕 РЕЖИМ СОЗДАНИЯ: Локальное состояние (botId = undefined)
+    if (!botId) {
+      console.log('🆕 Bot creation mode: Removing category locally');
+      
+      const updatedCategories = (botCategories || []).filter(category => category.id !== categoryId);
+      console.log('✅ Updated categories after removal:', updatedCategories);
+      
+      onCategoriesChange(updatedCategories);
+      console.log('🎯 Local removal completed successfully');
+      return;
+    }
+
+    // ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ: API запросы (botId существует)
     try {
+      console.log('✏️ Bot editing mode: Removing category via API:', categoryId, 'from bot:', botId);
+      
       // Используем реальный API для удаления категории из бота
       const response = await fetch(`http://localhost:8000/api/public-bots/${botId}/categories/${categoryId}`, {
         method: 'DELETE'

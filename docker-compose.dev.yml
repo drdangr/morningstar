@@ -1,0 +1,96 @@
+# Development версия для отладки Frontend
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: morningstar_postgres
+    environment:
+      - POSTGRES_DB=digest_bot
+      - POSTGRES_USER=digest_bot
+      - POSTGRES_PASSWORD=Demiurg12@
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U digest_bot -d digest_bot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - morningstar_network
+
+  # Redis Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: morningstar_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - morningstar_network
+
+  # Backend API (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: morningstar_backend
+    environment:
+      - DATABASE_URL=postgresql://digest_bot:Demiurg12@postgres:5432/digest_bot
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=digest_bot
+      - DB_USER=digest_bot
+      - DB_PASSWORD=Demiurg12@
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-secret-key-here
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - morningstar_network
+
+  # Frontend (React Development Server)
+  frontend:
+    build:
+      context: ./frontend/admin-panel
+      dockerfile: Dockerfile.dev  # ← Development версия!
+    container_name: morningstar_frontend_dev
+    ports:
+      - "3000:3000"  # ← Development port
+    depends_on:
+      - backend
+    restart: unless-stopped
+    volumes:
+      - ./frontend/admin-panel/src:/app/src  # ← Live reload
+    environment:
+      - REACT_APP_API_BASE_URL=
+    networks:
+      - morningstar_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  morningstar_network:
+    driver: bridge 

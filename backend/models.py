@@ -38,7 +38,7 @@ class PublicBot(Base):
     
     # Legacy поля для совместимости
     digest_generation_time = Column(String, default="09:00")
-    digest_schedule = Column(String, default="daily")
+    digest_schedule = Column(JSON, default={"enabled": False})
     
     # Statistics
     users_count = Column(Integer, default=0)

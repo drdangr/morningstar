@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_, Index, func
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime, ForeignKey, Table, Float, UniqueConstraint, BigInteger, and_, or_, Index, func, JSON
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -219,7 +219,7 @@ class PublicBot(Base):
     
     # Legacy поля для совместимости
     digest_generation_time = Column(String, default="09:00")
-    digest_schedule = Column(String, default="daily")
+    digest_schedule = Column(JSON, default={"enabled": False})
     
     # Statistics
     users_count = Column(Integer, default=0)
@@ -713,7 +713,7 @@ class PublicBotBase(BaseModel):
     
     # Legacy поля для совместимости
     digest_generation_time: str = Field("09:00", pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")
-    digest_schedule: str = "daily"
+    digest_schedule: Dict[str, Any] = Field(default_factory=lambda: {"enabled": False})
 
 class PublicBotCreate(PublicBotBase):
     pass
@@ -742,7 +742,7 @@ class PublicBotUpdate(BaseModel):
     
     # Legacy поля для совместимости
     digest_generation_time: Optional[str] = Field(None, pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")
-    digest_schedule: Optional[str] = None
+    digest_schedule: Optional[Dict[str, Any]] = None
 
 class PublicBotResponse(PublicBotBase):
     id: int
@@ -802,6 +802,7 @@ class BotTemplateSettings(BaseModel):
         "sunday": ["10:00"]
     }
     default_timezone: str = "Europe/Moscow"
+    default_digest_schedule: Dict[str, Any] = Field(default_factory=lambda: {"enabled": False})
 
 class BotTemplateUpdate(BaseModel):
     """Обновление настроек шаблона"""
@@ -817,6 +818,7 @@ class BotTemplateUpdate(BaseModel):
     default_welcome_message: Optional[str] = None
     default_delivery_schedule: Optional[Dict[str, List[str]]] = None
     default_timezone: Optional[str] = None
+    default_digest_schedule: Optional[Dict[str, Any]] = None
 
 # ConfigManager класс
 class ConfigManager:
@@ -1012,7 +1014,7 @@ def update_category(category_id: int, category: CategoryUpdate, db: Session = De
     """Обновить категорию"""
     print(f"=== UPDATE CATEGORY DEBUG ===")
     print(f"Category ID: {category_id}")
-    print(f"Received data: {category.dict()}")
+    print(f"Received data: {category.model_dump()}")
     print(f"====================")
     db_category = db.query(Category).filter(Category.id == category_id).first()
     if not db_category:
@@ -3123,7 +3125,7 @@ def create_public_bot(bot: PublicBotCreate, db: Session = Depends(get_db)):
         template = get_bot_template_settings(db)
         
         # Создаем бота с данными из запроса
-        bot_data = bot.dict()
+        bot_data = bot.model_dump()
         
         # Применяем шаблонные значения для пустых полей
         if not bot_data.get('categorization_prompt'):
@@ -3135,14 +3137,20 @@ def create_public_bot(bot: PublicBotCreate, db: Session = Depends(get_db)):
         if not bot_data.get('welcome_message'):
             bot_data['welcome_message'] = template.default_welcome_message
         
-        if bot_data.get('max_posts_per_digest') == 10:  # значение по умолчанию
+        # Исправленная логика для integer полей - проверяем на пустые значения и значения по умолчанию
+        if not bot_data.get('max_posts_per_digest') or bot_data.get('max_posts_per_digest') == 10:
             bot_data['max_posts_per_digest'] = template.default_max_posts_per_digest
         
-        if bot_data.get('max_summary_length') == 150:  # значение по умолчанию
+        # КРИТИЧНО: проверяем на пустую строку, None и значение по умолчанию
+        max_summary = bot_data.get('max_summary_length')
+        if not max_summary or max_summary == "" or max_summary == 150:
             bot_data['max_summary_length'] = template.default_max_summary_length
         
         if not bot_data.get('delivery_schedule') or bot_data.get('delivery_schedule') == {}:
             bot_data['delivery_schedule'] = template.default_delivery_schedule
+        
+        if not bot_data.get('digest_schedule') or bot_data.get('digest_schedule') == {"enabled": False}:
+            bot_data['digest_schedule'] = template.default_digest_schedule
         
         if bot_data.get('default_language') == 'ru' and template.default_digest_language != 'ru':
             bot_data['default_language'] = template.default_digest_language
@@ -3935,6 +3943,13 @@ def get_bot_template_settings(db: Session = Depends(get_db)):
         template_settings['default_delivery_schedule'] = BotTemplateSettings().default_delivery_schedule
     
     template_settings['default_timezone'] = config.get('DEFAULT_TIMEZONE', 'Europe/Moscow')
+    
+    # Digest Schedule Settings
+    digest_schedule_json = config.get('DEFAULT_DIGEST_SCHEDULE', '{"enabled": false}')
+    try:
+        template_settings['default_digest_schedule'] = json.loads(digest_schedule_json) if digest_schedule_json != '{"enabled": false}' else BotTemplateSettings().default_digest_schedule
+    except:
+        template_settings['default_digest_schedule'] = BotTemplateSettings().default_digest_schedule
     
     return BotTemplateSettings(**template_settings)
 

@@ -47,8 +47,7 @@ import {
 
 // Импорт bulk операций из temp
 import BotConfigurationTabs from '../components/BotConfigurationTabs';
-
-const API_BASE_URL = 'http://localhost:8000';
+import { apiEndpoints } from '../config/api';
 
 function PublicBotsPage() {
   const [bots, setBots] = useState([]);
@@ -76,6 +75,7 @@ function PublicBotsPage() {
     categorization_prompt: '',
     summarization_prompt: '',
     delivery_schedule: {},
+    digest_schedule: {"enabled": false},
     timezone: 'Europe/Moscow'
   });
 
@@ -84,7 +84,7 @@ function PublicBotsPage() {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch(`${API_BASE_URL}/api/public-bots`);
+      const response = await fetch(apiEndpoints.publicBots());
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -113,11 +113,11 @@ function PublicBotsPage() {
       const subscriptionPromises = botsArray.map(async (bot) => {
         try {
           // Загружаем каналы бота
-          const channelsResponse = await fetch(`${API_BASE_URL}/api/public-bots/${bot.id}/channels`);
+          const channelsResponse = await fetch(apiEndpoints.botChannels(bot.id));
           const channels = channelsResponse.ok ? await channelsResponse.json() : [];
           
           // Загружаем категории бота
-          const categoriesResponse = await fetch(`${API_BASE_URL}/api/public-bots/${bot.id}/categories`);
+          const categoriesResponse = await fetch(apiEndpoints.botCategories(bot.id));
           const categories = categoriesResponse.ok ? await categoriesResponse.json() : [];
           
           subscriptionsData[bot.id] = {
@@ -141,10 +141,49 @@ function PublicBotsPage() {
     }
   };
 
+  // Заполнение формы дефолтными значениями
+  const handleFillDefaults = async () => {
+    try {
+      console.log('🎯 LOADING DEFAULTS - загружаем дефолтные настройки...');
+      
+      const response = await fetch(apiEndpoints.botTemplates());
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const defaults = await response.json();
+      console.log('🎯 LOADING DEFAULTS - получены дефолтные настройки:', defaults);
+
+      // Заполняем форму дефолтными значениями (сохраняя уже заполненные поля)
+      setFormData(prevData => ({
+        ...prevData,
+        welcome_message: defaults.default_welcome_message || prevData.welcome_message,
+        default_language: defaults.default_digest_language || prevData.default_language,
+        max_posts_per_digest: defaults.default_max_posts_per_digest || prevData.max_posts_per_digest,
+        max_summary_length: defaults.default_max_summary_length || prevData.max_summary_length,
+        categorization_prompt: defaults.default_categorization_prompt || prevData.categorization_prompt,
+        summarization_prompt: defaults.default_summarization_prompt || prevData.summarization_prompt,
+        delivery_schedule: defaults.default_delivery_schedule || prevData.delivery_schedule,
+        digest_schedule: defaults.default_digest_schedule || prevData.digest_schedule,
+        timezone: defaults.default_timezone || prevData.timezone
+      }));
+
+      console.log('🎯 LOADING DEFAULTS - форма заполнена дефолтными значениями');
+    } catch (err) {
+      setError('Ошибка загрузки дефолтных настроек: ' + err.message);
+      console.error('🎯 LOADING DEFAULTS - Error loading defaults:', err);
+    }
+  };
+
   // Создание нового бота
   const handleCreateBot = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/public-bots`, {
+      console.log('🎯 CREATING BOT - formData перед отправкой:', formData);
+      console.log('🎯 CREATING BOT - formData as JSON:', JSON.stringify(formData, null, 2));
+      console.log('🎯 CREATING BOT - URL:', apiEndpoints.publicBots());
+      
+      const response = await fetch(apiEndpoints.publicBots(), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -152,9 +191,17 @@ function PublicBotsPage() {
         body: JSON.stringify(formData),
       });
 
+      console.log('🎯 CREATING BOT - response status:', response.status);
+      console.log('🎯 CREATING BOT - response ok:', response.ok);
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorData = await response.text();
+        console.log('🎯 CREATING BOT - error response:', errorData);
+        throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorData}`);
       }
+
+      const responseData = await response.json();
+      console.log('🎯 CREATING BOT - success response:', responseData);
 
       await loadBots();
       setCreateDialogOpen(false);
@@ -169,11 +216,12 @@ function PublicBotsPage() {
         categorization_prompt: '',
         summarization_prompt: '',
         delivery_schedule: {},
+        digest_schedule: {"enabled": false},
         timezone: 'Europe/Moscow'
       });
     } catch (err) {
       setError('Ошибка создания бота: ' + err.message);
-      console.error('Error creating bot:', err);
+      console.error('🎯 CREATING BOT - Error creating bot:', err);
     }
   };
 
@@ -185,7 +233,7 @@ function PublicBotsPage() {
     try {
       console.log('🔄 Обновляем настройки бота:', updatedBot.id);
       
-      const response = await fetch(`${API_BASE_URL}/api/public-bots/${updatedBot.id}`, {
+      const response = await fetch(apiEndpoints.publicBot(updatedBot.id), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -683,6 +731,13 @@ function PublicBotsPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCreateDialogOpen(false)}>Отмена</Button>
+          <Button 
+            onClick={handleFillDefaults}
+            variant="outlined"
+            sx={{ mr: 'auto' }}
+          >
+            Заполнить дефолтными значениями
+          </Button>
           <Button 
             onClick={handleCreateBot} 
             variant="contained"

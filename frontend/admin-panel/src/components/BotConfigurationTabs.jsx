@@ -88,16 +88,28 @@ const BotConfigurationTabs = ({ bot, onBotUpdate, onClose }) => {
   };
 
   const handleChannelsChange = (newChannels) => {
+    console.log('🔧 BotConfigurationTabs.handleChannelsChange called');
+    console.log('🔧 Adding channels to bot object:', newChannels);
+    console.log('🔧 Current bot object before modification:', bot);
+    
     setBotChannels(newChannels);
     if (onBotUpdate) {
-      onBotUpdate({ ...bot, channels: newChannels });
+      const updatedBot = { ...bot, channels: newChannels };
+      console.log('🔧 Calling onBotUpdate with updated bot:', updatedBot);
+      onBotUpdate(updatedBot);
     }
   };
 
   const handleCategoriesChange = (newCategories) => {
+    console.log('🏷️ BotConfigurationTabs.handleCategoriesChange called');
+    console.log('🏷️ Adding categories to bot object:', newCategories);
+    console.log('🏷️ Current bot object before modification:', bot);
+    
     setBotCategories(newCategories);
     if (onBotUpdate) {
-      onBotUpdate({ ...bot, categories: newCategories });
+      const updatedBot = { ...bot, categories: newCategories };
+      console.log('🏷️ Calling onBotUpdate with updated bot:', updatedBot);
+      onBotUpdate(updatedBot);
     }
   };
 
@@ -235,6 +247,13 @@ const BotConfigurationTabs = ({ bot, onBotUpdate, onClose }) => {
           botChannels={botChannels}
           onChannelsChange={handleChannelsChange}
         />
+        
+        {/* DEBUG: Log bot.id */}
+        {console.log('🔍 BotConfigurationTabs passing botId:', {
+          'bot.id': bot.id,
+          'bot.id type': typeof bot.id,
+          'full bot object': bot
+        })}
       </TabPanel>
 
       {/* Категории с bulk операциями */}
@@ -253,6 +272,13 @@ const BotConfigurationTabs = ({ bot, onBotUpdate, onClose }) => {
           onCategoriesChange={handleCategoriesChange}
           onPriorityChange={handlePriorityChange}
         />
+        
+        {/* DEBUG: Log bot.id for categories */}
+        {console.log('🔍 BotConfigurations passing botId to Categories:', {
+          'bot.id': bot.id,
+          'bot.id type': typeof bot.id,
+          'full bot object': bot
+        })}
       </TabPanel>
 
       {/* AI настройки */}

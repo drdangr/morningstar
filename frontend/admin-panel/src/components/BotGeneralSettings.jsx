@@ -90,8 +90,11 @@ const BotGeneralSettings = ({ bot, onBotUpdate }) => {
   };
 
   const handleChange = (field, value) => {
+    console.log('🔧 BotGeneralSettings.handleChange:', { field, value, currentBot: bot });
     if (onBotUpdate) {
-      onBotUpdate({ ...bot, [field]: value });
+      const updatedBot = { ...bot, [field]: value };
+      console.log('📤 Calling onBotUpdate with:', updatedBot);
+      onBotUpdate(updatedBot);
     }
   };
 

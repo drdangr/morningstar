@@ -46,7 +46,7 @@ class Category(TimestampMixin):
     name: str = Field(..., min_length=1, max_length=255)  # ВЕЗДЕ name, НЕ category_name!
     description: Optional[str] = None  # НЕ optional - нужно для AI, но может быть None
     emoji: str = Field("📝", max_length=10) 
-    is_active: bool = True  # НЕ активна по умолчанию в роадмапе, но исправляю на True
+    is_active: bool = True  # 🔧 ОСТАВЛЯЕМ is_active - для Category это оправдано (просто вкл/выкл)
     ai_prompt: Optional[str] = None
     sort_order: int = 0
 
@@ -58,7 +58,7 @@ class Channel(TimestampMixin):
     telegram_id: int = Field(..., ge=-9223372036854775808, le=9223372036854775807)  # BigInteger поддержка
     title: Optional[str] = None  # Опционально, основное поле channel_name 
     description: Optional[str] = None
-    is_active: bool = True
+    is_active: bool = True  # 🔧 ОСТАВЛЯЕМ is_active - для Channel это оправдано (просто вкл/выкл)
     last_parsed: Optional[datetime] = None
     error_count: int = 0
 
@@ -74,6 +74,19 @@ class PostBase(BaseModel):
     views: int = 0
     post_date: datetime  # 🔧 ПОДТВЕРЖДЕНО: используем post_date, НЕ published_at
     userbot_metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    @validator('media_urls', pre=True, always=True)
+    def validate_media_urls(cls, v):
+        """Унифицированный валидатор для media_urls"""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            try:
+                import json
+                return json.loads(v)
+            except:
+                return []
+        return v if isinstance(v, list) else []
 
 class PostRaw(PostBase):
     """Модель для сырых постов от userbot (без AI обработки)"""
@@ -103,7 +116,7 @@ class PublicBotBase(BaseModel):
     """Базовая модель публичного бота"""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    status: BotStatus = BotStatus.SETUP  # 🔧 РЕШЕНИЕ КОНФЛИКТА №3: используем enum
+    status: BotStatus = BotStatus.SETUP  # 🔧 ENUM для ботов - нужны сложные состояния (setup→active→paused→development)
     default_language: str = "ru"
 
 class PublicBotConfig(PublicBotBase):
@@ -126,7 +139,7 @@ class PublicBotConfig(PublicBotBase):
     
     # Legacy поля
     digest_generation_time: str = Field("09:00", pattern=r"^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")
-    digest_schedule: str = "daily"
+    digest_schedule: Dict[str, Any] = Field(default_factory=lambda: {"enabled": False})
 
 class PublicBotDB(PublicBotConfig, TimestampMixin):
     """Модель бота для БД"""
@@ -190,7 +203,7 @@ class User(TimestampMixin):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     language_code: str = "ru"
-    is_active: bool = True
+    is_active: bool = True  # 🔧 is_active для User - просто заблокирован/разблокирован
 
 class Subscription(TimestampMixin):
     """Подписка пользователя на категорию"""
@@ -212,19 +225,8 @@ class ConfigSetting(TimestampMixin):
     is_editable: bool = True
 
 # ==================== ВАЛИДАТОРЫ ====================
-
-@validator('media_urls', pre=True, always=True)
-def validate_media_urls(cls, v):
-    """Унифицированный валидатор для media_urls"""
-    if v is None:
-        return []
-    if isinstance(v, str):
-        try:
-            import json
-            return json.loads(v)
-        except:
-            return []
-    return v if isinstance(v, list) else []
+# Все валидаторы перенесены внутрь соответствующих классов
+# См. PostBase.validate_media_urls()
 
 # ==================== ПРАВИЛА ИСПОЛЬЗОВАНИЯ ====================
 """
@@ -236,20 +238,23 @@ def validate_media_urls(cls, v):
 4. Используй наследование схем:
    - PostBase → PostRaw, PostDB, PostForCategorization, PostForSummarization
    - PublicBotBase → PublicBotConfig, PublicBotDB, PublicBotForAI
-5. При передаче данных между модулями ВСЕГДА используй .dict():
-   post.dict() → в Celery → Post(**data)
+5. При передаче данных между модулями ВСЕГДА используй .model_dump(mode='json'):
+   post.model_dump(mode='json') → в CELERY → Post(**data)
 
 ПРИМЕР ПРАВИЛЬНОГО ИСПОЛЬЗОВАНИЯ:
 from schemas import PostForCategorization
 post = PostForCategorization(**data)
+# Для Celery (КРИТИЧНО mode='json' для datetime → ISO строки!):
+celery_data = post.model_dump(mode='json')  # НЕ .dict()!
 
 НЕПРАВИЛЬНО:
 class MyPost(BaseModel):  # НЕ создавай новые модели!
     ...
+post.dict()  # УСТАРЕЛО в Pydantic v2!
 
 РЕШЕННЫЕ КОНФЛИКТЫ:
 ✅ Конфликт №1: Объединены PostData и PostCacheBase через наследование
 ✅ Конфликт №2: Стандартизирован media_urls: List[str] = Field(default_factory=list)  
-✅ Конфликт №3: Унифицирован подход к статусам через enum'ы
+✅ Конфликт №3: ГИБРИДНЫЙ подход к статусам - enum для ботов (сложные состояния), is_active для Category/Channel (простое вкл/выкл)
 ✅ Конфликт №4: Объединены PublicBot модели через наследование
 """ 
