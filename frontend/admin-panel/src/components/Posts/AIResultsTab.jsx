@@ -104,7 +104,10 @@ function AIResultsTab({ stats, onStatsUpdate }) {
       
       // Устанавливаем первого активного бота по умолчанию
       if (data.bots_stats && data.bots_stats.length > 0 && !selectedBotId) {
-        const activeBots = data.bots_stats.filter(bot => bot.status === 'active');
+        // 🔧 ИСПРАВЛЕНИЕ: включаем статус 'development' как активный
+        const activeBots = data.bots_stats.filter(bot => 
+          bot.status === 'active' || bot.status === 'development'
+        );
         if (activeBots.length > 0) {
           setSelectedBotId(activeBots[0].bot_id.toString());
         } else {

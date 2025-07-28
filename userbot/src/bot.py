@@ -549,8 +549,8 @@ class MorningStarUserbot:
         failed_channels = 0
 
         # Получаем настройки из Backend API
-        collection_depth_days = await self.get_config_value("COLLECTION_DEPTH_DAYS", 3)
-        max_posts_per_channel = await self.get_config_value("MAX_POSTS_PER_CHANNEL", 50)
+        collection_depth_days = await self.get_config_value("collection_depth_days", 3)
+        max_posts_per_channel = await self.get_config_value("max_posts_per_channel", 50)
         
         # Конвертируем дни в часы
         collection_hours = int(collection_depth_days) * 24

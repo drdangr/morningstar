@@ -1,8 +1,11 @@
 // Централизованная конфигурация API
 // В production режиме (Nginx) используем относительные пути через прокси
-// В development можно переопределить через переменные окружения
+// В development (localhost) используем прямое подключение к Backend API
 
-export const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+export const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 
+  (typeof window !== 'undefined' && window.location.hostname === 'localhost' 
+    ? 'http://localhost:8000' 
+    : '');
 
 // Вспомогательная функция для создания полного URL
 export const createApiUrl = (endpoint) => {

@@ -47,7 +47,7 @@ import {
 
 // Импорт bulk операций из temp
 import BotConfigurationTabs from '../components/BotConfigurationTabs';
-import { apiEndpoints } from '../config/api';
+import { apiEndpoints, API_BASE_URL } from '../config/api';
 
 function PublicBotsPage() {
   const [bots, setBots] = useState([]);

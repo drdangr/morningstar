@@ -10,7 +10,7 @@ import ChannelsPage from './pages/ChannelsPage';
 import PublicBotsPage from './pages/PublicBotsPage';
 import PostsCachePage from './pages/PostsCachePage_v2';
 import LLMSettingsPage from './pages/LLMSettingsPage_v4';
-import AIResultsPage from './pages/AIResultsPage';
+import AIServicesPage from './pages/AIServicesPage';
 import './App.css'
 
 const theme = createTheme({
@@ -37,7 +37,7 @@ function App() {
             <Route path="/channels" element={<ChannelsPage />} />
             <Route path="/public-bots" element={<PublicBotsPage />} />
             <Route path="/posts-cache" element={<PostsCachePage />} />
-            <Route path="/ai-results" element={<AIResultsPage />} />
+            <Route path="/ai-services" element={<AIServicesPage />} />
             <Route path="/settings" element={<LLMSettingsPage />} />
           </Routes>
         </Layout>

@@ -27,7 +27,7 @@ import {
 // Импорт страниц
 import DashboardPage from '../pages/DashboardPage';
 import PostsCachePage from '../pages/PostsCachePage_v2';
-import AIResultsPage from '../pages/AIResultsPage';
+import AIServicesPage from '../pages/AIServicesPage';
 import CategoriesPage from '../pages/CategoriesPage';
 import ChannelsPage from '../pages/ChannelsPage';
 import PublicBotsPage from '../pages/PublicBotsPage';
@@ -40,7 +40,7 @@ const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
   { text: 'Userbot', icon: <AndroidIcon />, path: '/userbot' },
   { text: 'Posts Cache', icon: <StorageIcon />, path: '/posts-cache' },
-  { text: 'AI Results', icon: <PsychologyIcon />, path: '/ai-results' },
+  { text: 'AI Services', icon: <PsychologyIcon />, path: '/ai-services' },
   { text: 'Categories', icon: <CategoryIcon />, path: '/categories' },
   { text: 'Channels', icon: <RadioIcon />, path: '/channels' },
   { text: 'Public Bots', icon: <SmartToyIcon />, path: '/public-bots' },
@@ -122,7 +122,7 @@ function Layout() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/userbot" element={<UserbotPage />} />
           <Route path="/posts-cache" element={<PostsCachePage />} />
-          <Route path="/ai-results" element={<AIResultsPage />} />
+          <Route path="/ai-services" element={<AIServicesPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/public-bots" element={<PublicBotsPage />} />

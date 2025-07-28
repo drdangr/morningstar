@@ -15,6 +15,11 @@ from typing import Dict, List, Optional, Any
 from openai import OpenAI
 from .base_celery import BaseAIServiceCelery
 
+# ✨ НОВОЕ: Импорт единой схемы данных
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from schemas import PostForSummarization, ProcessingStatus, ServiceResult
+
 logger = logging.getLogger(__name__)
 
 # 🔧 КОНТРОЛЬ CONCURRENCY: Ограничиваем одновременные запросы к OpenAI  
@@ -62,37 +67,26 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             summary_length = max_summary_length or settings_max_length or self.max_summary_length
             prompt = self._build_single_prompt(custom_prompt, language, summary_length)
             
-            # 🔧 ОГРАНИЧИВАЕМ CONCURRENCY для OpenAI запросов
-            async with OPENAI_SEMAPHORE:
-                logger.info(f"🔒 Получили слот для OpenAI запроса саммаризации (активных: {2 - OPENAI_SEMAPHORE._value})")
-                
-                # 🔧 ИСПРАВЛЕНИЕ: Создаем клиент и явно закрываем его
-                from openai import AsyncOpenAI
-                async_client = AsyncOpenAI(api_key=self._get_openai_key())
-                
-                try:
-                    response = await async_client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": prompt},
-                            {"role": "user", "content": text}
-                        ],
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        top_p=top_p
-                    )
-                finally:
-                    # Явно закрываем HTTP клиент чтобы избежать RuntimeError
-                    await async_client.close()
-                
-                logger.info(f"✅ OpenAI запрос саммаризации завершен, освобождаем слот")
+            # 🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI API для саммаризации
+            logger.info(f"🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI запроса саммаризации (delay 2 сек)")
             
-            summary = response.choices[0].message.content.strip()
+            # 🔧 DELAY 2 секунды для имитации работы AI
+            await asyncio.sleep(2)
+            
+            # Получаем информацию о посте для формирования псевдо-саммари
+            # Ищем post_id в контексте вызова (может быть передан через kwargs)
+            post_id = kwargs.get('post_id', 'неизвестно')
+            bot_id = kwargs.get('bot_id', 'неизвестно')
+            
+            # Генерируем псевдо-саммари согласно требованиям
+            summary = f"саммаризация для поста ID{post_id} для бота id{bot_id}"
+            
+            logger.info(f"✅ ПСЕВДООБРАБОТКА: Саммари сгенерировано для поста {post_id}, бот {bot_id}")
             
             return {
                 "summary": summary,
                 "language": language,
-                "tokens_used": response.usage.total_tokens,
+                "tokens_used": 42,  # Псевдо-значение токенов
                 "status": "success"
             }
             
@@ -103,37 +97,45 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
     async def process_posts_individually_async(self, posts: List[Dict], bot_id: int, language: str = "ru", 
                                   custom_prompt: Optional[str] = None, **kwargs) -> List[Dict[str, Any]]:
         """
-        Асинхронно обрабатывает посты по одному (рекомендуемый режим)
+        ✨ ОБНОВЛЕНО: Асинхронно обрабатывает посты по одному используя unified схему
         """
         logger.info(f"📝 Асинхронная индивидуальная саммаризация {len(posts)} постов")
         
+        # Конвертируем посты в PostForSummarization objects
+        post_objects = self._convert_to_post_objects(posts, bot_id)
+        
         results = []
-        for i, post in enumerate(posts, 1):
+        for i, post in enumerate(post_objects, 1):
             try:
-                # 🔧 ИСПРАВЛЕНИЕ: Backend API возвращает 'content', а не 'text'  
-                text = post.get('content', '') or post.get('text', '')  # Fallback на 'text' для совместимости
+                # Используем unified schema - PostForSummarization
+                text = post.content or ''
                 if not text or not text.strip():
                     results.append({
-                        "post_id": post.get('id'),
+                        "post_id": post.id,  # Используем атрибут объекта
                         "public_bot_id": bot_id,
                         "service_name": "summarization",
-                        "status": "skipped",
+                        "status": ProcessingStatus.COMPLETED.value,  # Используем enum
                         "payload": {"summary": "", "reason": "empty_text"},
                         "metrics": {}
                     })
                     continue
                 
-                result = await self.process_async(text, language, custom_prompt, **kwargs)
+                # Передаем post_id и bot_id для псевдообработки
+                result = await self.process_async(text, language, custom_prompt, 
+                                                post_id=post.id, bot_id=bot_id, **kwargs)
                 
-                result['post_id'] = post.get('id')
+                result['post_id'] = post.id  # Используем атрибут объекта
                 result['public_bot_id'] = bot_id
                 result['service_name'] = 'summarization'
 
+                # ✨ ОБНОВЛЕНО: Используем enum статусы
+                status = ProcessingStatus.COMPLETED.value if result.get('status') == 'success' else ProcessingStatus.FAILED.value
+                
                 final_result = {
                     'post_id': result.get('post_id'),
                     'public_bot_id': result.get('public_bot_id'),
                     'service_name': 'summarization',
-                    'status': result.get('status', 'success'),
+                    'status': status,  # Используем enum статус
                     'payload': { 'summary': result.get('summary'), 'language': result.get('language') },
                     'metrics': { 'tokens_used': result.get('tokens_used', 0) }
                 }
@@ -145,16 +147,52 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки поста {i}: {e}")
                 results.append({
-                    "post_id": post.get('id'),
+                    "post_id": post.id,  # Используем атрибут объекта
                     "public_bot_id": bot_id,
                     "service_name": "summarization",
-                    'status': 'success',
+                    'status': ProcessingStatus.FAILED.value,  # Используем enum для ошибки
                     'payload': {'error': str(e)},
                     'metrics': {}
                 })
         
         logger.info(f"✅ Асинхронная индивидуальная саммаризация завершена: {len(results)} результатов")
         return results
+    
+    def _convert_to_post_objects(self, posts: List[Dict], bot_id: int) -> List[PostForSummarization]:
+        """
+        ✨ НОВОЕ: Конвертирует dict в PostForSummarization objects используя unified схему
+        """
+        # Если уже PostForSummarization objects, возвращаем как есть
+        if posts and isinstance(posts[0], PostForSummarization):
+            return posts
+        
+        # Создаем PostForSummarization объекты через unified схему
+        result_posts = []
+        for post_data in posts:
+            try:
+                # Создаем PostForSummarization согласно schemas.py
+                post_obj = PostForSummarization(
+                    id=post_data.get('id'),
+                    public_bot_id=bot_id,
+                    channel_telegram_id=post_data.get('channel_telegram_id', 0),
+                    telegram_message_id=post_data.get('telegram_message_id', 0),
+                    title=post_data.get('title'),
+                    content=post_data.get('content') or post_data.get('text', ''),  # Поддержка legacy поля 'text'
+                    media_urls=post_data.get('media_urls', []),
+                    views=post_data.get('views', 0),
+                    post_date=post_data.get('post_date'),
+                    userbot_metadata=post_data.get('userbot_metadata', {}),
+                    categories=post_data.get('categories', [])  # Результат категоризации если есть
+                )
+                result_posts.append(post_obj)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка создания PostForSummarization для поста {post_data.get('id', 'unknown')}: {e}")
+                # Пропускаем проблематичные посты
+                continue
+        
+        logger.info(f"✅ Конвертировано {len(result_posts)} постов в PostForSummarization")
+        return result_posts
     
     async def _call_openai_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
         """

@@ -15,6 +15,12 @@ from openai import OpenAI
 import requests
 from .base_celery import BaseAIServiceCelery
 
+# ✨ НОВОЕ: Импорт единой схемы данных
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from schemas import PostForCategorization, ProcessingStatus, ServiceResult
+
 logger = logging.getLogger(__name__)
 
 # 🔧 КОНТРОЛЬ CONCURRENCY: Ограничиваем одновременные запросы к OpenAI
@@ -39,12 +45,19 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         """
         super().__init__(settings_manager)
         
-        self.openai_api_key = openai_api_key or self._get_openai_key()
+        # 🧪 ПСЕВДООБРАБОТКА: Не требуем OpenAI ключ для тестирования
+        try:
+            self.openai_api_key = openai_api_key or self._get_openai_key()
+            # Инициализируем OpenAI клиент (синхронный) только если есть ключ
+            self.openai_client = OpenAI(api_key=self.openai_api_key)
+        except ValueError:
+            # Для псевдообработки ключ не нужен
+            self.openai_api_key = "pseudo_key"
+            self.openai_client = None
+            logger.warning("🧪 ПСЕВДООБРАБОТКА: OpenAI ключ не найден, используется псевдообработка")
+        
         self.backend_url = backend_url
         self.batch_size = batch_size
-        
-        # Инициализируем OpenAI клиент (синхронный)
-        self.openai_client = OpenAI(api_key=self.openai_api_key)
         
         logger.info(f"🏷️ CategorizationServiceCelery инициализирован")
         logger.info(f"   Backend URL: {backend_url}")
@@ -59,7 +72,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         🚀 АСИНХРОННАЯ БАТЧЕВАЯ категоризация постов с настройками конкретного PublicBot
         """
         try:
-            post_objects = self._convert_to_post_objects(posts)
+            post_objects = self._convert_to_post_objects(posts, bot_id)
             
             bot_config = self._get_bot_config(bot_id)
             if not bot_config:
@@ -96,26 +109,43 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             logger.error(f"❌ Ошибка в process_with_bot_config_async: {str(e)}")
             return []
     
-    def _convert_to_post_objects(self, posts: List[Dict]) -> List[Any]:
-        """Конвертирует dict в Post objects если нужно"""
-        # Если уже Post objects, возвращаем как есть
-        if posts and hasattr(posts[0], 'id'):
+    def _convert_to_post_objects(self, posts: List[Dict], bot_id: int) -> List[PostForCategorization]:
+        """
+        ✨ ОБНОВЛЕНО: Конвертирует dict в PostForCategorization objects используя unified схему
+        """
+        # Если уже PostForCategorization objects, возвращаем как есть
+        if posts and isinstance(posts[0], PostForCategorization):
             return posts
         
-        # Создаем простые объекты с нужными атрибутами
-        class SimplePost:
-            def __init__(self, data):
-                self.id = data.get('id')
-                # 🔧 ИСПРАВЛЕНИЕ: Backend API возвращает 'content', а не 'text'
-                self.text = data.get('content', '') or data.get('text', '')  # Fallback на 'text' для совместимости
-                self.media_path = data.get('media_path', '')
-                self.views = data.get('views', 0)
-                self.channel_telegram_id = data.get('channel_telegram_id', '')
-                self.post_telegram_id = data.get('post_telegram_id', '')
-                self.post_date = data.get('post_date', '')
-                self.post_url = data.get('post_url', '')
+        # Создаем PostForCategorization объекты через unified схему
+        result_posts = []
+        for post_data in posts:
+            try:
+                # Создаем PostForCategorization согласно schemas.py
+                post_obj = PostForCategorization(
+                    id=post_data.get('id'),
+                    public_bot_id=bot_id,
+                    channel_telegram_id=post_data.get('channel_telegram_id', 0),
+                    telegram_message_id=post_data.get('telegram_message_id', 0),
+                    title=post_data.get('title'),
+                    content=post_data.get('content') or post_data.get('text', ''),  # Поддержка legacy поля 'text'
+                    media_urls=post_data.get('media_urls', []),
+                    views=post_data.get('views', 0),
+                    post_date=post_data.get('post_date'),
+                    userbot_metadata=post_data.get('userbot_metadata', {})
+                )
+                result_posts.append(post_obj)
+                
+                # Добавляем совместимые атрибуты для legacy кода
+                post_obj.text = post_obj.content  # Для совместимости с существующим кодом
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка создания PostForCategorization для поста {post_data.get('id', 'unknown')}: {e}")
+                # Пропускаем проблематичные посты
+                continue
         
-        return [SimplePost(post) for post in posts]
+        logger.info(f"✅ Конвертировано {len(result_posts)} постов в PostForCategorization")
+        return result_posts
     
     def _split_posts_into_batches(self, posts: List[Any]) -> List[List[Any]]:
         """Разбивает посты на батчи заданного размера"""
@@ -134,6 +164,9 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             logger.info(f"🔄 Асинхронная обработка батча {batch_index}/{total_batches} ({len(batch_posts)} постов)")
             
             system_prompt, user_message = self._build_batch_prompt(bot_config, bot_categories, batch_posts, batch_index, total_batches)
+            
+            # 🧪 ПСЕВДООБРАБОТКА: Сохраняем batch_posts для псевдообработки
+            self._current_batch_posts = [{'id': post.id} for post in batch_posts]
             
             response = await self._call_openai_batch_api_async(system_prompt, user_message)
             if not response:
@@ -212,39 +245,68 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
     
     async def _call_openai_batch_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
         """
-        Асинхронно вызывает OpenAI API для батчевой обработки с контролем concurrency
+        🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI API для батчевой категоризации
+        Возвращает псевдо-результаты для тестирования без сжигания токенов
         """
-        async with OPENAI_SEMAPHORE:  # 🔧 ОГРАНИЧИВАЕМ CONCURRENCY
-            try:
-                logger.info(f"🔒 Получили слот для OpenAI запроса (активных запросов: {2 - OPENAI_SEMAPHORE._value})")
+        try:
+            logger.info(f"🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI запроса категоризации (delay 5 сек)")
+            
+            # 🔧 DELAY 5 секунд для имитации работы AI
+            await asyncio.sleep(5)
+            
+            # 🧪 ПСЕВДООБРАБОТКА: Получаем IDs из контекста вызова если возможно
+            # Сохраняем batch_posts в контексте для псевдообработки
+            posts_data = getattr(self, '_current_batch_posts', None)
+            if not posts_data:
+                posts_data = self._extract_posts_from_user_message(user_message)
+            
+            # Генерируем псевдо-ответ в JSON формате для всех постов
+            pseudo_results = []
+            for i, post_data in enumerate(posts_data, 1):
+                post_id = post_data.get('id', f'unknown_{i}')
                 
-                model, max_tokens, temperature = await self._get_model_settings_async()
-                
-                # 🐞 ИСПРАВЛЕНО: Создаем клиент и явно закрываем его
-                from openai import AsyncOpenAI
-                client = AsyncOpenAI(api_key=self.openai_api_key)
-                
-                try:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        timeout=60
-                    )
-                finally:
-                    # Явно закрываем HTTP клиент чтобы избежать RuntimeError
-                    await client.close()
-                
-                logger.info(f"✅ OpenAI запрос завершен, освобождаем слот")
-                return response.choices[0].message.content.strip()
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка Async OpenAI API: {str(e)}")
-                return None
+                # Псевдо-результат: первая активная категория + метрики
+                pseudo_result = {
+                    "id": post_id,
+                    "category_number": 1,  # Всегда первая категория
+                    "category_name": "ПСЕВДО-КАТЕГОРИЯ",  # Будет заменено на реальную
+                    "relevance_score": 0.8,  # Фиксированная релевантность
+                    "importance": int(str(post_id)[-1:]) if str(post_id).isdigit() else 5,  # importance = последняя цифра post_id
+                    "urgency": 7,  # Фиксированная срочность  
+                    "significance": i  # significance = номер в батче
+                }
+                pseudo_results.append(pseudo_result)
+            
+            # Формируем ответ в том же формате, что ожидает парсер
+            import json
+            pseudo_response = json.dumps({"results": pseudo_results}, ensure_ascii=False, indent=2)
+            
+            logger.info(f"✅ ПСЕВДООБРАБОТКА: Сгенерированы результаты для {len(pseudo_results)} постов")
+            return pseudo_response
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка в псевдообработке категоризации: {str(e)}")
+            return None
+    
+    def _extract_posts_from_user_message(self, user_message: str) -> List[Dict]:
+        """
+        Извлекает информацию о постах из user_message для псевдообработки
+        """
+        import re
+        posts_data = []
+        
+        # Ищем ID постов в сообщении (примерный парсинг)
+        id_matches = re.findall(r'ID:\s*(\d+)', user_message)
+        for post_id in id_matches:
+            posts_data.append({"id": int(post_id)})
+        
+        # Если не нашли ID, создаем фиктивные
+        if not posts_data:
+            # Считаем количество постов по ключевым словам
+            post_count = len(re.findall(r'Пост\s+\d+', user_message)) or 1
+            posts_data = [{"id": f"pseudo_{i}"} for i in range(1, post_count + 1)]
+        
+        return posts_data
     
     def _extract_json_objects(self, text: str) -> List[str]:
         """
@@ -387,12 +449,12 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
                         category_name = bot_categories[category_index].get('category_name', 
                                                                         bot_categories[category_index].get('name', 'Unknown'))
             
-            # Формируем результат
+            # ✨ ОБНОВЛЕНО: Формируем результат используя ServiceResult schema
             result = {
                 'post_id': post_id,
                 'public_bot_id': bot_config.get('id') if bot_config else None,
                 'service_name': 'categorization',
-                'status': 'success',
+                'status': ProcessingStatus.COMPLETED.value,  # Используем enum из schemas.py
                 'payload': {
                     'primary': category_name,
                     'secondary': [],
@@ -412,30 +474,61 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             return None
     
     def _get_bot_config(self, bot_id: int) -> Optional[Dict[str, Any]]:
-        """Получает конфигурацию бота из Backend API"""
+        """Получает конфигурацию бота из Backend API или возвращает псевдо-конфиг"""
         try:
             response = requests.get(f"{self.backend_url}/api/public-bots/{bot_id}")
             if response.status_code == 200:
                 return response.json()
             else:
                 logger.error(f"❌ Ошибка получения конфигурации бота {bot_id}: {response.status_code}")
-                return None
+                # 🧪 ПСЕВДООБРАБОТКА: Возвращаем мок-конфиг
+                return self._get_mock_bot_config(bot_id)
         except Exception as e:
             logger.error(f"❌ Ошибка запроса конфигурации бота {bot_id}: {str(e)}")
-            return None
+            # 🧪 ПСЕВДООБРАБОТКА: Возвращаем мок-конфиг
+            return self._get_mock_bot_config(bot_id)
+    
+    def _get_mock_bot_config(self, bot_id: int) -> Dict[str, Any]:
+        """🧪 ПСЕВДООБРАБОТКА: Возвращает мок-конфигурацию бота"""
+        logger.warning(f"🧪 ПСЕВДООБРАБОТКА: Используется мок-конфиг для бота {bot_id}")
+        return {
+            'id': bot_id,
+            'name': f'Псевдо-бот {bot_id}',
+            'categorization_prompt': 'Определи категорию поста'
+        }
     
     def _get_bot_categories(self, bot_id: int) -> List[Dict[str, Any]]:
-        """Получает категории бота из Backend API"""
+        """Получает категории бота из Backend API или возвращает псевдо-категории"""
         try:
             response = requests.get(f"{self.backend_url}/api/public-bots/{bot_id}/categories")
             if response.status_code == 200:
                 return response.json()
             else:
                 logger.error(f"❌ Ошибка получения категорий бота {bot_id}: {response.status_code}")
-                return []
+                # 🧪 ПСЕВДООБРАБОТКА: Возвращаем мок-категории
+                return self._get_mock_bot_categories(bot_id)
         except Exception as e:
             logger.error(f"❌ Ошибка запроса категорий бота {bot_id}: {str(e)}")
-            return []
+            # 🧪 ПСЕВДООБРАБОТКА: Возвращаем мок-категории
+            return self._get_mock_bot_categories(bot_id)
+    
+    def _get_mock_bot_categories(self, bot_id: int) -> List[Dict[str, Any]]:
+        """🧪 ПСЕВДООБРАБОТКА: Возвращает мок-категории бота"""
+        logger.warning(f"🧪 ПСЕВДООБРАБОТКА: Используются мок-категории для бота {bot_id}")
+        return [
+            {
+                'id': 1,
+                'category_name': 'ПСЕВДО-КАТЕГОРИЯ-1',
+                'name': 'ПСЕВДО-КАТЕГОРИЯ-1',
+                'description': 'Первая тестовая категория'
+            },
+            {
+                'id': 2, 
+                'category_name': 'ПСЕВДО-КАТЕГОРИЯ-2',
+                'name': 'ПСЕВДО-КАТЕГОРИЯ-2',
+                'description': 'Вторая тестовая категория'
+            }
+        ]
     
     def _validate_category_number(self, category_number: Any, max_categories: int) -> Optional[int]:
         """Валидирует номер категории"""
