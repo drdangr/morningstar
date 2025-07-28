@@ -4399,12 +4399,12 @@ def get_unprocessed_posts(
                 ProcessedServiceResult.status == 'processing'
             ).subquery()
             
-            # Подзапрос: посты с success статусом БЕЗ payload.error (реальные успешные результаты)
+            # Подзапрос: посты с completed статусом БЕЗ payload.error (реальные успешные результаты)
             if USE_POSTGRESQL:
                 real_success_posts = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.has_key('error')  # PostgreSQL: нет ключа 'error'
                 ).subquery()
             else:
@@ -4412,7 +4412,7 @@ def get_unprocessed_posts(
                 real_success_posts = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.like('%"error"%')
                 ).subquery()
             
@@ -4434,14 +4434,14 @@ def get_unprocessed_posts(
                 successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.has_key('error')  # PostgreSQL: нет ключа 'error'
                 ).subquery()
             else:
                 successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.like('%"error"%')
                 ).subquery()
             
@@ -4457,14 +4457,14 @@ def get_unprocessed_posts(
                 real_success_summarization = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'summarization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.has_key('error')
                 ).subquery()
             else:
                 real_success_summarization = db.query(ProcessedServiceResult.post_id).filter(
                     ProcessedServiceResult.public_bot_id == bot_id,
                     ProcessedServiceResult.service_name == 'summarization',
-                    ProcessedServiceResult.status == 'success',
+                    ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.like('%"error"%')
                 ).subquery()
             
@@ -4722,7 +4722,7 @@ def _update_processed_data_flags(db: Session, post_id: int, bot_id: int):
     service_results = db.query(ProcessedServiceResult.service_name, ProcessedServiceResult.payload, ProcessedServiceResult.metrics).filter(
         ProcessedServiceResult.post_id == post_id,
         ProcessedServiceResult.public_bot_id == bot_id,
-        ProcessedServiceResult.status == 'success'
+        ProcessedServiceResult.status == 'completed'  # ИСПРАВЛЕНО: ищем статус 'completed' а не 'success'
     ).all()
     
     logger.info(f"📊 Найдено {len(service_results)} успешных результатов для post_id={post_id}, bot_id={bot_id}")
@@ -4816,6 +4816,8 @@ def create_service_results_batch(batch: ServiceResultsBatch, db: Session = Depen
     сохраняя их в `processed_service_results` с помощью "UPSERT" (обновление при конфликте).
     Для каждого уникального поста/бота вызывает функцию обновления агрегированного статуса.
     """
+    logger.info(f"🚀 DEBUG: Получен POST /api/ai/service-results/batch с {len(batch.results)} результатами")
+    
     if not batch.results:
         logger.warning("Получен пустой батч результатов. Действий не требуется.")
         return JSONResponse(status_code=200, content={"message": "Нет данных для сохранения."})
@@ -4873,7 +4875,9 @@ def create_service_results_batch(batch: ServiceResultsBatch, db: Session = Depen
         
         for post_id, bot_id in unique_posts_to_update:
             try:
+                logger.info(f"🔧 DEBUG: Вызываем _update_processed_data_flags для post_id={post_id}, bot_id={bot_id}")
                 _update_processed_data_flags(db, post_id, bot_id)
+                logger.info(f"✅ DEBUG: _update_processed_data_flags завершилась для post_id={post_id}, bot_id={bot_id}")
             except Exception as e:
                  logger.error(f"❌ Ошибка при обновлении агрегатного статуса для post_id={post_id}, bot_id={bot_id}: {e}", exc_info=True)
 

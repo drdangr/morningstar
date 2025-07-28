@@ -11,15 +11,18 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Копирование requirements.txt и установка зависимостей
-COPY requirements.txt .
+COPY ai_services/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копирование entrypoint скрипта
-COPY entrypoint.sh /app/entrypoint.sh
+COPY ai_services/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Копирование всех файлов AI сервисов
-COPY . .
+COPY ai_services/ /app/
+
+# Копирование schemas.py из корня проекта (единый источник истины) - ПОСЛЕ копирования AI файлов
+COPY schemas.py /app/schemas.py
 
 # Создание директории для логов
 RUN mkdir -p /app/logs

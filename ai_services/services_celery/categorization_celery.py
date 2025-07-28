@@ -136,8 +136,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
                 )
                 result_posts.append(post_obj)
                 
-                # Добавляем совместимые атрибуты для legacy кода
-                post_obj.text = post_obj.content  # Для совместимости с существующим кодом
+                # Убираем динамическое добавление атрибутов - используем post.content напрямую
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка создания PostForCategorization для поста {post_data.get('id', 'unknown')}: {e}")
@@ -234,7 +233,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         # 4. Пользовательское сообщение с постами
         posts_text = []
         for i, post in enumerate(batch_posts, 1):
-            post_text_raw = post.text[:1000] if post.text else "Пост без текста"
+            post_text_raw = post.content[:1000] if post.content else "Пост без текста"
             # 🐞 FIX: Экранируем спецсимволы, которые могут сломать JSON в ответе OpenAI
             post_text_safe = post_text_raw.replace('\\', '\\\\').replace('"', "'")
             posts_text.append(f"Пост {post.id}: {post_text_safe}")

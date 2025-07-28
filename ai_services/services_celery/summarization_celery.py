@@ -78,10 +78,19 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             post_id = kwargs.get('post_id', 'неизвестно')
             bot_id = kwargs.get('bot_id', 'неизвестно')
             
-            # Генерируем псевдо-саммари согласно требованиям
-            summary = f"саммаризация для поста ID{post_id} для бота id{bot_id}"
+            # 🎯 Получаем все настройки для проверки
+            model, max_tokens, temperature, top_p, settings_max_length = await self._get_model_settings_async()
+            prompt = self._build_single_prompt(custom_prompt, language, summary_length)
+            
+            # Генерируем детальный псевдо-саммари с ВСЕМИ параметрами включая ТЕКСТ ПРОМПТА
+            prompt_preview = (prompt[:100] + "...") if len(prompt) > 100 else prompt
+            summary = f"🧪 ПСЕВДО-САММАРИЗАЦИЯ поста ID{post_id} (бот {bot_id}) | Промпт: {prompt_preview} | Модель: {model} | Max_tokens: {max_tokens} | Temp: {temperature} | Top_p: {top_p} | Max_length: {max_summary_length or summary_length}"
             
             logger.info(f"✅ ПСЕВДООБРАБОТКА: Саммари сгенерировано для поста {post_id}, бот {bot_id}")
+            logger.info(f"🔍 Параметры: model={model}, max_tokens={max_tokens}, temp={temperature}, top_p={top_p}")
+            logger.info(f"📝 Промпт (len={len(prompt)}): {prompt[:200] + ('...' if len(prompt) > 200 else '')}")
+            logger.info(f"🎯 Кастомный промпт: {'ДА (len=' + str(len(custom_prompt)) + ')' if custom_prompt else 'НЕТ (используется дефолтный)'}")
+            logger.info(f"📏 Длина саммари: {max_summary_length or summary_length} ({'КАСТОМНАЯ ОТ БОТА' if max_summary_length != settings_max_length else 'СИСТЕМНАЯ'})")
             
             return {
                 "summary": summary,
@@ -100,6 +109,21 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         ✨ ОБНОВЛЕНО: Асинхронно обрабатывает посты по одному используя unified схему
         """
         logger.info(f"📝 Асинхронная индивидуальная саммаризация {len(posts)} постов")
+        
+        # 🔧 ИСПРАВЛЕНИЕ: Получаем настройки бота включая кастомный промпт и длину саммари
+        bot_custom_prompt, bot_max_length = await self._get_bot_summarization_settings(bot_id)
+        if bot_custom_prompt:
+            logger.info(f"🎯 Используем кастомный промпт бота {bot_id} (длина: {len(bot_custom_prompt)})")
+            custom_prompt = bot_custom_prompt
+        else:
+            logger.info(f"📄 Кастомный промпт для бота {bot_id} не найден, используем дефолтный")
+        
+        # Определяем максимальную длину саммари (приоритет: настройки бота → системные настройки → fallback)
+        final_max_length = bot_max_length or max_summary_length or self.max_summary_length
+        if bot_max_length:
+            logger.info(f"📏 Используем кастомную длину саммари бота {bot_id}: {final_max_length}")
+        else:
+            logger.info(f"📏 Используем дефолтную длину саммари: {final_max_length}")
         
         # Конвертируем посты в PostForSummarization objects
         post_objects = self._convert_to_post_objects(posts, bot_id)
@@ -120,8 +144,9 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                     })
                     continue
                 
-                # Передаем post_id и bot_id для псевдообработки
+                # Передаем post_id, bot_id и кастомную длину саммари для псевдообработки
                 result = await self.process_async(text, language, custom_prompt, 
+                                                max_summary_length=final_max_length,
                                                 post_id=post.id, bot_id=bot_id, **kwargs)
                 
                 result['post_id'] = post.id  # Используем атрибут объекта
@@ -249,12 +274,12 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                 top_p = float(config.get('top_p', defaults['top_p']))
                 max_summary_length = int(config.get('max_summary_length', defaults['max_summary_length']))
                 
-                logger.info(f"📋 Настройки саммаризации из SettingsManager:")
+                logger.info(f"📋 СИСТЕМНЫЕ настройки саммаризации из SettingsManager (могут быть переопределены настройками бота):")
                 logger.info(f"   🤖 Модель: {model} (ожидалось: gpt-4o)")
                 logger.info(f"   🎯 Max tokens: {max_tokens} (ожидалось: 2000)")
                 logger.info(f"   🌡️ Temperature: {temperature} (ожидалось: 0.7)")
                 logger.info(f"   🎲 Top_p: {top_p} (ожидалось: 1.0)")
-                logger.info(f"   📏 Max summary length: {max_summary_length} (fallback: 150)")
+                logger.info(f"   📏 Max summary length: {max_summary_length} (СИСТЕМНАЯ, fallback: 150)")
                 
                 return (model, max_tokens, temperature, top_p, max_summary_length)
                 
@@ -392,3 +417,50 @@ Requirements:
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required") 
+        return api_key
+
+    async def _get_bot_summarization_settings(self, bot_id: int) -> tuple[Optional[str], Optional[int]]:
+        """
+        Получает кастомные настройки саммаризации для конкретного бота
+        
+        Args:
+            bot_id: ID публичного бота
+            
+        Returns:
+            Кортеж (кастомный_промпт, макс_длина_саммари) или (None, None) если не найдены
+        """
+        try:
+            import httpx
+            
+            # Получаем настройки бота через Backend API
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(f"http://morningstar_backend:8000/api/public-bots/{bot_id}")
+                if response.status_code == 200:
+                    bot_data = response.json()
+                    
+                    # Получаем кастомный промпт
+                    summarization_prompt = bot_data.get("summarization_prompt")
+                    custom_prompt = summarization_prompt.strip() if summarization_prompt and summarization_prompt.strip() else None
+                    
+                    # Получаем максимальную длину саммари
+                    max_summary_length = bot_data.get("max_summary_length")
+                    custom_max_length = int(max_summary_length) if max_summary_length and str(max_summary_length).isdigit() else None
+                    
+                    if custom_prompt:
+                        logger.info(f"✅ Получен кастомный промпт саммаризации для бота {bot_id}")
+                    else:
+                        logger.info(f"📄 У бота {bot_id} нет кастомного промпта саммаризации")
+                    
+                    if custom_max_length:
+                        logger.info(f"✅ Получена кастомная длина саммари для бота {bot_id}: {custom_max_length}")
+                    else:
+                        logger.info(f"📏 У бота {bot_id} нет кастомной длины саммари")
+                    
+                    return (custom_prompt, custom_max_length)
+                else:
+                    logger.warning(f"❌ Не удалось получить настройки бота {bot_id}: HTTP {response.status_code}")
+                    return (None, None)
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения настроек бота {bot_id}: {e}")
+            return (None, None) 

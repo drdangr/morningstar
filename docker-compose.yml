@@ -106,8 +106,8 @@ services:
   # AI Services с Celery Worker
   ai_services:
     build:
-      context: ./ai_services
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ai_services/Dockerfile
     container_name: morningstar_ai_services
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -125,12 +125,15 @@ services:
     restart: unless-stopped
     volumes:
       - ./ai_services:/app
+      - ./schemas.py:/app/schemas.py  # Единый источник истины для schemas.py
       - ./ai_services/logs:/app/logs
     networks:
       - morningstar_network
 
   summarization-worker:
-    build: ./ai_services
+    build:
+      context: .
+      dockerfile: ai_services/Dockerfile
     container_name: morningstar_summarization_worker
     env_file:
       - .env

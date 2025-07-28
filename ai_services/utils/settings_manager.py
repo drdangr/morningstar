@@ -155,6 +155,16 @@ class SettingsManager:
                         # Fallback значение для top_p
                         config['top_p'] = 1.0
                         self.logger.debug(f"⚠️ Параметр {top_p_key} не найден, используется fallback: 1.0")
+                    
+                    # ИСПРАВЛЕНИЕ: Добавляем получение max_summary_length из системных настроек
+                    max_length_key = "MAX_SUMMARY_LENGTH"  # Правильное название из системных настроек
+                    if max_length_key in settings:
+                        config['max_summary_length'] = int(settings[max_length_key])
+                        self.logger.debug(f"📏 Добавлен параметр max_summary_length: {config['max_summary_length']} (из {max_length_key})")
+                    else:
+                        # Fallback значение для max_summary_length
+                        config['max_summary_length'] = 150
+                        self.logger.debug(f"⚠️ Параметр {max_length_key} не найден в системных настройках, используется fallback: 150")
                 
                 # Валидация настроек
                 if self._validate_config(config, service_name):
