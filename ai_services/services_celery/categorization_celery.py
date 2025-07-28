@@ -33,14 +33,14 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
     """
     
     def __init__(self, openai_api_key: str = None, backend_url: str = "http://localhost:8000", 
-                 batch_size: int = 30, settings_manager=None):
+                 batch_size: int = None, settings_manager=None):
         """
         Инициализация сервиса
         
         Args:
             openai_api_key: API ключ OpenAI
             backend_url: URL Backend API
-            batch_size: Размер батча для обработки
+            batch_size: Размер батча для обработки (если None - берется из настроек)
             settings_manager: Менеджер настроек для динамических LLM
         """
         super().__init__(settings_manager)
@@ -57,7 +57,23 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             logger.warning("🧪 ПСЕВДООБРАБОТКА: OpenAI ключ не найден, используется псевдообработка")
         
         self.backend_url = backend_url
-        self.batch_size = batch_size
+        
+        # ИСПРАВЛЕНИЕ: Получаем batch_size из настроек, если не передан явно
+        if batch_size is not None:
+            self.batch_size = batch_size
+            logger.info(f"📦 Используем переданный batch_size: {batch_size}")
+        elif settings_manager:
+            # Получаем настройки категоризации из SettingsManager
+            categorization_config = asyncio.run(settings_manager.get_ai_service_config('categorization'))
+            if categorization_config and 'batch_size' in categorization_config:
+                self.batch_size = categorization_config['batch_size']
+                logger.info(f"📦 Получен batch_size из системных настроек: {self.batch_size}")
+            else:
+                self.batch_size = 30
+                logger.warning(f"⚠️ Не удалось получить batch_size из настроек, используется fallback: 30")
+        else:
+            self.batch_size = 30
+            logger.warning(f"⚠️ SettingsManager не передан, используется fallback batch_size: 30")
         
         logger.info(f"🏷️ CategorizationServiceCelery инициализирован")
         logger.info(f"   Backend URL: {backend_url}")

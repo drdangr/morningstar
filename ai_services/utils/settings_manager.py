@@ -145,8 +145,20 @@ class SettingsManager:
                     'temperature': float(settings[temp_key])
                 }
                 
+                # Дополнительные настройки для categorization
+                if service_name == 'categorization':
+                    # ИСПРАВЛЕНИЕ: Добавляем получение batch_size из системных настроек
+                    batch_size_key = "MAX_POSTS_FOR_AI_ANALYSIS"  # Правильное название из системных настроек
+                    if batch_size_key in settings:
+                        config['batch_size'] = int(settings[batch_size_key])
+                        self.logger.debug(f"📦 Добавлен параметр batch_size: {config['batch_size']} (из {batch_size_key})")
+                    else:
+                        # Fallback значение для batch_size
+                        config['batch_size'] = 30
+                        self.logger.debug(f"⚠️ Параметр {batch_size_key} не найден в системных настройках, используется fallback: 30")
+                
                 # Дополнительные настройки для summarization
-                if service_name == 'summarization':
+                elif service_name == 'summarization':
                     top_p_key = f"ai_{service_name}_top_p"
                     if top_p_key in settings:
                         config['top_p'] = float(settings[top_p_key])
