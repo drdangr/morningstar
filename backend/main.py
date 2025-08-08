@@ -4425,33 +4425,16 @@ def get_unprocessed_posts(
             logger.info(f"🛡️ Умная дедупликация категоризации: исключены processing + success без payload.error для бота {bot_id}")
         
         elif require_summarization:
-            # 🎯 УМНАЯ ДЕДУПЛИКАЦИЯ ДЛЯ САММАРИЗАЦИИ: 
-            # 1) ДОЛЖНЫ быть успешно категоризированы (БЕЗ payload.error)
-            # 2) НЕ должны быть в процессе саммаризации или уже саммаризированы (БЕЗ payload.error)
-            
-            # Подзапрос: посты с РЕАЛЬНОЙ успешной категоризацией (без payload.error)
-            if USE_POSTGRESQL:
-                successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
-                    ProcessedServiceResult.public_bot_id == bot_id,
-                    ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'completed',
-                    ~ProcessedServiceResult.payload.has_key('error')  # PostgreSQL: нет ключа 'error'
-                ).subquery()
-            else:
-                successfully_categorized = db.query(ProcessedServiceResult.post_id).filter(
-                    ProcessedServiceResult.public_bot_id == bot_id,
-                    ProcessedServiceResult.service_name == 'categorization',
-                    ProcessedServiceResult.status == 'completed',
-                    ~ProcessedServiceResult.payload.like('%"error"%')
-                ).subquery()
-            
+            # 🎯 Дедупликация для саммаризации: НЕ брать уже обрабатываемые/готовые саммари
+            # Зависимость от успешной категоризации временно снята для параллельной отладки
+
             # Подзапрос: посты в processing по саммаризации
             processing_summarization = db.query(ProcessedServiceResult.post_id).filter(
                 ProcessedServiceResult.public_bot_id == bot_id,
                 ProcessedServiceResult.service_name == 'summarization', 
                 ProcessedServiceResult.status == 'processing'
             ).subquery()
-            
+
             # Подзапрос: посты с РЕАЛЬНОЙ успешной саммаризацией (без payload.error)
             if USE_POSTGRESQL:
                 real_success_summarization = db.query(ProcessedServiceResult.post_id).filter(
@@ -4467,15 +4450,14 @@ def get_unprocessed_posts(
                     ProcessedServiceResult.status == 'completed',
                     ~ProcessedServiceResult.payload.like('%"error"%')
                 ).subquery()
-            
-            # Берем РЕАЛЬНО категоризированные, но исключаем processing/success по саммаризации
+
+            # Исключаем processing/completed саммаризации
             query = query.filter(
-                PostCache.id.in_(successfully_categorized),
                 ~PostCache.id.in_(processing_summarization),
                 ~PostCache.id.in_(real_success_summarization)
             )
-            
-            logger.info(f"🛡️ Умная дедупликация саммаризации: посты реально категоризированы но НЕ реально саммаризированы для бота {bot_id}")
+
+            logger.info(f"🛡️ Дедупликация саммаризации: исключены processing и completed для бота {bot_id}")
     
     # Возвращаем результат
     results = query.order_by(PostCache.post_date.desc()).limit(limit).all()

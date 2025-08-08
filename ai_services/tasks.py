@@ -471,7 +471,7 @@ def trigger_ai_processing(self, bot_id: Optional[int] = None, force_reprocess: b
         return {
             'task_id': self.request.id,
             'bot_id': bot_id,
-            'mode': mode if 'mode' in locals() else 'unknown',
+            # убираем неиспользуемое поле
             'result': None,
             'status': 'error',
             'error': str(e),
@@ -728,8 +728,6 @@ def dispatch_ai_processing(self, post_ids: List[int], bot_id: int, services: Opt
             # ИСПРАВЛЕНИЕ: Получаем конкретные посты по их ID через отдельные запросы
             with httpx.Client(timeout=60) as client:
                 posts_data = []
-                
-                # Получаем каждый пост по отдельности через эндпоинт /api/posts/cache/{post_id}
                 for post_id in post_ids:
                     try:
                         post_resp = client.get(f"{BACKEND_URL}/api/posts/cache/{post_id}")
@@ -737,7 +735,6 @@ def dispatch_ai_processing(self, post_ids: List[int], bot_id: int, services: Opt
                             post_data = post_resp.json()
                             if post_data:
                                 posts_data.append(post_data)
-                                # ИСПРАВЛЕНИЕ: безопасное извлечение title с fallback
                                 title = post_data.get('title') or post_data.get('content', 'Без содержимого')[:50] or 'Неизвестный пост'
                                 logger.info(f"✅ Получен пост {post_id}: {title[:50]}...")
                             else:
@@ -747,31 +744,53 @@ def dispatch_ai_processing(self, post_ids: List[int], bot_id: int, services: Opt
                     except Exception as e:
                         logger.error(f"❌ Ошибка получения поста {post_id}: {e}")
                         continue
-                
+
                 if not posts_data:
                     logger.error(f"❌ Не найдены посты {post_ids} для сервиса {service}")
                     continue
-                
+
                 task_name = meta['task']
                 queue_name = meta['queue']
-                
-                if task_name == 'tasks.summarize_posts':
-                    # summarize_posts ожидает доп. аргументы
-                    task_signature = app.signature(
-                        task_name, 
-                        args=[posts_data, bot_id], 
-                        kwargs={'mode': 'individual'}, 
-                        queue=queue_name
-                    )
-                else:
-                    task_signature = app.signature(
-                        task_name, 
-                        args=[posts_data, bot_id], 
-                        queue=queue_name
-                    )
 
-                group_tasks.append(task_signature)
-                logger.info(f"✅ Задача {service} подготовлена для {len(posts_data)} постов")
+                # Разбиение на чанки: категоризация — батчи из настроек; саммаризация — по одному
+                chunks: list[list[dict]] = []
+                if task_name == 'tasks.categorize_batch':
+                    # Читаем batch_size из настроек, fallback 5
+                    batch_size = 5
+                    try:
+                        if settings_manager is not None:
+                            cat_cfg = settings_manager.get_ai_service_config_sync('categorization') if hasattr(settings_manager, 'get_ai_service_config_sync') else None
+                            if not cat_cfg:
+                                # синхронный фоллбек
+                                import asyncio as _asyncio
+                                cat_cfg = _asyncio.run(settings_manager.get_ai_service_config('categorization'))
+                            if cat_cfg and isinstance(cat_cfg.get('batch_size'), int) and cat_cfg['batch_size'] > 0:
+                                batch_size = cat_cfg['batch_size']
+                    except Exception:
+                        pass
+                    for i in range(0, len(posts_data), batch_size):
+                        chunks.append(posts_data[i:i+batch_size])
+                else:
+                    # Саммаризация — по одному посту на задачу
+                    for item in posts_data:
+                        chunks.append([item])
+
+                for chunk in chunks:
+                    if task_name == 'tasks.summarize_posts':
+                        sig = app.signature(
+                            task_name,
+                            args=[chunk, bot_id],
+                            kwargs={'mode': 'individual'},
+                            queue=queue_name
+                        )
+                    else:
+                        sig = app.signature(
+                            task_name,
+                            args=[chunk, bot_id],
+                            queue=queue_name
+                        )
+                    group_tasks.append(sig)
+                logger.info(f"✅ Подготовлено {len(chunks)} задач(и) для сервиса {service}: суммарно {len(posts_data)} постов")
 
         if not group_tasks:
             logger.error(f"❌ Не удалось подготовить ни одной задачи для постов {post_ids}")
