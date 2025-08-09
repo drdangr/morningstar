@@ -7,6 +7,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
+from datetime import datetime
+from typing import Dict, Any
+
+# Импорт единой схемы (монтируется в контейнер в /app/schemas.py)
+try:
+    from schemas import PostBase  # используем базовую для валидации полей поста
+except Exception as _imp_err:
+    PostBase = None  # не блокируем запуск, но логируем ниже
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
@@ -483,8 +491,8 @@ class MorningStarUserbot:
         BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
         
         # Конвертируем данные в формат PostsBatchCreate
-        posts_batch = {
-            "timestamp": data.get("timestamp"),
+        posts_batch: Dict[str, Any] = {
+            "timestamp": data.get("timestamp") or datetime.now().isoformat(),
             "collection_stats": data.get("collection_stats", {}),
             "posts": [],
             "channels_metadata": data.get("channels_metadata", {})
@@ -492,15 +500,28 @@ class MorningStarUserbot:
         
         # Конвертируем каждый пост в формат PostCacheCreate
         for post in data.get("posts", []):
-            post_cache = {
+            raw_payload = {
                 "channel_telegram_id": post.get("channel_id"),
                 "telegram_message_id": post.get("id"),
-                "title": None,  # В userbot нет разделения title/content
+                "title": None,
                 "content": post.get("text", ""),
-                "media_urls": [post.get("url")] if post.get("url") else [],  # Массив URL, не JSON строка
+                "media_urls": [post.get("url")] if post.get("url") else [],
                 "views": post.get("views", 0),
-                "post_date": post.get("date")
+                "post_date": post.get("date"),
+                "userbot_metadata": {},
             }
+
+            if PostBase is not None:
+                try:
+                    validated = PostBase(**raw_payload)
+                    post_cache = validated.model_dump(mode='json')
+                except Exception as e:
+                    logger.warning("⚠️ Валидация через schemas.PostBase не удалась, отправляю raw: %s", e)
+                    post_cache = raw_payload
+            else:
+                logger.debug("ℹ️ schemas.PostBase недоступен, использую raw payload")
+                post_cache = raw_payload
+
             posts_batch["posts"].append(post_cache)
 
         headers = {

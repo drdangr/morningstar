@@ -100,8 +100,10 @@ services:
     volumes:
       - ./userbot/session:/app/session  # Persistent sessions для Telethon
       - ./userbot/logs:/app/logs        # Persistent logs
+      - ./schemas.py:/app/schemas.py    # Единый источник схем для userbot
     networks:
       - morningstar_network
+
 
   # AI Services с Celery Worker
   ai_services:
@@ -163,6 +165,30 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    networks:
+      - morningstar_network
+
+  # Userbot Realtime (Telethon) — слушатель новых сообщений на базе готовой сессии
+  userbot-realtime-telethon:
+    build:
+      context: ./userbot_realtime_telethon
+      dockerfile: Dockerfile
+    container_name: morningstar_userbot_realtime_telethon
+    environment:
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - BACKEND_API_URL=http://backend:8000
+      - BOT_ID=1
+      - REALTIME_BATCH_MAX=5
+      - REALTIME_DEBOUNCE_MS=1000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - backend
+    restart: unless-stopped
+    volumes:
+      - ./userbot/session:/app/session  # используем уже авторизованную Telethon-сессию
+      - ./userbot_realtime_telethon/logs:/app/logs
+      - ./schemas.py:/app/schemas.py
     networks:
       - morningstar_network
 

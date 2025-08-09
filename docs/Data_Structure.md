@@ -48,6 +48,12 @@ post.dict()  # УСТАРЕЛО в Pydantic v2!
 
 **До завершения всех этапов старые модели могут сосуществовать с новыми.**
 
+### Userbot и сериализация постов
+
+- Userbot формирует payload для `POST /api/posts/batch` через единые модели `schemas.py`:
+  - валидирует каждый пост через `schemas.PostBase`
+  - сериализует данные с помощью `model_dump(mode='json')` (Pydantic v2), чтобы `datetime` корректно передавался в ISO‑формате
+
 ### Решенные конфликты в schemas.py:
 
 ✅ **Конфликт №1: Post модели** - Объединены PostData и PostCacheBase через наследование  

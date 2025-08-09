@@ -13,6 +13,16 @@ done
 
 echo "Redis is ready. Starting Celery Beat scheduler in background..."
 
+# Чистим возможные "залипшие" pid/schedule от предыдущих перезапусков
+if [ -f /tmp/celerybeat.pid ]; then
+    echo "Found stale /tmp/celerybeat.pid, removing..."
+    rm -f /tmp/celerybeat.pid
+fi
+if [ -f /tmp/celerybeat-schedule ]; then
+    echo "Found stale /tmp/celerybeat-schedule, removing..."
+    rm -f /tmp/celerybeat-schedule
+fi
+
 # Запуск Celery Beat в фоне для автоматических задач
 celery -A celery_app beat \
     --loglevel=INFO \
