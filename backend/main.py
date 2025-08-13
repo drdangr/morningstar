@@ -331,6 +331,44 @@ def get_db():
     finally:
         db.close()
 
+# Helper: сборка текста дайджеста
+def _build_digest_text(grouped_posts: dict, subscribed_names: set, created_at: Optional[str] = None) -> str:
+    parts = []
+    parts.append("📰 Ваш персональный дайджест\n\n")
+    if created_at:
+        parts.append(f"🗓 Создан: {created_at}\n")
+
+    # Темы оставим в порядке убывания количества постов
+    sorted_themes = sorted(grouped_posts.items(), key=lambda t: sum(len(p) for p in t[1].values()), reverse=True)
+    for theme_name, channels_map in sorted_themes:
+        parts.append(f"\n📝 <b>{str(theme_name).upper()}</b>\n")
+        # Каналы внутри темы оставим по количеству постов; сами посты сортируем по дате по убыванию
+        for channel_name, posts in sorted(channels_map.items(), key=lambda x: len(x[1]), reverse=True):
+            parts.append(f"\n📺 <b>{channel_name}</b>\n")
+            posts.sort(key=lambda p: (p.get('post_date') or ''), reverse=True)
+            for post in posts:
+                summary = post.get('summary') or post.get('ai_summary') or ''
+                url = post.get('url') or ''
+                title = post.get('title') or ''
+                if summary:
+                    parts.append(f"💬 {summary}\n")
+                if url:
+                    short = title[:80] + ("..." if len(title) > 80 else "")
+                    parts.append(f"🔗 {url} <i>{short}</i>\n")
+                metrics = []
+                for k, icon in [("importance","⚡"),("urgency","🚨"),("significance","🎯"),("views","👁")]:
+                    v = post.get(k)
+                    if v not in (None, 0, "0"):
+                        metrics.append(f"{icon} {v}")
+                if metrics:
+                    parts.append(f"📊 {' • '.join(metrics)}\n")
+                parts.append("\n")
+
+    if subscribed_names:
+        parts.append(f"🎯 Ваши подписки: {', '.join(sorted(subscribed_names))}\n\n")
+    parts.append("💡 Используйте /subscribe для изменения подписок")
+    return ''.join(parts)
+
 # Функция для создания начальных настроек
 def create_default_settings():
     """Создать начальные настройки системы"""
@@ -1727,6 +1765,197 @@ def get_user_bot_subscriptions(bot_id: int, telegram_id: int, db: Session = Depe
         })
     
     return result
+
+
+@app.get("/api/public-bots/{bot_id}/users/{telegram_id}/digest")
+def get_user_personal_digest(
+    bot_id: int,
+    telegram_id: int,
+    limit: int = Query(15, ge=1, le=50),
+    date_from: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Сформировать персональный дайджест на стороне Backend.
+
+    Логика:
+    - Получаем подписки пользователя (категории и каналы) для данного бота
+    - Берём обработанные AI посты из processed_data по bot_id (JOIN с posts_cache)
+    - Фильтруем по индивидуальной категории поста и подпискам пользователя, а также по подписанным каналам
+    - Ограничиваем количеством limit или max_posts_per_digest из public_bots
+    - Группируем по теме → каналу и собираем готовый текст
+    """
+    # Проверяем бота и настройки
+    bot = db.query(PublicBot).filter(PublicBot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Бот не найден")
+
+    max_posts = bot.max_posts_per_digest or limit
+    if limit:
+        max_posts = min(max_posts, limit)
+
+    # Подписки пользователя
+    subs_categories = db.query(Category).join(
+        user_category_subscriptions,
+        Category.id == user_category_subscriptions.c.category_id
+    ).filter(
+        user_category_subscriptions.c.user_telegram_id == telegram_id,
+        user_category_subscriptions.c.public_bot_id == bot_id
+    ).all()
+
+    subs_channels = db.query(Channel).join(
+        user_channel_subscriptions,
+        user_channel_subscriptions.c.channel_id == Channel.id
+    ).filter(
+        user_channel_subscriptions.c.user_telegram_id == telegram_id,
+        user_channel_subscriptions.c.public_bot_id == bot_id
+    ).all()
+
+    subscribed_category_names = {c.name.lower() for c in subs_categories}
+    subscribed_channel_ids = {c.id for c in subs_channels}
+
+    # Если нет подписок по категориям, не формируем дайджест
+    if not subscribed_category_names:
+        try:
+            logging.getLogger("main").info(
+                f"digest: early-exit no category subs (bot_id={bot_id}, user_id={telegram_id})"
+            )
+        except Exception:
+            pass
+        return {
+            'text': '❌ У вас нет активных подписок по категориям. Используйте /subscribe для выбора тем.',
+            'total_posts': 0,
+            'selected_posts': 0,
+            'themes': []
+        }
+
+    # Если пользователь не подписан ни на один канал — не формируем дайджест
+    if not subscribed_channel_ids:
+        try:
+            logging.getLogger("main").info(
+                f"digest: early-exit no channel subs (bot_id={bot_id}, user_id={telegram_id})"
+            )
+        except Exception:
+            pass
+        return {
+            'text': '❌ У вас нет подписанных каналов. Используйте /channels для выбора.',
+            'total_posts': 0,
+            'selected_posts': 0,
+            'themes': []
+        }
+
+    # Посты с AI результатами для bot_id
+    q = db.query(
+        PostCache.id,
+        PostCache.title,
+        PostCache.content,
+        PostCache.views,
+        PostCache.post_date,
+        ProcessedData.summaries,
+        ProcessedData.categories,
+        ProcessedData.metrics,
+        ProcessedData.processed_at,
+        ProcessedData.public_bot_id,
+        Channel.id.label('channel_id'),
+        Channel.title.label('channel_title'),
+    ).join(
+        ProcessedData, PostCache.id == ProcessedData.post_id
+    ).join(
+        Channel, Channel.telegram_id == PostCache.channel_telegram_id
+    ).filter(
+        ProcessedData.public_bot_id == bot_id,
+        ProcessedData.is_categorized == True
+    )
+    # Фильтр по подписанным каналам
+    if subscribed_channel_ids:
+        q = q.filter(Channel.id.in_(list(subscribed_channel_ids)))
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+            q = q.filter(PostCache.post_date >= dt_from)
+        except Exception:
+            pass
+
+    # Берем самые свежие по дате поста
+    rows = q.order_by(PostCache.post_date.desc()).limit(200).all()
+
+    # Фильтрация по подпискам и сбор структуры
+    grouped: dict = {}
+    selected_posts = 0
+    for row in rows:
+        # AI category
+        category_name = None
+        try:
+            categories = row.categories if isinstance(row.categories, dict) else json.loads(row.categories)
+            category_name = categories.get('category_name') or categories.get('ru') or categories.get('primary')
+        except Exception:
+            pass
+        if not category_name:
+            continue
+
+        # Фильтр по подпискам категорий
+        if subscribed_category_names and category_name.lower() not in subscribed_category_names:
+            continue
+
+        # Фильтр по подписанным каналам (если заданы подписки на каналы)
+        # У нас нет прямого channel_id в запросе; в MVP пропускаем контроль channel_id, так как бот подписывает на id из справочника
+
+        # Суммари (обязательно не пустое)
+        summary = None
+        try:
+            summaries = row.summaries if isinstance(row.summaries, dict) else json.loads(row.summaries)
+            summary = summaries.get('ru') or summaries.get('summary') or summaries.get('text')
+        except Exception:
+            pass
+        if not summary or not str(summary).strip():
+            continue
+
+        # Метрики
+        importance = urgency = significance = views = 0
+        try:
+            metrics = row.metrics if isinstance(row.metrics, dict) else json.loads(row.metrics)
+            importance = metrics.get('importance', 0)
+            urgency = metrics.get('urgency', 0)
+            significance = metrics.get('significance', 0)
+        except Exception:
+            pass
+        views = row.views or 0
+
+        # Группировка: тема → канал
+        theme = str(category_name)
+        try:
+            channel_title = getattr(row, 'channel_title', None) or "Канал"
+        except Exception:
+            channel_title = "Канал"
+
+        grouped.setdefault(theme, {}).setdefault(channel_title, []).append({
+            'title': row.title,
+            'summary': summary,
+            'importance': importance,
+            'urgency': urgency,
+            'significance': significance,
+            'views': views,
+            'post_date': getattr(row, 'post_date', None),
+        })
+
+        selected_posts += 1
+        if selected_posts >= max_posts:
+            break
+
+    subscribed_human = {c.name for c in subs_categories}
+    try:
+        logging.getLogger("main").info(
+            f"digest: bot_id={bot_id}, user_id={telegram_id}, subs_cat={len(subscribed_category_names)}, "
+            f"subs_chan={len(subscribed_channel_ids)}, rows={len(rows)}, selected={selected_posts}"
+        )
+    except Exception:
+        pass
+    text = _build_digest_text(grouped, subscribed_human)
+    return {
+        'text': text,
+        'total_posts': len(rows),
+        'selected_posts': selected_posts,
+        'themes': list(grouped.keys()),
+    }
 
 @app.post("/api/public-bots/{bot_id}/users/{telegram_id}/subscriptions")
 def update_user_bot_subscriptions(
@@ -3752,8 +3981,10 @@ def get_bot_categories(bot_id: int, db: Session = Depends(get_db)):
             # Создаем словарь с данными категории + приоритет
             category_dict = {
                 "id": category.id,
-                "category_name": category.name,
+                "name": category.name,  # основное имя по Data_Structure.md
+                "category_name": category.name,  # alias для обратной совместимости
                 "description": category.description,
+                "emoji": getattr(category, "emoji", None),
                 "is_active": category.is_active,
                 "created_at": category.created_at,
                 "updated_at": category.updated_at,

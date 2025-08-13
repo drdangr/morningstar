@@ -317,31 +317,6 @@ class WebhookServer:
 
 # === ОБНОВЛЕННЫЙ MULTIBOTMANAGER ===
 
-# Добавляем метод handle_bot_change в MultiBotManager
-async def handle_bot_change(self, bot_id: int, action: str):
-    """Обработка изменения конфигурации бота"""
-    try:
-        logger.info(f"🔄 Обработка изменения бота {bot_id}: {action}")
-        
-        if action == "deleted":
-            # Остановка и удаление бота
-            await self.stop_bot(bot_id)
-            logger.info(f"🗑️ Бот {bot_id} удален")
-            
-        elif action in ["created", "updated", "status_changed"]:
-            # Получение обновленной конфигурации
-            await self.sync_bots()
-            logger.info(f"🔄 Конфигурация бота {bot_id} обновлена")
-            
-        else:
-            logger.warning(f"⚠️ Неизвестное действие: {action}")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки изменения бота {bot_id}: {e}")
-
-# Добавляем метод в MultiBotManager
-MultiBotManager.handle_bot_change = handle_bot_change
-
 class MultiBotManager:
     """Менеджер для управления множественными ботами"""
     
@@ -514,6 +489,21 @@ class MultiBotManager:
             await self.stop_bot(bot_id)
         
         logger.info("✅ MultiBotManager остановлен")
+
+    async def handle_bot_change(self, bot_id: int, action: str):
+        """Обработка изменения конфигурации бота (вызывается вебхуком/планово)."""
+        try:
+            logger.info(f"🔄 Обработка изменения бота {bot_id}: {action}")
+            if action == "deleted":
+                await self.stop_bot(bot_id)
+                logger.info(f"🗑️ Бот {bot_id} удален")
+            elif action in ["created", "updated", "status_changed"]:
+                await self.sync_bots()
+                logger.info(f"🔄 Конфигурация бота {bot_id} обновлена")
+            else:
+                logger.warning(f"⚠️ Неизвестное действие: {action}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки изменения бота {bot_id}: {e}")
     
     async def _background_monitor(self):
         """Фоновый мониторинг и синхронизация"""
@@ -568,7 +558,9 @@ class MultiBotManager:
 # Пример использования
 async def main():
     """Основная функция для тестирования"""
-    manager = MultiBotManager()
+    # Определяем адрес Backend из переменных окружения (по умолчанию docker service name)
+    backend_api_url = os.getenv("BACKEND_API_URL", "http://backend:8000")
+    manager = MultiBotManager(backend_api_url=backend_api_url)
     
     try:
         # Запуск всех ботов

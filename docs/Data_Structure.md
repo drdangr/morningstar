@@ -126,6 +126,7 @@ MorningStarBot3 использует мультитенантную архите
 ### categories
 - id: Integer (PK)
 - name: String (NOT NULL) - ВАЖНО: в БД поле называется "name", не "category_name"!
+- Примечание по неймингу: для справочников/подписок используется поле `name`. В AI-результатах (`processed_data.categories`) ключ категории — `category_name` по исторической структуре JSON и для фильтров SQL/JSON. В ответах некоторых эндпоинтов временно может присутствовать алиас `category_name` вместе с `name` для обратной совместимости; стандарт — `name`.
 - description: Text
 - emoji: String (default '📝') - эмодзи для отображения в UI
 - is_active: Boolean (default True)
@@ -150,6 +151,24 @@ MorningStarBot3 использует мультитенантную архите
 - weight: Float (default 1.0)
 - is_active: Boolean (default True)
 - created_at: DateTime
+
+### user_category_subscriptions
+- id: Integer (PK)
+- user_telegram_id: BigInteger (INDEX)
+- category_id: Integer (FK categories)
+- public_bot_id: Integer (FK public_bots)
+- created_at: DateTime
+- UNIQUE: (user_telegram_id, category_id, public_bot_id)
+- INDEXES: (user_telegram_id, public_bot_id), (public_bot_id, category_id)
+
+### user_channel_subscriptions
+- id: Integer (PK) — добавлена колонка для совместимости с ORM и выборками (ранее отсутствовала)
+- user_telegram_id: BigInteger (INDEX)
+- channel_id: Integer (FK channels)
+- public_bot_id: Integer (FK public_bots)
+- created_at: DateTime
+- UNIQUE: (user_telegram_id, channel_id, public_bot_id)
+- INDEXES: (user_telegram_id, public_bot_id), (public_bot_id, channel_id)
 
 ### posts_cache
 - id: Integer (PK) в SQLite, BigInteger в PostgreSQL
@@ -294,6 +313,9 @@ _Журнальный слой результатов каждого AI-серв
 - POST /api/public-bots/{id}/categories - Добавить категории к боту
 - DELETE /api/public-bots/{id}/channels/{channel_id} - Удалить канал из бота
 - DELETE /api/public-bots/{id}/categories/{category_id} - Удалить категорию из бота
+
+- GET /api/public-bots/{bot_id}/users/{telegram_id}/digest?limit={N}&date_from={ISO}
+  - Формирует персональный дайджест на стороне Backend: применяет подписки пользователя (категории + каналы), фильтрует посты по AI-результатам (`processed_data` для данного `bot_id`), учитывает `max_posts_per_digest` бота, группирует по темам и каналам и возвращает готовый текст для отправки пользователю. Возвращает JSON вида: `{ "text": "...", "total_posts": X, "selected_posts": Y }`.
 
 ### AI/LLM Settings
 - GET /api/settings - Все настройки

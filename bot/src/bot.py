@@ -19,8 +19,28 @@ logger = logging.getLogger(__name__)
 # Конфигурация
 PUBLIC_BOT_TOKEN = os.getenv('PUBLIC_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_TELEGRAM_ID') or os.getenv('ADMIN_CHAT_ID', '0'))
-BACKEND_URL = os.getenv('BACKEND_URL', 'http://127.0.0.1:8000')
+BACKEND_URL = os.getenv('BACKEND_URL', 'http://backend:8000')
 N8N_URL = os.getenv('N8N_URL', 'http://127.0.0.1:5678')
+BOT_ID = int(os.getenv('BOT_ID', '1'))
+
+# Утилиты безопасного редактирования, чтобы избежать ошибок и подвисаний UI
+async def safe_edit_message_text(message, text, **kwargs):
+    try:
+        await asyncio.sleep(0.05)
+        await message.edit_text(text, **kwargs)
+    except Exception as e:
+        if 'Message is not modified' in str(e):
+            return
+        logger.error(f"Ошибка edit_text: {e}")
+
+async def safe_query_edit_text(query, text, **kwargs):
+    try:
+        await asyncio.sleep(0.05)
+        await query.edit_message_text(text, **kwargs)
+    except Exception as e:
+        if 'Message is not modified' in str(e):
+            return
+        logger.error(f"Ошибка edit_message_text: {e}")
 
 
 async def check_backend_status():
@@ -85,10 +105,10 @@ async def get_system_stats():
 
 
 async def get_categories():
-    """Получение списка активных категорий"""
+    """Получение списка категорий, привязанных к текущему публичному боту"""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{BACKEND_URL}/api/categories?active_only=true", timeout=5) as response:
+            async with session.get(f"{BACKEND_URL}/api/public-bots/{BOT_ID}/categories", timeout=5) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
@@ -123,14 +143,17 @@ async def create_or_update_user(telegram_user):
 
 
 async def get_user_subscriptions(telegram_id):
-    """Получение подписок пользователя"""
+    """Получение подписок пользователя (мультитенантно для конкретного бота)"""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{BACKEND_URL}/api/users/{telegram_id}/subscriptions", timeout=5) as response:
+            async with session.get(
+                f"{BACKEND_URL}/api/public-bots/{BOT_ID}/users/{telegram_id}/subscriptions",
+                timeout=5,
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 elif response.status == 404:
-                    return []  # Пользователь не найден или нет подписок
+                    return []
                 else:
                     return None
     except Exception as e:
@@ -139,15 +162,14 @@ async def get_user_subscriptions(telegram_id):
 
 
 async def update_user_subscriptions(telegram_id, category_ids):
-    """Обновление подписок пользователя"""
+    """Обновление подписок пользователя (мультитенантно для конкретного бота)"""
     try:
         subscription_data = {"category_ids": category_ids}
-        
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{BACKEND_URL}/api/users/{telegram_id}/subscriptions", 
-                json=subscription_data, 
-                timeout=5
+                f"{BACKEND_URL}/api/public-bots/{BOT_ID}/users/{telegram_id}/subscriptions",
+                json=subscription_data,
+                timeout=5,
             ) as response:
                 if response.status == 200:
                     return await response.json()
@@ -156,6 +178,61 @@ async def update_user_subscriptions(telegram_id, category_ids):
                     return None
     except Exception as e:
         logger.error(f"Ошибка API подписок: {e}")
+        return None
+
+# === Подписки на каналы (мультитенантно) ===
+async def get_bot_channels():
+    """Получить каналы, привязанные к текущему публичному боту"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{BACKEND_URL}/api/public-bots/{BOT_ID}/channels", timeout=10) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.error(f"Ошибка получения каналов бота: {response.status}")
+                    return []
+    except Exception as e:
+        logger.error(f"Ошибка API каналов: {e}")
+        return []
+
+async def get_user_channel_subscriptions(telegram_id):
+    """Получить подписанные пользователем каналы для текущего бота"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{BACKEND_URL}/api/public-bots/{BOT_ID}/users/{telegram_id}/channel-subscriptions",
+                timeout=10,
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("subscribed_channels", []) if isinstance(data, dict) else []
+                elif response.status == 404:
+                    return []
+                else:
+                    logger.error(f"Ошибка получения подписок на каналы: {response.status}")
+                    return []
+    except Exception as e:
+        logger.error(f"Ошибка API подписок каналов: {e}")
+        return []
+
+async def update_user_channel_subscriptions(telegram_id, channel_ids):
+    """Сохранить подписки пользователя на каналы для текущего бота"""
+    try:
+        payload = {"channel_ids": channel_ids}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BACKEND_URL}/api/public-bots/{BOT_ID}/users/{telegram_id}/channel-subscriptions",
+                json=payload,
+                timeout=10,
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    txt = await response.text()
+                    logger.error(f"Ошибка сохранения подписок каналов: {response.status} {txt}")
+                    return None
+    except Exception as e:
+        logger.error(f"Ошибка API сохранения подписок каналов: {e}")
         return None
 
 
@@ -332,7 +409,8 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     categories_data = await get_categories()
     
     if not categories_data:
-        await loading_message.edit_text(
+        await safe_edit_message_text(
+            loading_message,
             "❌ Не удалось загрузить категории.\n"
             "Попробуйте позже или обратитесь к администратору."
         )
@@ -350,7 +428,7 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for i, category in enumerate(categories_data, 1):
         emoji = category.get('emoji', '📝')
-        name = category.get('name', 'Без названия')
+        name = category.get('name') or category.get('category_name', 'Без названия')
         description = category.get('description', '')
         
         categories_text += f"{emoji} <b>{name}</b>\n"
@@ -361,7 +439,7 @@ async def categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     categories_text += "💡 <i>Используйте /subscribe для подписки на категории</i>"
     
     # Обновляем сообщение
-    await loading_message.edit_text(categories_text, parse_mode='HTML')
+    await safe_edit_message_text(loading_message, categories_text, parse_mode='HTML')
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -381,7 +459,8 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if not categories_data:
-        await loading_message.edit_text(
+        await safe_edit_message_text(
+            loading_message,
             "❌ Не удалось загрузить категории.\n"
             "Попробуйте позже или обратитесь к администратору."
         )
@@ -395,7 +474,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for category in categories_data:
         category_id = category.get('id')
         emoji = category.get('emoji', '📝')
-        name = category.get('name', 'Без названия')
+        name = category.get('name') or category.get('category_name', 'Без названия')
         
         # Добавляем ✅ если пользователь подписан
         if category_id in subscribed_ids:
@@ -426,7 +505,40 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Нажмите на категории для изменения, затем 'Сохранить'"
     )
     
-    await loading_message.edit_text(message_text, reply_markup=reply_markup)
+    await safe_edit_message_text(loading_message, message_text, reply_markup=reply_markup)
+
+
+async def channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /channels - управление подписками на каналы"""
+    user = update.effective_user
+    loading_message = await update.message.reply_text("🔄 Загружаю каналы и ваши подписки...")
+
+    # Получаем каналы бота и текущие подписки пользователя
+    async with aiohttp.ClientSession() as session:
+        pass
+    bot_channels = await get_bot_channels()
+    user_channel_subs = await get_user_channel_subscriptions(user.id)
+
+    if not bot_channels:
+        await safe_edit_message_text(loading_message, "❌ Не удалось загрузить список каналов.")
+        return
+
+    # Текущие подписанные id каналов
+    subscribed_channel_ids = {ch.get("id") for ch in (user_channel_subs or [])}
+
+    # Строим inline клавиатуру
+    keyboard = []
+    for ch in bot_channels:
+        ch_id = ch.get("id")
+        title = ch.get("title") or ch.get("channel_name") or f"Канал {ch_id}"
+        is_sub = ch_id in subscribed_channel_ids
+        button_text = f"{'✅' if is_sub else '❌'} {title}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_channel_{ch_id}")])
+
+    keyboard.append([InlineKeyboardButton("💾 Сохранить каналы", callback_data="save_channel_subscriptions")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await safe_edit_message_text(loading_message, "📺 Управление подписками на каналы", reply_markup=reply_markup)
 
 
 async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,7 +570,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Обновляем клавиатуру
         categories_data = await get_categories()
         if not categories_data:
-            await query.edit_message_text("❌ Ошибка загрузки категорий")
+            await safe_query_edit_text(query, "❌ Ошибка загрузки категорий")
             return
         
         # Пересоздаем клавиатуру с обновленными статусами
@@ -496,7 +608,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
             f"Нажмите на категории для изменения, затем 'Сохранить'"
         )
         
-        await query.edit_message_text(message_text, reply_markup=reply_markup)
+        await safe_query_edit_text(query, message_text, reply_markup=reply_markup)
     
     elif data == "save_subscriptions":
         # Сохранение подписок
@@ -512,9 +624,9 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 f"{result.get('message', '')}\n\n"
                 f"Теперь вы будете получать дайджесты по выбранным категориям."
             )
-            await query.edit_message_text(success_text)
+            await safe_query_edit_text(query, success_text)
         else:
-            await query.edit_message_text(
+            await safe_query_edit_text(
                 "❌ Ошибка сохранения подписок.\n"
                 "Попробуйте позже или обратитесь к администратору."
             )
@@ -522,208 +634,73 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Очищаем временные данные
         context.user_data.pop('selected_categories', None)
 
+    # === Подписки на каналы ===
+    elif data.startswith("toggle_channel_"):
+        channel_id = int(data.split("_")[-1])
+
+        # Инициализируем выбранные каналы текущими подписками
+        if 'selected_channels' not in context.user_data:
+            current_subs = await get_user_channel_subscriptions(user.id)
+            context.user_data['selected_channels'] = {ch.get('id') for ch in (current_subs or [])}
+
+        # Переключаем выбор
+        if channel_id in context.user_data['selected_channels']:
+            context.user_data['selected_channels'].remove(channel_id)
+        else:
+            context.user_data['selected_channels'].add(channel_id)
+
+        # Перерисовываем клавиатуру
+        bot_channels = await get_bot_channels()
+        if not bot_channels:
+            await safe_query_edit_text(query, "❌ Ошибка загрузки каналов")
+            return
+
+        keyboard = []
+        selected_ids = context.user_data['selected_channels']
+        for ch in bot_channels:
+            ch_id = ch.get('id')
+            title = ch.get('title') or ch.get('channel_name') or f"Канал {ch_id}"
+            is_sub = ch_id in selected_ids
+            button_text = f"{'✅' if is_sub else '❌'} {title}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_channel_{ch_id}")])
+        keyboard.append([InlineKeyboardButton("💾 Сохранить каналы", callback_data="save_channel_subscriptions")])
+
+        await safe_query_edit_text(query, "📺 Управление подписками на каналы", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "save_channel_subscriptions":
+        selected_channels = context.user_data.get('selected_channels', set())
+        channel_ids = list(selected_channels)
+
+        result = await update_user_channel_subscriptions(user.id, channel_ids)
+
+        if result:
+            await safe_query_edit_text(
+                f"✅ Подписки на каналы сохранены!\n\nВыбрано каналов: {len(channel_ids)}"
+            )
+        else:
+            await safe_query_edit_text(query, "❌ Ошибка сохранения подписок на каналы. Попробуйте позже.")
+
+        context.user_data.pop('selected_channels', None)
+
 
 async def digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /digest - получить персональный дайджест"""
+    """Команда /digest — запрос готового дайджеста от Backend."""
     user = update.effective_user
-    
-    # Создаем или обновляем пользователя
     await create_or_update_user(user)
-    
-    # Отправляем уведомление о загрузке
     loading_message = await update.message.reply_text("🔄 Генерирую ваш персональный дайджест...")
-    
-    # Получаем подписки пользователя
-    user_subscriptions = await get_user_subscriptions(user.id)
-    
-    if not user_subscriptions:
-        await loading_message.edit_text(
-            "📝 У вас пока нет подписок на категории.\n\n"
-            "Используйте команду /subscribe для выбора интересующих категорий, "
-            "а затем повторите запрос дайджеста."
-        )
-        return
-    
-    # Получаем последние дайджесты
-    recent_digests = await get_recent_digests(5)
-    
-    if not recent_digests:
-        await loading_message.edit_text(
-            "❌ Не удалось загрузить дайджесты.\n"
-            "Возможно, система еще не сгенерировала дайджесты или произошла ошибка."
-        )
-        return
-    
-    # Ищем подходящий дайджест для пользователя
-    personal_digest = None
-    for digest_summary in recent_digests:
-        digest_id = digest_summary.get('digest_id')
-        if not digest_id:
-            continue
-            
-        # Получаем полные данные дайджеста
-        digest_data = await get_digest_data(digest_id)
-        if not digest_data:
-            continue
-        
-        # Фильтруем по подписанным категориям
-        filtered_digest = await filter_digest_by_subscriptions(digest_data, user_subscriptions)
-        if filtered_digest:
-            personal_digest = filtered_digest
-            personal_digest['digest_info'] = digest_summary
-            break
-    
-    if not personal_digest:
-        # Показываем список подписок и предложение ждать
-        subscribed_names = [sub.get('name') for sub in user_subscriptions]
-        categories_text = ", ".join([f"{sub.get('emoji', '📝')} {sub.get('name')}" for sub in user_subscriptions])
-        
-        await loading_message.edit_text(
-            f"📭 Персональный дайджест временно недоступен\n\n"
-            f"Ваши подписки: {categories_text}\n\n"
-            f"В последних дайджестах не найдено постов по вашим категориям. "
-            f"Попробуйте позже или добавьте дополнительные подписки через /subscribe."
-        )
-        return
-    
-    # Формируем красивый дайджест
-    digest_text = f"📰 Ваш персональный дайджест\n\n"
-    
-    # Информация о дайджесте
-    digest_info = personal_digest.get('digest_info', {})
-    created_at = digest_info.get('created_at', 'Неизвестно')
-    if 'T' in created_at:
-        created_at = created_at.split('T')[0]  # Берем только дату
-    
-    digest_text += f"🗓 Создан: {created_at}\n"
-    
-    # Показываем статистику фильтрации
-    total_posts = personal_digest.get('original_posts_count', 0)
-    filtered_posts = personal_digest.get('filtered_posts_count', 0)
-    relevant_channels = personal_digest.get('relevant_channels', 0)
-    
-    digest_text += f"📊 Найдено {filtered_posts} из {total_posts} постов из {relevant_channels} каналов\n\n"
-    
-    # Добавляем посты с новой группировкой Тема → Канал → Посты
-    summary_data = personal_digest.get('summary', {})
-    if isinstance(summary_data, dict):
-        posts = summary_data.get('posts', [])
-        
-        # Группируем по темам и каналам
-        theme_channel_posts = {}
-        for post in posts:
-            category = post.get('category', 'Без категории')
-            channel_title = post.get('channel_title', 'Неизвестный канал')
-            
-            if category not in theme_channel_posts:
-                theme_channel_posts[category] = {}
-            if channel_title not in theme_channel_posts[category]:
-                theme_channel_posts[category][channel_title] = []
-            
-            theme_channel_posts[category][channel_title].append(post)
-        
-        # Сортируем темы по количеству постов
-        sorted_themes = sorted(theme_channel_posts.items(), 
-                              key=lambda x: sum(len(posts) for posts in x[1].values()), 
-                              reverse=True)
-        
-        posts_added = 0
-        max_posts_total = 15
-        
-        for theme_name, channels in sorted_themes:
-            if posts_added >= max_posts_total:
-                break
-                
-            # Находим эмодзи темы из подписок пользователя
-            theme_emoji = "📝"  # По умолчанию
-            for sub in user_subscriptions:
-                if sub.get('name', '').lower() == theme_name.lower():
-                    theme_emoji = sub.get('emoji', '📝')
-                    break
-            
-            digest_text += f"\n{theme_emoji} <b>{theme_name.upper()}</b>\n"
-            
-            # Сортируем каналы по количеству постов
-            sorted_channels = sorted(channels.items(), 
-                                   key=lambda x: len(x[1]), 
-                                   reverse=True)
-            
-            for channel_name, channel_posts in sorted_channels:
-                if posts_added >= max_posts_total:
-                    break
-                    
-                digest_text += f"\n📺 <b>{channel_name}</b>\n"
-                
-                # Сортируем посты по важности
-                channel_posts.sort(key=lambda p: (
-                    p.get('importance', 0) * 3 + 
-                    p.get('urgency', 0) * 2 + 
-                    p.get('significance', 0) * 2
-                ), reverse=True)
-                
-                posts_in_channel = 0
-                max_posts_per_channel = 8
-                
-                for post in channel_posts:
-                    if posts_added >= max_posts_total or posts_in_channel >= max_posts_per_channel:
-                        break
-                    
-                    title = post.get('title', 'Без заголовка')
-                    summary = post.get('summary', post.get('ai_summary', ''))
-                    importance = post.get('importance', 0)
-                    urgency = post.get('urgency', 0)
-                    significance = post.get('significance', 0)
-                    url = post.get('url', '')
-                    views = post.get('views', 0)
-                    date = post.get('date', '')
-                    
-                    # Дата
-                    if date:
-                        try:
-                            date_formatted = date.split('T')[0] if 'T' in date else date
-                            digest_text += f"📅 {date_formatted}\n"
-                        except:
-                            pass
-                    
-                    # Резюме
-                    if summary:
-                        digest_text += f"💬 {summary}\n"
-                    
-                    # Ссылка + фрагмент оригинала
-                    if url:
-                        short_title = title[:80] + "..." if len(title) > 80 else title
-                        digest_text += f"🔗 {url} <i>{short_title}</i>\n"
-                    
-                    # Метрики + просмотры
-                    metrics_parts = []
-                    if importance > 0:
-                        metrics_parts.append(f"⚡ {importance}")
-                    if urgency > 0:
-                        metrics_parts.append(f"🚨 {urgency}")
-                    if significance > 0:
-                        metrics_parts.append(f"🎯 {significance}")
-                    if views > 0:
-                        metrics_parts.append(f"👁 {views:,}")
-                    
-                    if metrics_parts:
-                        digest_text += f"📊 {' • '.join(metrics_parts)}\n"
-                    
-                    digest_text += "\n"
-                    
-                    posts_added += 1
-                    posts_in_channel += 1
-    
-    # Добавляем информацию о подписках
-    subscribed_names = [f"{sub.get('emoji', '📝')} {sub.get('name')}" for sub in user_subscriptions]
-    digest_text += f"🎯 Ваши подписки: {', '.join(subscribed_names)}\n\n"
-    digest_text += "💡 Используйте /subscribe для изменения подписок"
-    
-    # Проверяем длину сообщения (Telegram лимит ~4096 символов)
-    if len(digest_text) > 4000:
-        # Обрезаем до безопасной длины
-        digest_text = digest_text[:3900] + "\n\n... (сообщение обрезано)\n\n💡 Используйте /subscribe для изменения подписок"
-    
-    await loading_message.edit_text(digest_text, parse_mode='HTML')
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{BACKEND_URL}/api/public-bots/{BOT_ID}/users/{user.id}/digest?limit=15", timeout=20) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    text = data.get('text') or "❌ Пустой дайджест"
+                    await loading_message.edit_text(text, parse_mode='HTML')
+                else:
+                    await loading_message.edit_text("❌ Не удалось сформировать дайджест. Попробуйте позже.")
+    except Exception as e:
+        logger.error(f"Ошибка /digest: {e}")
+        await loading_message.edit_text("❌ Ошибка при запросе дайджеста. Попробуйте позже.")
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -795,7 +772,10 @@ async def debug_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     debug_text = "🔍 Отладка фильтрации:\n\n"
     
     # Показываем подписки
-    subscribed_names = {cat.get('name', '').lower() for cat in (user_subscriptions or [])}
+    subscribed_names = {
+        (cat.get('name') or cat.get('category_name') or '').lower()
+        for cat in (user_subscriptions or [])
+    }
     debug_text += f"🎯 Подписки: {subscribed_names}\n\n"
     
     # Показываем каналы и их категории
@@ -914,6 +894,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("categories", categories))
+    application.add_handler(CommandHandler("channels", channels))
     application.add_handler(CommandHandler("subscribe", subscribe))
     application.add_handler(CommandHandler("digest", digest))
     application.add_handler(CommandHandler("status", status))
@@ -925,7 +906,7 @@ def main():
     
     # Запускаем бота
     logger.info("Бот запущен...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == '__main__':

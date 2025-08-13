@@ -168,7 +168,7 @@ services:
     networks:
       - morningstar_network
 
-  # Userbot Realtime (Telethon) — слушатель новых сообщений на базе готовой сессии
+  # Userbot Realtime (Telethon) — постоянный слушатель новых сообщений
   userbot-realtime-telethon:
     build:
       context: ./userbot_realtime_telethon
@@ -192,25 +192,25 @@ services:
     networks:
       - morningstar_network
 
-  # PublicBot (Telegram Bot)
-  publicbot:
+  # PublicBot (Telegram Bot) — удален, заменен multibot
+
+  # MultiBot Manager (универсальный сервис для всех активных ботов)
+  multibot:
     build:
       context: ./bot
       dockerfile: Dockerfile
-    container_name: morningstar_publicbot
+    container_name: morningstar_multibot
     environment:
-      - PUBLIC_BOT_TOKEN=${PUBLIC_BOT_TOKEN}
-      - BOT_ID=${PUBLIC_BOT_ID:-4}
       - BACKEND_API_URL=http://backend:8000
-      - API_HOST=backend
-      - API_PORT=8000
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - TIMEZONE=${TIMEZONE:-Europe/Moscow}
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
     depends_on:
       - backend
     restart: unless-stopped
+    command: python -u multibot_ptb.py
     volumes:
-      - ./bot/logs:/app/logs  # Persistent logs
+      - ./bot/logs:/app/logs
+      - ./bot/session:/app/session
     networks:
       - morningstar_network
 
