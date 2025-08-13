@@ -264,10 +264,27 @@ def register_handlers(app: Application, bot_id: int):
             return
 
         if data == "save_channel_subscriptions":
-            sel = list(context.user_data.get("selected_channels", set()))
+            # Если пользователь не делал переключений — сохраняем текущее состояние из backend
+            if "selected_channels" in context.user_data:
+                sel_set = context.user_data.get("selected_channels", set())
+            else:
+                current = await get_user_channel_subscriptions(user.id)
+                sel_set = {c.get("id") for c in (current or [])}
+
+            sel = list(sel_set)
             res = await update_user_channel_subscriptions(user.id, sel)
             if res is not None:
-                await query.edit_message_text("✅ Подписки на каналы сохранены!")
+                # Получим актуальный список подписок и выведем пользователю
+                current_after = await get_user_channel_subscriptions(user.id)
+                names = []
+                for ch in (current_after or []):
+                    title = ch.get("title") or ch.get("channel_name") or f"Канал {ch.get('id')}"
+                    names.append(title)
+                names_text = "\n".join(f"• {n}" for n in names) or "—"
+                await query.edit_message_text(
+                    "✅ Подписки на каналы сохранены!\n\n" 
+                    f"Текущие каналы ({len(names)}):\n{names_text}"
+                )
             else:
                 await query.edit_message_text("❌ Ошибка сохранения подписок на каналы")
             context.user_data.pop("selected_channels", None)
