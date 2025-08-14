@@ -45,16 +45,11 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         """
         super().__init__(settings_manager)
         
-        # 🧪 ПСЕВДООБРАБОТКА: Не требуем OpenAI ключ для тестирования
-        try:
-            self.openai_api_key = openai_api_key or self._get_openai_key()
-            # Инициализируем OpenAI клиент (синхронный) только если есть ключ
-            self.openai_client = OpenAI(api_key=self.openai_api_key)
-        except ValueError:
-            # Для псевдообработки ключ не нужен
-            self.openai_api_key = "pseudo_key"
-            self.openai_client = None
-            logger.warning("🧪 ПСЕВДООБРАБОТКА: OpenAI ключ не найден, используется псевдообработка")
+        # Реальный режим: ключ обязателен, клиент лениво создаётся при вызове
+        self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+        self.openai_client = None
+        if not self.openai_api_key:
+            logger.warning("⚠️ OPENAI_API_KEY отсутствует — категоризация будет возвращать fallback-результаты")
         
         self.backend_url = backend_url
         
@@ -179,10 +174,7 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
             logger.info(f"🔄 Асинхронная обработка батча {batch_index}/{total_batches} ({len(batch_posts)} постов)")
             
             system_prompt, user_message = self._build_batch_prompt(bot_config, bot_categories, batch_posts, batch_index, total_batches)
-            
-            # 🧪 ПСЕВДООБРАБОТКА: Сохраняем batch_posts для псевдообработки
-            self._current_batch_posts = [{'id': post.id} for post in batch_posts]
-            
+
             response = await self._call_openai_batch_api_async(system_prompt, user_message)
             if not response:
                 logger.error(f"❌ Нет ответа от OpenAI для батча {batch_index}")
@@ -259,48 +251,37 @@ class CategorizationServiceCelery(BaseAIServiceCelery):
         return system_prompt, user_message
     
     async def _call_openai_batch_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
-        """
-        🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI API для батчевой категоризации
-        Возвращает псевдо-результаты для тестирования без сжигания токенов
-        """
+        """Реальный вызов OpenAI для батчевой категоризации (через chat.completions)."""
         try:
-            logger.info(f"🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI запроса категоризации (delay 5 сек)")
-            
-            # 🔧 DELAY 5 секунд для имитации работы AI
-            await asyncio.sleep(5)
-            
-            # 🧪 ПСЕВДООБРАБОТКА: Получаем IDs из контекста вызова если возможно
-            # Сохраняем batch_posts в контексте для псевдообработки
-            posts_data = getattr(self, '_current_batch_posts', None)
-            if not posts_data:
-                posts_data = self._extract_posts_from_user_message(user_message)
-            
-            # Генерируем псевдо-ответ в JSON формате для всех постов
-            pseudo_results = []
-            for i, post_data in enumerate(posts_data, 1):
-                post_id = post_data.get('id', f'unknown_{i}')
-                
-                # Псевдо-результат: первая активная категория + метрики
-                pseudo_result = {
-                    "id": post_id,
-                    "category_number": 1,  # Всегда первая категория
-                    "category_name": "ПСЕВДО-КАТЕГОРИЯ",  # Будет заменено на реальную
-                    "relevance_score": 0.8,  # Фиксированная релевантность
-                    "importance": int(str(post_id)[-1:]) if str(post_id).isdigit() else 5,  # importance = последняя цифра post_id
-                    "urgency": 7,  # Фиксированная срочность  
-                    "significance": i  # significance = номер в батче
-                }
-                pseudo_results.append(pseudo_result)
-            
-            # Формируем ответ в том же формате, что ожидает парсер
-            import json
-            pseudo_response = json.dumps({"results": pseudo_results}, ensure_ascii=False, indent=2)
-            
-            logger.info(f"✅ ПСЕВДООБРАБОТКА: Сгенерированы результаты для {len(pseudo_results)} постов")
-            return pseudo_response
-            
+            # Если нет ключа — возвращаем None, сработает fallback
+            if not self.openai_api_key and self.settings_manager is not None:
+                try:
+                    self.openai_api_key = await self.settings_manager.get_openai_key()
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось получить OpenAI ключ через SettingsManager: {e}")
+
+            if not self.openai_api_key:
+                logger.error("❌ OPENAI_API_KEY отсутствует")
+                return None
+
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=self.openai_api_key)
+            try:
+                resp = await client.chat.completions.create(
+                    model=(await self._get_model_settings_async())[0],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
+                    max_tokens=(await self._get_model_settings_async())[1],
+                    temperature=(await self._get_model_settings_async())[2],
+                    timeout=60
+                )
+                return resp.choices[0].message.content if resp and resp.choices else None
+            finally:
+                await client.close()
         except Exception as e:
-            logger.error(f"❌ Ошибка в псевдообработке категоризации: {str(e)}")
+            logger.error(f"❌ Ошибка вызова OpenAI для батча: {e}")
             return None
     
     def _extract_posts_from_user_message(self, user_message: str) -> List[Dict]:

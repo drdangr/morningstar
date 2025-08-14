@@ -41,7 +41,8 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         """
         super().__init__(settings_manager)
         
-        # OpenAI клиент будет инициализирован асинхронно при первом вызове
+        # OpenAI ключ и клиент инициализируются лениво
+        self.openai_api_key = None
         self.async_client = None
         
         # 🔧 ИСПРАВЛЕНИЕ: Добавляем отсутствующий атрибут max_summary_length
@@ -63,39 +64,23 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                 return { "summary": "", "status": "skipped", "reason": "empty_text" }
             
             model, max_tokens, temperature, top_p, settings_max_length = await self._get_model_settings_async()
-            
             summary_length = max_summary_length or settings_max_length or self.max_summary_length
             prompt = self._build_single_prompt(custom_prompt, language, summary_length)
-            
-            # 🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI API для саммаризации
-            logger.info(f"🧪 ПСЕВДООБРАБОТКА: Имитация OpenAI запроса саммаризации (delay 2 сек)")
-            
-            # 🔧 DELAY 2 секунды для имитации работы AI
-            await asyncio.sleep(2)
-            
-            # Получаем информацию о посте для формирования псевдо-саммари
-            # Ищем post_id в контексте вызова (может быть передан через kwargs)
-            post_id = kwargs.get('post_id', 'неизвестно')
-            bot_id = kwargs.get('bot_id', 'неизвестно')
-            
-            # 🎯 Получаем все настройки для проверки
-            model, max_tokens, temperature, top_p, settings_max_length = await self._get_model_settings_async()
-            prompt = self._build_single_prompt(custom_prompt, language, summary_length)
-            
-            # Генерируем детальный псевдо-саммари с ВСЕМИ параметрами включая ТЕКСТ ПРОМПТА
-            prompt_preview = (prompt[:100] + "...") if len(prompt) > 100 else prompt
-            summary = f"🧪 ПСЕВДО-САММАРИЗАЦИЯ поста ID{post_id} (бот {bot_id}) | Промпт: {prompt_preview} | Модель: {model} | Max_tokens: {max_tokens} | Temp: {temperature} | Top_p: {top_p} | Max_length: {max_summary_length or summary_length}"
-            
-            logger.info(f"✅ ПСЕВДООБРАБОТКА: Саммари сгенерировано для поста {post_id}, бот {bot_id}")
-            logger.info(f"🔍 Параметры: model={model}, max_tokens={max_tokens}, temp={temperature}, top_p={top_p}")
-            logger.info(f"📝 Промпт (len={len(prompt)}): {prompt[:200] + ('...' if len(prompt) > 200 else '')}")
-            logger.info(f"🎯 Кастомный промпт: {'ДА (len=' + str(len(custom_prompt)) + ')' if custom_prompt else 'НЕТ (используется дефолтный)'}")
-            logger.info(f"📏 Длина саммари: {max_summary_length or summary_length} ({'КАСТОМНАЯ ОТ БОТА' if max_summary_length != settings_max_length else 'СИСТЕМНАЯ'})")
-            
+
+            # Обеспечиваем наличие ключа OpenAI
+            await self._ensure_openai_key()
+            if not self.openai_api_key:
+                return { "summary": "ошибка саммаризации", "status": "error", "error": "missing_openai_api_key" }
+
+            # Реальный вызов OpenAI
+            response_text = await self._call_openai_api_async(system_prompt=prompt, user_message=text)
+            if not response_text:
+                return { "summary": "ошибка саммаризации", "status": "error", "error": "openai_api_failed" }
+
             return {
-                "summary": summary,
+                "summary": response_text,
                 "language": language,
-                "tokens_used": 42,  # Псевдо-значение токенов
+                "tokens_used": 0,
                 "status": "success"
             }
             
@@ -112,6 +97,8 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         
         # 🔧 ИСПРАВЛЕНИЕ: Получаем настройки бота включая кастомный промпт и длину саммари
         bot_custom_prompt, bot_max_length = await self._get_bot_summarization_settings(bot_id)
+        # Получаем системные настройки для определения системной длины
+        _, _, _, _, settings_max_length = await self._get_model_settings_async()
         if bot_custom_prompt:
             logger.info(f"🎯 Используем кастомный промпт бота {bot_id} (длина: {len(bot_custom_prompt)})")
             custom_prompt = bot_custom_prompt
@@ -119,7 +106,7 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
             logger.info(f"📄 Кастомный промпт для бота {bot_id} не найден, используем дефолтный")
         
         # Определяем максимальную длину саммари (приоритет: настройки бота → системные настройки → fallback)
-        final_max_length = bot_max_length or max_summary_length or self.max_summary_length
+        final_max_length = bot_max_length or settings_max_length or self.max_summary_length
         if bot_max_length:
             logger.info(f"📏 Используем кастомную длину саммари бота {bot_id}: {final_max_length}")
         else:
@@ -144,7 +131,7 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                     })
                     continue
                 
-                # Передаем post_id, bot_id и кастомную длину саммари для псевдообработки
+                # Передаем post_id, bot_id и кастомную длину саммари для реальной обработки
                 result = await self.process_async(text, language, custom_prompt, 
                                                 max_summary_length=final_max_length,
                                                 post_id=post.id, bot_id=bot_id, **kwargs)
@@ -218,6 +205,20 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
         
         logger.info(f"✅ Конвертировано {len(result_posts)} постов в PostForSummarization")
         return result_posts
+
+    async def _ensure_openai_key(self) -> None:
+        """Гарантирует наличие OpenAI API ключа в self.openai_api_key."""
+        if self.openai_api_key:
+            return
+        try:
+            if self.settings_manager is not None:
+                key = await self.settings_manager.get_openai_key()
+                self.openai_api_key = key
+                return
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось получить OpenAI ключ через SettingsManager: {e}")
+        # Fallback: переменная окружения
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
     
     async def _call_openai_api_async(self, system_prompt: str, user_message: str) -> Optional[str]:
         """
@@ -239,8 +240,7 @@ class SummarizationServiceCelery(BaseAIServiceCelery):
                     ],
                     max_tokens=max_tokens,
                     temperature=temperature,
-                    top_p=top_p,
-                    timeout=30
+                    top_p=top_p
                 )
             finally:
                 # Явно закрываем HTTP клиент чтобы избежать RuntimeError
